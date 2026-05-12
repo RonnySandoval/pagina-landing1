@@ -149,7 +149,9 @@ al `.ps1`.
 Esto crea de un solo golpe:
 
 - Carpeta `C:\xampp\htdocs\pagina-juan\` con el código copiado desde el template
-  (sin `.git`, `.github`, `uploads`, configs sensibles del template, etc.).
+  (sin `.git`, `uploads`, configs sensibles del template, etc.). **Sí se copia**
+  `.github/workflows/` (p. ej. `deploy.yml`) para que el clon local pueda
+  versionarse con el mismo CI/FTP que el template.
 - BD MySQL `pagina_juan` **vacía** (utf8mb4); el esquema lo crea `db.php` al
   abrir `admin.php`.
 - `db_config.php`, `mail_config.php`, `admin_bootstrap.php` generados dentro de

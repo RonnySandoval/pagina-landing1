@@ -248,7 +248,7 @@ Write-Host ""
 Write-Step 1 6 "Copiando template -> $projectName\"
 # Capturar stdout y stderr (robocopy suele escribir errores en stderr). ">" solo captura stdout.
 $robocopyOutput = @(& robocopy $templatePath $newPath /E `
-    /XD "uploads" ".git" ".github" `
+    /XD "uploads" ".git" `
     /XF "db_config.php" "mail_config.php" "admin_bootstrap.php" "*.log" "*.bak" "*.tmp" `
     /NFL /NDL /NJH /NJS /NP 2>&1)
 $rcExit = $LASTEXITCODE
