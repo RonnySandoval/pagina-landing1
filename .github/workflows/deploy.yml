@@ -1,0 +1,43 @@
+name: Deploy to InfinityFree
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ftp-deploy:
+    name: FTP deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          local-dir: ./
+          # No usar dangerous-clean-slate: queremos respetar archivos que ya están en el servidor.
+          dangerous-clean-slate: false
+          # Archivos/carpetas que NUNCA se mandan por FTP.
+          # tools/ son herramientas locales del desarrollador (provisioning, scripts);
+          # no son codigo de produccion y no deben llegar al servidor.
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.github/**
+            **/node_modules/**
+            tools/**
+            README.md
+            mail_config.php
+            db_config.php
+            admin_bootstrap.php
+            app_config.php
+            *.log
+            uploads/**
+            *.sql

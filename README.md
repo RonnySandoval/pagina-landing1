@@ -219,6 +219,65 @@ manual en el panel y por FTP; **GitHub Actions solo sube archivos** cuando
 configuras el workflow: **no crea** cuentas, **no crea** la BD ni el
 subdominio.
 
+### Workflow FTP (`deploy.yml`)
+
+En este repo el archivo **`.github/workflows/deploy.yml`** está versionado y
+dispara el despliegue por FTP en cada `push` a `main` (y también con
+**Run workflow** manual). Si tu copia **no** trae ese archivo (fork antiguo,
+repo creado solo con archivos sueltos, o borraste `.github/` por error),
+créalo tú:
+
+1. En la raíz del proyecto, crea la ruta `.github/workflows/`.
+2. Dentro, crea `deploy.yml` y **pega** el siguiente contenido (debe coincidir
+   con el del repositorio; tras un `git pull` puedes copiarlo desde
+   `.github/workflows/deploy.yml` en lugar de aquí).
+
+```yaml
+name: Deploy to InfinityFree
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ftp-deploy:
+    name: FTP deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          local-dir: ./
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.github/**
+            **/node_modules/**
+            tools/**
+            README.md
+            mail_config.php
+            db_config.php
+            admin_bootstrap.php
+            app_config.php
+            *.log
+            uploads/**
+            *.sql
+```
+
+Luego configura en GitHub **Settings → Secrets and variables → Actions** los
+secrets `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD` y `FTP_SERVER_DIR` como
+se indica más abajo.
+
 ### Antes del primer `push` con CI (secrets)
 
 Tienes que tener **ya preparado** en el proveedor (p. ej. InfinityFree):
