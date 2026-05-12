@@ -8,10 +8,10 @@
     2. La carpeta   htdocs\pagina-<Slug>\
 
   Pide confirmacion interactiva por defecto. Pasale -Force para automatizarlo.
-  Por seguridad, rechaza borrar la carpeta del template original (pagina1) o
+  Por seguridad, rechaza borrar la carpeta del template original (pag-template) o
   cualquier ruta fuera de htdocs.
 
-  Vive dentro del repo en pagina1\tools\deprovision.ps1 para que viaje junto
+  Vive dentro del repo en pag-template\tools\deprovision.ps1 para que viaje junto
   con provision.ps1. No se sube por FTP (ver .github/workflows/deploy.yml).
 
 .PARAMETER Slug
@@ -38,15 +38,15 @@
   USALO CON CUIDADO: borrar es irreversible.
 
 .EXAMPLE
-  C:\xampp\htdocs\pagina1\tools\deprovision.ps1 -Slug "demo"
+  C:\xampp\htdocs\pag-template\tools\deprovision.ps1 -Slug "demo"
   # Pide confirmacion antes de borrar pagina_demo y C:\xampp\htdocs\pagina-demo\
 
 .EXAMPLE
-  C:\xampp\htdocs\pagina1\tools\deprovision.ps1 -Slug "demo" -Force
+  C:\xampp\htdocs\pag-template\tools\deprovision.ps1 -Slug "demo" -Force
   # Borra todo sin preguntar.
 
 .EXAMPLE
-  C:\xampp\htdocs\pagina1\tools\deprovision.ps1 -Slug "demo" -KeepDatabase -Force
+  C:\xampp\htdocs\pag-template\tools\deprovision.ps1 -Slug "demo" -KeepDatabase -Force
   # Solo borra la carpeta, conserva la BD pagina_demo.
 #>
 
@@ -98,7 +98,7 @@ $dbName       = "pagina_$Slug"
 $mysqlExe     = Join-Path $XamppRoot "mysql\bin\mysql.exe"
 
 # Salvaguarda fuerte: no permitir borrar el template ni nada fuera de htdocs.
-$reservedNames = @("pagina1")
+$reservedNames = @("pag-template")
 if ($reservedNames -contains $projectName) {
     Fail "Nombre reservado: $projectName. Este script no borra el template original."
 }
@@ -177,6 +177,6 @@ Write-Host " LANDING ELIMINADA: $projectName" -ForegroundColor Magenta
 Write-Host "============================================================" -ForegroundColor Magenta
 Write-Host ""
 Write-Host " Para volver a crearla:"
-Write-Host "   C:\xampp\htdocs\pagina1\tools\provision.ps1 -Slug `"$Slug`" ``"
+Write-Host "   C:\xampp\htdocs\pag-template\tools\provision.ps1 -Slug `"$Slug`" ``"
 Write-Host "     -AdminEmail `"...`" -AdminPassword `"...`""
 Write-Host ""

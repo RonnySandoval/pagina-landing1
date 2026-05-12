@@ -12,7 +12,7 @@ return [
     /**
      * URL pública de esta instalación, sin barra final.
      * Ejemplos:
-     * - Local:     "http://localhost/pagina1"
+     * - Local:     "http://localhost/pag-laura"
      * - Producción: "https://tudominio.com" o "https://tudominio.com/subcarpeta"
      *
      * Déjalo vacío para detectar automáticamente desde cada petición (normal en local).

@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 // Panel admin: script admin.php. Rutas y ejemplos local/producción: ver app_urls.php (bloque «MAPA DE RUTAS»).
 // Aislar sesiones por landing.
-// Si varias landings comparten host (p. ej. localhost/pagina1, localhost/pagina-demo),
+// Si varias landings comparten host (p. ej. localhost/pag-laura, localhost/pag-juan),
 // la cookie PHPSESSID por defecto (path "/") se comparte entre ellas y los datos
 // de sesión se "cuelan": admin_email de una landing aparece logueado en otra y la
 // pantalla "Credenciales Admin" muestra/usa el correo equivocado.
@@ -421,7 +421,7 @@ $isLogged = isset($_SESSION["admin_logged"]) && $_SESSION["admin_logged"] === tr
 
 // Defensa adicional contra sesiones "huérfanas" entre landings.
 // Si la cookie de una landing previa sobrevivió (p. ej. instalaciones anteriores al
-// aislamiento, o usuarios que comparten navegador entre /pagina1 y /pagina-demo),
+// aislamiento, o usuarios que comparten navegador entre /pag-laura y /pag-juan),
 // validamos que admin_email exista en ESTA BD. Si no, descartamos la sesión.
 if ($isLogged) {
     $_sessionEmail = (string)($_SESSION["admin_email"] ?? "");

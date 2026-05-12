@@ -12,9 +12,9 @@ declare(strict_types=1);
  *   Formulario       → send.php (POST desde la landing)
  *
  * URLS (dependen de dónde cuelgue la carpeta en el servidor web):
- *   Local típico (carpeta htdocs/pagina1):
- *     Landing  http://localhost/pagina1/
- *     Admin    http://localhost/pagina1/admin.php
+ *   Local típico (carpeta htdocs/pag-laura):
+ *     Landing  http://localhost/pag-laura/
+ *     Admin    http://localhost/pag-laura/admin.php
  *   Producción (ejemplo):
  *     Landing  https://tudominio.com/
  *     Admin    https://tudominio.com/admin.php

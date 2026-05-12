@@ -47,11 +47,11 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 
 ## Instalación local (primera vez)
 
-1. Clonar el **template** dentro de `htdocs` con el nombre `pagina1` (así coinciden las rutas de este README y de `provision.ps1`, que usa `pagina1` como carpeta plantilla por defecto):
+1. Clonar el **template** dentro de `htdocs` con el nombre `pag-template` (así coinciden las rutas de este README y de `provision.ps1`, que usa `pag-template` como carpeta plantilla por defecto):
 
    ```powershell
    cd C:\xampp\htdocs
-   git clone <URL-de-tu-repo-o-fork> pagina1
+   git clone <URL-de-tu-repo-o-fork> pag-template
    ```
 
    Sustituye `<URL-de-tu-repo-o-fork>` por la URL HTTPS o SSH de **tu** copia del proyecto (fork propio, repo de organización, etc.). Si clonas con otro nombre de carpeta, tendrás que usar `-Template "ese-nombre"` al provisionar landings adicionales.
@@ -59,7 +59,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 2. Crear los tres archivos de configuración a partir de los `*.example.php`:
 
    ```powershell
-   cd pagina1
+   cd pag-template
    Copy-Item db_config.example.php   db_config.php
    Copy-Item mail_config.example.php mail_config.php
    Copy-Item admin_bootstrap.example.php admin_bootstrap.php
@@ -81,7 +81,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
    CREATE DATABASE web_personal CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    ```
 
-5. Visitar `http://localhost/pagina1/admin.php` una vez. `db.php`
+5. Visitar `http://localhost/pag-template/admin.php` una vez. `db.php`
    creará todas las tablas y sembrará el admin desde `admin_bootstrap.php`.
 
 6. Iniciar sesión con las credenciales del bootstrap y **borrar
@@ -96,10 +96,10 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 > opcional `app_config.php` están en `.gitignore`. Nunca subas secretos al repo;
 > cada entorno los crea aparte.
 
-> **Nota:** La primera instalación suele ser esta carpeta `pagina1` a mano.
+> **Nota:** La primera instalación suele ser esta carpeta `pag-template` a mano.
 > Las **siguientes** landings en el mismo PC se crean con `provision.ps1` en
 > `C:\xampp\htdocs\pagina-<slug>\` (esa carpeta **no** está dentro del git de
-> `pagina1` salvo que tú inicialices allí otro repo; ver [Rol dual](#rol-dual-de-este-repo-template--instancia)).
+> `pag-template` salvo que tú inicialices allí otro repo; ver [Rol dual](#rol-dual-de-este-repo-template--instancia)).
 
 ## Crear una landing nueva con `provision.ps1`
 
@@ -129,7 +129,7 @@ ningún usuario final, ni el servidor de producción lo ejecutan.
 Desde PowerShell (recomendado si ya tienes la ventana abierta):
 
 ```powershell
-C:\xampp\htdocs\pagina1\tools\provision.ps1 `
+C:\xampp\htdocs\pag-template\tools\provision.ps1 `
   -Slug "juan" `
   -AdminEmail "juan@correo.com" `
   -AdminPassword "JuanIngles2026!"
@@ -140,7 +140,7 @@ lanzador que deja el resultado visible y pide **Enter** al final (o `pause`
 tras el script):
 
 ```text
-C:\xampp\htdocs\pagina1\tools\provision.cmd -Slug "juan" -AdminEmail "juan@correo.com" -AdminPassword "JuanIngles2026!"
+C:\xampp\htdocs\pag-template\tools\provision.cmd -Slug "juan" -AdminEmail "juan@correo.com" -AdminPassword "JuanIngles2026!"
 ```
 
 Para **CI o scripts** donde no debe haber pausa al final, añade **`-NoWait`**
@@ -174,7 +174,7 @@ Si la copia falla, el script muestra el detalle de **robocopy** en consola.
 | `-SkipAutoSeed`           | No llama a `admin.php` automáticamente.               |
 | `-Force`                  | Si la carpeta destino existe, la machaca y recrea.    |
 | `-NoWait`                 | No pide Enter al final (automatización; el `.cmd` sigue haciendo `pause`). |
-| `-Template "pagina-juan"` | Clona desde otra landing, no desde `pagina1`.         |
+| `-Template "pagina-juan"` | Clona desde otra landing, no desde `pag-template`.         |
 | `-DbHost / -DbUser / -DbPass` | Override de credenciales MySQL (default XAMPP).   |
 
 ### Lo que el script NO hace
@@ -190,7 +190,7 @@ la BD `pagina_<slug>` de tu MySQL local. Útil para limpiar landings de
 prueba sin dejar bases huérfanas.
 
 ```powershell
-C:\xampp\htdocs\pagina1\tools\deprovision.ps1 -Slug "demo"
+C:\xampp\htdocs\pag-template\tools\deprovision.ps1 -Slug "demo"
 ```
 
 Por seguridad pide confirmación interactiva: tienes que volver a escribir
@@ -209,7 +209,7 @@ el slug exacto. Para automatizarlo (CI, scripts envolventes), pasa
 ### Salvaguardas
 
 - Rechaza slugs con caracteres raros (`../`, espacios, etc.).
-- Rechaza nombres reservados (`pagina1` no se puede borrar con este script).
+- Rechaza nombres reservados (`pag-template` no se puede borrar con este script).
 - Verifica que la ruta resuelta esté dentro de `htdocs\` antes de tocar
   el filesystem.
 
@@ -363,7 +363,7 @@ para no revelar qué correos son admins.
 ## Estructura de archivos
 
 ```
-pagina1/
+pag-template/
 ├── admin.php                  Panel de admin completo (login, settings, servicios, mensajes, reset).
 ├── index.php                  Landing pública: hero + sobre + servicios + contacto.
 ├── app_urls.php               URLs públicas (landing y admin); respeta app_config opcional.

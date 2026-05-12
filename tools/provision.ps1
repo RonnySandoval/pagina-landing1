@@ -11,7 +11,7 @@
     5. Genera admin_bootstrap.php con el correo y la clave de admin que pasaste.
     6. Llama una vez a admin.php para que db.php cree las tablas y siembre el admin.
 
-  Vive dentro del repo en pagina1\tools\provision.ps1 para que se versione
+  Vive dentro del repo en pag-template\tools\provision.ps1 para que se versione
   con el template. Se excluye del FTP deploy (ver .github/workflows/deploy.yml)
   porque es una herramienta local del desarrollador, no codigo de produccion.
 
@@ -29,7 +29,7 @@
   tras el primer login. db.php la hashea con bcrypt al insertarla en MySQL.
 
 .PARAMETER Template
-  Carpeta que se va a clonar (default: pagina1). Debe estar dentro de
+  Carpeta que se va a clonar (default: pag-template). Debe estar dentro de
   C:\xampp\htdocs\ y contener al menos db.php, admin.php e index.php.
 
 .PARAMETER DbHost / DbUser / DbPass
@@ -52,14 +52,14 @@
   (el .cmd ya hace pause).
 
 .EXAMPLE
-  C:\xampp\htdocs\pagina1\tools\provision.ps1 `
+  C:\xampp\htdocs\pag-template\tools\provision.ps1 `
     -Slug "juan" `
     -AdminEmail "juan@correo.com" `
     -AdminPassword "Juan2026Seguro!"
 
 .EXAMPLE
   # Reusando otro template como base (cualquier landing previa puede ser template)
-  C:\xampp\htdocs\pagina1\tools\provision.ps1 -Slug "maria" `
+  C:\xampp\htdocs\pag-template\tools\provision.ps1 -Slug "maria" `
     -AdminEmail "maria@correo.com" -AdminPassword "Maria2026!" `
     -Template "pagina-juan"
 #>
@@ -69,7 +69,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Slug,
     [Parameter(Mandatory = $true)][string]$AdminEmail,
     [Parameter(Mandatory = $true)][string]$AdminPassword,
-    [string]$Template     = "pagina1",
+    [string]$Template     = "pag-template",
     [string]$DbHost       = "127.0.0.1",
     [string]$DbUser       = "root",
     [string]$DbPass       = "",
