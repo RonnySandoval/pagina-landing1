@@ -331,6 +331,29 @@ h1 {
   box-shadow: 0 10px 24px var(--shadow-soft);
 }
 
+.btn-whatsapp {
+  background: #25d366;
+  color: #ffffff;
+  border-color: #1ebe5d;
+  box-shadow: 0 10px 24px rgba(37, 211, 102, 0.25);
+}
+
+.btn-whatsapp:hover {
+  background: #1ebe5d;
+  transform: translateY(-2px);
+}
+
+.contact-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.contact-actions .btn {
+  flex: 1 1 220px;
+}
+
 .section {
   padding: 3rem 0;
 }

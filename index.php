@@ -12,6 +12,7 @@ $defaultSettings = [
     "about_text" => "Escribe una descripcion corta sobre ti y tus servicios.",
     "contact_intro" => "Invita a tus visitantes a contactarte para mas informacion.",
     "contact_email" => "contacto@tu-dominio.com",
+    "contact_whatsapp" => "",
     "footer_text" => "Todos los derechos reservados.",
     "logo_image_path" => null
 ];
@@ -260,7 +261,13 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
             </p>
           <?php endif; ?>
         </div>
-        <form id="contactForm" class="contact-form reveal" method="post" action="send.php">
+        <?php
+          // wa.me solo acepta dígitos. Aunque el admin valida, sanitizamos aquí también
+          // para no inyectar HTML/JS en el data-attribute y evitar prefijos como "+57".
+          $whatsappRaw = (string)($settings["contact_whatsapp"] ?? "");
+          $whatsappDigits = preg_replace('/\D+/', '', $whatsappRaw) ?? "";
+        ?>
+        <form id="contactForm" class="contact-form reveal" method="post" action="send.php" data-whatsapp="<?= htmlspecialchars($whatsappDigits) ?>">
           <label for="nombre">Nombre</label>
           <input id="nombre" name="nombre" type="text" placeholder="Tu nombre" required>
 
@@ -278,7 +285,12 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           <label for="mensaje">Mensaje</label>
           <textarea id="mensaje" name="mensaje" rows="4" placeholder="Cuéntame cómo te puedo ayudar" required></textarea>
 
-          <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> Enviar mensaje</button>
+          <div class="contact-actions">
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> Enviar por correo</button>
+            <?php if ($whatsappDigits !== ""): ?>
+              <button type="button" id="contactWhatsappBtn" class="btn btn-whatsapp"><i class="fa-brands fa-whatsapp"></i> Escribir por WhatsApp</button>
+            <?php endif; ?>
+          </div>
           <p id="formMessage" class="form-message" role="status" aria-live="polite"></p>
         </form>
       </div>

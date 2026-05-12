@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS site_settings (
   about_text TEXT NOT NULL,
   contact_intro TEXT NOT NULL,
   contact_email VARCHAR(180) NOT NULL,
+  contact_whatsapp VARCHAR(32) DEFAULT NULL,
   footer_text VARCHAR(180) NOT NULL,
   logo_image_path VARCHAR(255) DEFAULT NULL
 )");
@@ -139,6 +140,23 @@ if ($siteSettingsLogoColumnResult && $siteSettingsLogoColumnResult->num_rows ===
 }
 if (!$siteSettingsHasLogo) {
     $conn->query("ALTER TABLE site_settings ADD COLUMN logo_image_path VARCHAR(255) DEFAULT NULL AFTER footer_text");
+}
+
+// Migración: agrega contact_whatsapp si la BD ya existía sin esa columna.
+$siteSettingsHasWhatsapp = false;
+$siteSettingsWhatsappColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'site_settings'
+  AND COLUMN_NAME = 'contact_whatsapp'
+LIMIT 1
+");
+if ($siteSettingsWhatsappColumnResult && $siteSettingsWhatsappColumnResult->num_rows === 1) {
+    $siteSettingsHasWhatsapp = true;
+}
+if (!$siteSettingsHasWhatsapp) {
+    $conn->query("ALTER TABLE site_settings ADD COLUMN contact_whatsapp VARCHAR(32) DEFAULT NULL AFTER contact_email");
 }
 
 $conn->query("

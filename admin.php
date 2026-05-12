@@ -452,6 +452,15 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings"
     $aboutText = trim($_POST["about_text"] ?? "");
     $contactIntro = trim($_POST["contact_intro"] ?? "");
     $contactEmail = trim($_POST["contact_email"] ?? "");
+    $contactWhatsappRaw = trim((string)($_POST["contact_whatsapp"] ?? ""));
+    // wa.me exige solo dígitos (E.164 sin '+'). Aceptamos lo que escriba el admin
+    // y descartamos todo lo demás. Vacío = WhatsApp deshabilitado en la landing.
+    $contactWhatsapp = preg_replace('/\D+/', '', $contactWhatsappRaw) ?? "";
+    if ($contactWhatsapp === "") {
+        $contactWhatsappForDb = null;
+    } else {
+        $contactWhatsappForDb = substr($contactWhatsapp, 0, 32);
+    }
     $footerText = trim($_POST["footer_text"] ?? "");
 
     // Logo: la ruta actual viaja en hidden para preservarla si no se sube otra.
@@ -481,10 +490,10 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings"
         $logoForDb = $logoPath !== "" ? $logoPath : null;
         $stmt = $conn->prepare("
           UPDATE site_settings
-          SET person_name = ?, brand_name = ?, hero_title = ?, hero_intro = ?, about_text = ?, contact_intro = ?, contact_email = ?, footer_text = ?, logo_image_path = ?
+          SET person_name = ?, brand_name = ?, hero_title = ?, hero_intro = ?, about_text = ?, contact_intro = ?, contact_email = ?, contact_whatsapp = ?, footer_text = ?, logo_image_path = ?
           WHERE id = 1
         ");
-        $stmt->bind_param("sssssssss", $personName, $brandName, $heroTitle, $heroIntro, $aboutText, $contactIntro, $contactEmail, $footerText, $logoForDb);
+        $stmt->bind_param("ssssssssss", $personName, $brandName, $heroTitle, $heroIntro, $aboutText, $contactIntro, $contactEmail, $contactWhatsappForDb, $footerText, $logoForDb);
         $stmt->execute();
         $message = "Configuración general actualizada.";
     }
@@ -817,6 +826,7 @@ $settings = [
     "about_text" => "",
     "contact_intro" => "",
     "contact_email" => "",
+    "contact_whatsapp" => "",
     "footer_text" => ""
 ];
 
@@ -1479,6 +1489,13 @@ if ($isLogged) {
             <label class="form-label">Correo receptor del formulario</label>
             <input class="form-control" type="email" name="contact_email" value="<?= h($settings["contact_email"] ?? "") ?>" required>
             <div class="form-text text-light-emphasis">Los mensajes del formulario se intentarán enviar aquí (al correo receptor).</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">WhatsApp de contacto (opcional)</label>
+            <input class="form-control" type="tel" name="contact_whatsapp" value="<?= h($settings["contact_whatsapp"] ?? "") ?>" placeholder="573001234567" inputmode="numeric">
+            <div class="form-text text-light-emphasis">
+              Número en formato internacional, solo dígitos (código de país + número, sin <code>+</code> ni espacios). Ej: <code>573001234567</code>. Déjalo vacío para ocultar el botón de WhatsApp en la landing.
+            </div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Texto footer</label>

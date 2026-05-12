@@ -173,6 +173,28 @@ if (contactForm) {
   });
 }
 
+const whatsappBtn = document.getElementById("contactWhatsappBtn");
+if (whatsappBtn && contactForm) {
+  whatsappBtn.addEventListener("click", function () {
+    const phone = (contactForm.getAttribute("data-whatsapp") || "").replace(/\D+/g, "");
+    if (phone === "") return;
+
+    const nombre = (document.getElementById("nombre")?.value || "").trim();
+    const servicio = (document.getElementById("servicio")?.value || "").trim();
+    const mensaje = (document.getElementById("mensaje")?.value || "").trim();
+
+    const parts = ["Hola"];
+    if (nombre !== "") parts[0] = `Hola, soy ${nombre}`;
+    if (servicio !== "") parts.push(`Me interesa el servicio "${servicio}".`);
+    if (mensaje !== "") parts.push(mensaje);
+    if (parts.length === 1) parts.push("Quisiera más información, por favor.");
+
+    const text = parts.join(" ");
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank", "noopener");
+  });
+}
+
 const revealItems = document.querySelectorAll(".reveal");
 
 if (revealItems.length) {

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS site_settings (
   about_text TEXT NOT NULL,
   contact_intro TEXT NOT NULL,
   contact_email VARCHAR(180) NOT NULL,
+  contact_whatsapp VARCHAR(32) DEFAULT NULL,
   footer_text VARCHAR(180) NOT NULL,
   logo_image_path VARCHAR(255) DEFAULT NULL
 );
