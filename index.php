@@ -287,10 +287,16 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
 
           <div class="contact-actions">
             <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> Enviar por correo</button>
-            <?php if ($whatsappDigits !== ""): ?>
-              <button type="button" id="contactWhatsappBtn" class="btn btn-whatsapp"><i class="fa-brands fa-whatsapp"></i> Escribir por WhatsApp</button>
-            <?php endif; ?>
+            <button
+              type="button"
+              id="contactWhatsappBtn"
+              class="btn btn-whatsapp<?= $whatsappDigits === "" ? " btn-whatsapp-disabled" : "" ?>"
+              <?= $whatsappDigits === "" ? 'disabled aria-disabled="true" title="Configura el número en Administración → Configuración general → WhatsApp de contacto"' : "" ?>
+            ><i class="fa-brands fa-whatsapp"></i> Escribir por WhatsApp</button>
           </div>
+          <?php if ($whatsappDigits === ""): ?>
+            <p class="contact-whatsapp-hint">Activa el botón de WhatsApp guardando tu número (solo dígitos, con código de país) en el panel de administración.</p>
+          <?php endif; ?>
           <p id="formMessage" class="form-message" role="status" aria-live="polite"></p>
         </form>
       </div>

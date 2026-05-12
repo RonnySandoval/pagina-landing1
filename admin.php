@@ -1466,13 +1466,13 @@ if ($isLogged) {
 
           <div class="accordion-item">
             <h2 class="accordion-header m-0">
-              <button class="accordion-button collapsed" type="button"
+              <button class="accordion-button" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_config_panel"
-                aria-expanded="false" aria-controls="tools_config_panel">
+                aria-expanded="true" aria-controls="tools_config_panel">
                 <i class="fa-solid fa-sliders me-2"></i>Configuración General
               </button>
             </h2>
-            <div id="tools_config_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
+            <div id="tools_config_panel" class="accordion-collapse collapse show" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
                 <form method="post" enctype="multipart/form-data">
                   <input type="hidden" name="action" value="save_settings">

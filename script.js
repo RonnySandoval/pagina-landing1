@@ -176,6 +176,7 @@ if (contactForm) {
 const whatsappBtn = document.getElementById("contactWhatsappBtn");
 if (whatsappBtn && contactForm) {
   whatsappBtn.addEventListener("click", function () {
+    if (whatsappBtn.disabled) return;
     const phone = (contactForm.getAttribute("data-whatsapp") || "").replace(/\D+/g, "");
     if (phone === "") return;
 

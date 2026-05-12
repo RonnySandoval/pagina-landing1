@@ -343,6 +343,26 @@ h1 {
   transform: translateY(-2px);
 }
 
+.btn-whatsapp-disabled,
+.btn-whatsapp:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-whatsapp-disabled:hover,
+.btn-whatsapp:disabled:hover {
+  background: #25d366;
+  transform: none;
+}
+
+.contact-whatsapp-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+}
+
 .contact-actions {
   display: flex;
   gap: 0.75rem;
