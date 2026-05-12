@@ -11,10 +11,29 @@ jobs:
     name: FTP deploy
     runs-on: ubuntu-latest
     steps:
+      # Si este repo no tiene FTP_SERVER configurado (caso: repo plantilla),
+      # el workflow se ejecuta pero no despliega nada. Los repos hijos sí
+      # configuran sus secrets en Settings > Secrets and variables > Actions
+      # y este step les marca "configured=true" para activar los siguientes.
+      - name: Detect FTP configuration
+        id: ftp_check
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+        run: |
+          if [ -n "$FTP_SERVER" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "FTP_SERVER configurado; este repo desplegará al servidor."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "FTP_SERVER no está configurado; modo plantilla, se omite el deploy."
+          fi
+
       - name: Checkout
+        if: steps.ftp_check.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Sync via FTP
+        if: steps.ftp_check.outputs.configured == 'true'
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}

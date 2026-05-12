@@ -248,10 +248,25 @@ jobs:
     name: FTP deploy
     runs-on: ubuntu-latest
     steps:
+      - name: Detect FTP configuration
+        id: ftp_check
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+        run: |
+          if [ -n "$FTP_SERVER" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "FTP_SERVER configurado; este repo desplegará al servidor."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "FTP_SERVER no está configurado; modo plantilla, se omite el deploy."
+          fi
+
       - name: Checkout
+        if: steps.ftp_check.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Sync via FTP
+        if: steps.ftp_check.outputs.configured == 'true'
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
@@ -415,41 +430,88 @@ de login acepta ambas y rehashea automáticamente al primer login válido.
 tokens activos no son utilizables (se necesita el original). El usuario
 recibe el original solo por correo (canal lateral).
 
-## Rol dual de este repo (template + instancia)
+## Plantilla y repos hijos
 
-> Este repo cumple **dos roles a la vez** ahora mismo. Es importante
-> entenderlo antes de añadir más landings.
+Este repositorio puede usarse en uno de dos roles, indistinguibles a nivel
+de contenido pero distintos a nivel de configuración en GitHub:
 
-1. **Template reutilizable**: el código fuente sin datos personales.
-   Cualquiera puede clonarlo para arrancar una landing nueva con
-   `provision.ps1`.
-2. **Instancia activa de la landing principal**: este mismo repo tiene
-   un workflow de CI (`.github/workflows/deploy.yml`) que despliega por
-   FTP a un servidor concreto. Los valores reales de FTP_SERVER,
-   FTP_PASSWORD, etc. viven en *GitHub Secrets* del repo, no en el código.
-   Pero el resultado neto es que cada `git push` de este repo afecta a
-   una landing real específica.
+1. **Repo plantilla** (canónico): la fuente de código común para todas las
+   landings. **No tiene** secrets de FTP, por lo que `deploy.yml` se ejecuta
+   pero detecta "FTP_SERVER no está configurado" y termina sin desplegar
+   (modo plantilla, run verde sin acciones reales). Nunca apunta a un
+   servidor concreto.
+2. **Repo hijo** (instancia): copia del plantilla con sus propios secrets
+   de FTP en *Settings > Secrets and variables > Actions*. Cada `push` a
+   `main` despliega a **su** servidor. Cada landing real (Juan, Laura,
+   Maria, …) tiene su propio repo hijo.
 
-El **contenido del repo** (lo que clonas) es genérico y sin secretos. Lo
-que está atado a una instancia concreta es la **configuración de GitHub
-Actions** (los secrets) y, cosméticamente, el nombre del repo y el del
-workflow.
+El **contenido versionado** es idéntico en ambos casos; lo único que cambia
+es que el hijo añade los secrets `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD`
+y `FTP_SERVER_DIR`, y que el workflow detecta esa diferencia automáticamente.
+
+### Flujo de trabajo: template + hijos
+
+Cada repo hijo añade el plantilla como remote `upstream`. Eso te permite:
+
+- **Trabajo normal en una landing:** `git add … && git commit && git push`
+  (a `origin`, que despliega a su servidor). El plantilla no se entera.
+- **Propagar una mejora a varias landings:** la haces en el plantilla, push.
+  Luego en cada hijo, **cuando tú decidas**:
+
+  ```powershell
+  git fetch upstream
+  git log HEAD..upstream/main --oneline      # preview de qué traería
+  git merge upstream/main
+  git push                                   # despliega solo a este hijo
+  ```
+
+- **Llevar un parche puntual de una landing a otra** (cherry-pick entre
+  hijos, p. ej. un fix que hiciste en Laura hace 20 días y ahora quieres en
+  Juan):
+
+  ```powershell
+  cd pagina-juan
+  git remote add laura https://github.com/<usuario>/<repo-de-laura>.git
+  git fetch laura
+  git cherry-pick <hash-del-commit>
+  git push
+  ```
+
+| Operación                                       | Comando clave                                                          |
+| ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Preview de cambios de la plantilla              | `git fetch upstream && git log HEAD..upstream/main --oneline`          |
+| Aplicar todos los cambios de la plantilla       | `git merge upstream/main`                                              |
+| Aplicar **un solo** commit de la plantilla      | `git fetch upstream && git cherry-pick <hash>`                         |
+| Llevar un parche de otra landing                | `git remote add <nombre> <url> && git fetch <nombre> && git cherry-pick <hash>` |
+
+Archivos que **nunca viajan** en estos merges (siguen en `.gitignore`):
+`db_config.php`, `mail_config.php`, `admin_bootstrap.php`, `app_config.php`,
+`uploads/`. La BD MySQL de cada hijo tampoco se toca: el contenido editable
+desde el admin sigue siendo exclusivo de esa landing.
 
 ### Modelos para escalar a varias landings
 
 | Modelo | Cómo se hace | Cuándo usarlo |
 | ------ | ------------ | ------------- |
-| **C — Provision local + FTP manual** | `provision.ps1` crea `pagina-juan/` local; subes a hosting por FTP a mano. La carpeta no es repo. | Empezando, 1-2 landings. Nada de CI por landing. |
-| **A — Un repo por landing** | Cada `pagina-juan/` tiene su propio repo en GitHub con su propio `.github/workflows/deploy.yml` y sus propios secrets apuntando al servidor de Juan. | Cuando una landing necesita auto-deploy regular o varios developers la editan. |
-| **B — Monorepo con varias landings** | Un solo repo con `pagina1/`, `pagina-juan/`, etc. Workflow con matrix que despliega cada carpeta a su FTP_SERVER_DIR. | Cuando tienes muchas landings y quieres una sola consola de CI. |
+| **A — Plantilla + repo por landing** *(recomendado)* | Un repo plantilla canónico. Cada landing (`paginajuan`, `paginalaura`, …) tiene su propio repo hijo con secrets de FTP propios; se sincronizan con la plantilla vía `upstream`. | Caso por defecto. Mejoras propagables, cada landing despliega sola, parches cruzables con `cherry-pick`. |
+| **B — Monorepo con matriz** | Un solo repo con `landings/juan/`, `landings/maria/`, etc. Workflow con `strategy: matrix` que despliega cada carpeta a su FTP_SERVER_DIR. | Si tienes muchas landings y prefieres una sola consola de CI. Requiere refactor del layout. |
+| **C — Provision local + FTP manual** | `provision.ps1` crea `pagina-juan/` local; subes a hosting por FTP a mano. La carpeta no es repo. | Pruebas, demos rápidas, sandbox. No tiene CI ni historial. |
 
-Hoy estamos en **Modelo C** (más una instancia "modelo A residual" para
-la landing principal: el repo actual). Cuando aparezca el primer cliente
-que necesite CI, lo más simple es:
+Cuando aparezca un cliente que necesite CI:
 
-1. Provisionar local con `provision.ps1`.
-2. Dentro de `pagina-juan/`: `git init`, crear repo nuevo en GitHub,
-   `git remote add origin <nuevo-repo>`, `git push`.
-3. En el repo nuevo, configurar sus propios GitHub Secrets de FTP.
-4. (Opcional) borrar `.github/workflows/deploy.yml` del clon si no
-   quieres CI para esa landing.
+1. **En GitHub web**: crea un repo nuevo (`paginajuan`, vacío, sin README).
+2. **En local**: provision con `provision.ps1`, luego desde `pagina-juan/`:
+
+   ```powershell
+   git init
+   git remote add origin https://github.com/<usuario>/paginajuan.git
+   git remote add upstream https://github.com/<usuario>/<repo-plantilla>.git
+   git add -A
+   git commit -m "Initial commit (clonado de plantilla)"
+   git push -u origin main
+   ```
+
+3. **En el repo nuevo** (`paginajuan` en GitHub): añade los Secrets
+   `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_SERVER_DIR` apuntando
+   al hosting de Juan. El workflow detectará que `FTP_SERVER` ya está y
+   desplegará en el siguiente push.
