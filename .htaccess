@@ -1,0 +1,14 @@
+# Bloquea acceso por navegador a archivos con credenciales.
+# PHP puede seguir usándolos con require/include (no pasan por HTTP).
+<Files "mail_config.php">
+  Require all denied
+</Files>
+<Files "db.php">
+  Require all denied
+</Files>
+<Files "mail_debug.log">
+  Require all denied
+</Files>
+<Files "contact_send_trace.log">
+  Require all denied
+</Files>
