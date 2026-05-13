@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS admin_password_resets (
   INDEX idx_admin_password_resets_expires (expires_at)
 )");
 
+$conn->query("
+CREATE TABLE IF NOT EXISTS clients (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(180) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  display_name VARCHAR(180) NOT NULL DEFAULT '',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_clients_active (is_active)
+)");
+
 $adminsPasswordLength = 255;
 $adminsPasswordColumnResult = $conn->query("
 SELECT CHARACTER_MAXIMUM_LENGTH AS max_len
@@ -209,10 +220,15 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   nombre VARCHAR(180) NOT NULL,
   email VARCHAR(180) NOT NULL,
   servicio VARCHAR(180) NOT NULL,
+  subject VARCHAR(200) NOT NULL DEFAULT '',
   mensaje TEXT NOT NULL,
   sent_to VARCHAR(180) NOT NULL,
   is_read TINYINT(1) NOT NULL DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  client_id INT NULL DEFAULT NULL,
+  in_reply_to INT NULL DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_messages_client (client_id),
+  INDEX idx_contact_messages_in_reply (in_reply_to)
 )");
 
 $messagesHasIsRead = false;
@@ -229,6 +245,56 @@ if ($messagesIsReadColumnResult && $messagesIsReadColumnResult->num_rows === 1) 
 }
 if (!$messagesHasIsRead) {
     $conn->query("ALTER TABLE contact_messages ADD COLUMN is_read TINYINT(1) NOT NULL DEFAULT 0 AFTER sent_to");
+}
+
+$messagesHasClientId = false;
+$messagesClientIdColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'contact_messages'
+  AND COLUMN_NAME = 'client_id'
+LIMIT 1
+");
+if ($messagesClientIdColumnResult && $messagesClientIdColumnResult->num_rows === 1) {
+    $messagesHasClientId = true;
+}
+if (!$messagesHasClientId) {
+    $conn->query("ALTER TABLE contact_messages ADD COLUMN client_id INT NULL DEFAULT NULL AFTER is_read");
+    $conn->query("CREATE INDEX idx_contact_messages_client ON contact_messages (client_id)");
+}
+
+$messagesHasInReplyTo = false;
+$messagesInReplyToColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'contact_messages'
+  AND COLUMN_NAME = 'in_reply_to'
+LIMIT 1
+");
+if ($messagesInReplyToColumnResult && $messagesInReplyToColumnResult->num_rows === 1) {
+    $messagesHasInReplyTo = true;
+}
+if (!$messagesHasInReplyTo) {
+    $conn->query("ALTER TABLE contact_messages ADD COLUMN in_reply_to INT NULL DEFAULT NULL AFTER client_id");
+    $conn->query("CREATE INDEX idx_contact_messages_in_reply ON contact_messages (in_reply_to)");
+}
+
+$messagesHasSubject = false;
+$messagesSubjectColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'contact_messages'
+  AND COLUMN_NAME = 'subject'
+LIMIT 1
+");
+if ($messagesSubjectColumnResult && $messagesSubjectColumnResult->num_rows === 1) {
+    $messagesHasSubject = true;
+}
+if (!$messagesHasSubject) {
+    $conn->query("ALTER TABLE contact_messages ADD COLUMN subject VARCHAR(200) NOT NULL DEFAULT '' AFTER servicio");
 }
 
 $conn->query("
@@ -248,9 +314,26 @@ CREATE TABLE IF NOT EXISTS contact_whatsapp_clicks (
   servicio VARCHAR(180) NOT NULL DEFAULT '',
   mensaje TEXT NOT NULL,
   composed_text TEXT NOT NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_contact_whatsapp_clicks_created (created_at)
 )");
+
+$waClicksHasIsRead = false;
+$waClicksIsReadColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'contact_whatsapp_clicks'
+  AND COLUMN_NAME = 'is_read'
+LIMIT 1
+");
+if ($waClicksIsReadColumnResult && $waClicksIsReadColumnResult->num_rows === 1) {
+    $waClicksHasIsRead = true;
+}
+if (!$waClicksHasIsRead) {
+    $conn->query("ALTER TABLE contact_whatsapp_clicks ADD COLUMN is_read TINYINT(1) NOT NULL DEFAULT 0 AFTER composed_text");
+}
 
 $conn->query("
 CREATE TABLE IF NOT EXISTS service_gallery (

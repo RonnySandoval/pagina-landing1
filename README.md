@@ -12,6 +12,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - [Crear una landing nueva con `provision.ps1`](#crear-una-landing-nueva-con-provisionps1)
 - [Borrar una landing local con `deprovision.ps1`](#borrar-una-landing-local-con-deprovisionps1)
 - [Despliegue a producción](#despliegue-a-producción)
+- [Portal de clientes](#portal-de-clientes)
 - [Recuperación de clave del admin](#recuperación-de-clave-del-admin)
 - [Estructura de archivos](#estructura-de-archivos)
 - [Decisiones de arquitectura](#decisiones-de-arquitectura)
@@ -27,7 +28,8 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
   galería, mensajes recibidos del formulario de contacto).
 - Un esqueleto que puedes clonar para crear varias landings independientes,
   cada una con su BD y su admin propios.
-- Single-tenant por instalación: una carpeta + una BD = una landing.
+- Un **portal de clientes** opcional: registro e inicio de sesión en la misma
+  landing (`index.php#area-cliente`), sesión aislada del admin (ver [Portal de clientes](#portal-de-clientes)).
 
 **No es:**
 
@@ -348,6 +350,32 @@ Si el repo tiene auto-deploy por FTP (`.github/workflows/deploy.yml`), cada
 solo distinto `FTP_SERVER_DIR` si compartes el mismo FTP). Para un monorepo,
 haría falta un workflow con matrix u otros jobs (no incluido por defecto).
 
+## Portal de clientes
+
+Cada landing puede tener **cuentas de cliente** (tabla `clients`). El visitante se **registra
+e inicia sesión en la propia landing**, sección **Área de clientes** (`#area-cliente` en
+`index.php`): es la misma web pública, con bloques extra cuando hay sesión (por ejemplo
+datos pre-rellenados en el formulario de contacto y el panel **Mis mensajes** con el historial
+de contacto, **seguimientos** enlazados (`in_reply_to` en `contact_messages`) y las respuestas que deje el admin). La sesión usa otra cookie y nombre
+(`client_session_*` en `client_portal_lib.php`), con el mismo aislamiento por carpeta que el admin.
+
+| Archivo / ruta | Uso |
+| --- | --- |
+| `index.php` + `#area-cliente` | Registro, login, mensajes (nueva consulta y seguimientos) y vista “modo cliente” en la misma página. |
+
+En el panel (**admin.php** → bandeja lateral **Mensajes**), las entradas se **agrupan por cliente** (`client_id`) o, si el mensaje no llevaba sesión de portal, **por correo** del visitante; dentro de cada grupo se muestran los envíos en orden de tiempo.
+| `client_login.php` / `client_dashboard.php` | Redirigen a la landing (compatibilidad con enlaces antiguos). |
+| `client_logout.php` | Cierra la sesión de cliente y vuelve a la landing. |
+
+El **administrador** no crea usuarios manualmente: solo **modera** (activar/desactivar o
+eliminar) en el panel → acordeón **Portal de clientes**. La URL del portal también aparece
+en **Rutas** (`app_client_portal_url()` en `app_urls.php`).
+
+Política de clave al registrarse: al menos **10 caracteres**, **mayúscula**, **minúscula** y **número**
+(igual que la recuperación de clave del admin). Los clientes **no** tienen “olvidé mi clave” en esta versión.
+
+La tabla `clients` se crea con `db.php`; también figura en `setup.sql` para import manual.
+
 ## Recuperación de clave del admin
 
 Cada landing tiene su propio flujo de recuperación, independiente:
@@ -376,10 +404,14 @@ para no revelar qué correos son admins.
 
 ```
 pag-template/
-├── admin.php                  Panel de admin completo (login, settings, servicios, mensajes, reset).
-├── index.php                  Landing pública: hero + sobre + servicios + contacto.
-├── app_urls.php               URLs públicas (landing y admin); respeta app_config opcional.
+├── admin.php                  Panel de admin (configuración, servicios, mensajes, portal de clientes, reset).
+├── index.php                  Landing pública + registro/login clientes (#area-cliente) y contacto.
+├── app_urls.php               URLs públicas (landing, admin, portal clientes); respeta app_config opcional.
 ├── send.php                   Endpoint del formulario de contacto.
+├── client_portal_lib.php      Sesión, registro, login y helpers del portal de clientes.
+├── client_login.php           Redirección a la landing (#area-cliente); compatibilidad.
+├── client_dashboard.php       Redirección a la landing (#area-cliente); compatibilidad.
+├── client_logout.php          Cierre de sesión de cliente.
 ├── db.php                     Conexión + auto-init del esquema + bootstrap del admin.
 ├── smtp_mail.php              Cliente SMTP minimalista (sin dependencias).
 ├── setup.sql                  Esquema + seed de referencia (import opcional; ver cabecera del archivo).
@@ -409,11 +441,12 @@ Tablas en MySQL:
 | Tabla                    | Para qué                                    |
 | ------------------------ | ------------------------------------------- |
 | `admins`                 | Cuentas del panel admin (1 por landing).    |
+| `clients`                | Cuentas del portal de clientes (varias por landing). |
 | `admin_password_resets`  | Tokens de recuperación de clave (sha256).   |
 | `site_settings`          | Textos del sitio (1 fila, id=1).            |
 | `services`               | Cards de servicios mostrados en la landing. |
 | `service_gallery`        | Imágenes adicionales por servicio.          |
-| `contact_messages`       | Mensajes recibidos por el formulario.       |
+| `contact_messages`       | Mensajes del formulario y seguimientos del cliente; `client_id` si hay sesión; `in_reply_to` enlaza un seguimiento a un mensaje anterior. |
 
 ## Decisiones de arquitectura
 
@@ -421,6 +454,10 @@ Tablas en MySQL:
 independiente. Pros: aislamiento total, mismo código simple, escalable
 manualmente. Contras: no hay registro self-service de usuarios; cada
 landing es provisionada por el dueño del proyecto.
+
+**Portal de clientes:** varias filas en `clients` por landing; el alta la hace el visitante
+en la landing y el admin solo modera. Sesión y rutas propias (`client_session_*`), sin mezclar
+con el panel admin; sigue siendo single-tenant (un sitio por instalación).
 
 **Por qué no multi-tenant compartido (todos en una BD con `site_id`):**
 implicaba reescribir todas las queries de `admin.php` e `index.php` para

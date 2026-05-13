@@ -37,8 +37,86 @@ function h(string $value): string {
 }
 
 /**
+ * Hilos de contacto por raíz de in_reply_to (misma lógica que el área cliente).
+ *
+ * @param array<int, list<array<string, mixed>>> $repliesByMessageId
+ * @return list<array{root_id:int, messages:list<array<string, mixed>>, latest_ts:int, has_admin_reply:bool}>
+ */
+function admin_group_messages_threads(array $messages, array $repliesByMessageId): array
+{
+    $byId = [];
+    foreach ($messages as $m) {
+        $id = (int)($m["id"] ?? 0);
+        if ($id > 0) {
+            $byId[$id] = $m;
+        }
+    }
+    $buckets = [];
+    foreach ($messages as $m) {
+        $mid = (int)($m["id"] ?? 0);
+        if ($mid <= 0) {
+            continue;
+        }
+        $root = $mid;
+        $p = (int)($m["in_reply_to"] ?? 0);
+        $guard = 0;
+        while ($p > 0 && isset($byId[$p]) && $guard++ < 64) {
+            $root = $p;
+            $p = (int)($byId[$p]["in_reply_to"] ?? 0);
+        }
+        if (!isset($buckets[$root])) {
+            $buckets[$root] = [];
+        }
+        $buckets[$root][] = $m;
+    }
+    $threads = [];
+    foreach ($buckets as $rootId => $rows) {
+        usort($rows, static function (array $a, array $b): int {
+            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
+            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
+            if ($ta !== $tb) {
+                return $ta <=> $tb;
+            }
+            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
+        });
+        $latestTs = 0;
+        foreach ($rows as $r) {
+            $t = strtotime((string)($r["created_at"] ?? "")) ?: 0;
+            if ($t > $latestTs) {
+                $latestTs = $t;
+            }
+        }
+        $hasAdmin = false;
+        foreach ($rows as $r) {
+            $rid = (int)($r["id"] ?? 0);
+            if ($rid > 0 && !empty($repliesByMessageId[$rid])) {
+                $hasAdmin = true;
+                break;
+            }
+        }
+        $threads[] = [
+            "root_id" => (int)$rootId,
+            "messages" => $rows,
+            "latest_ts" => $latestTs,
+            "has_admin_reply" => $hasAdmin,
+        ];
+    }
+    usort($threads, static function (array $a, array $b): int {
+        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
+    });
+
+    return $threads;
+}
+
+/**
  * Correo al visitante (respuesta desde el admin). Reply-To = correo receptor del sitio.
  * El From SMTP se toma de mail_config (from_email o username si es correo).
+ *
+ * Si host, usuario, contraseña y remitente están bien configurados, se usa SMTP
+ * aunque `use_smtp` sea false (útil cuando solo el formulario público dejaba mail()
+ * y las respuestas del panel necesitan el mismo servidor SMTP).
+ *
+ * @return array{ok: bool, code: string} code: ok | smtp_failed | php_mail_failed | bad_config
  */
 function admin_send_visitor_reply_mail(
     array $mailConfig,
@@ -47,44 +125,62 @@ function admin_send_visitor_reply_mail(
     string $bodyPlain,
     string $replyToEmail,
     string $fromDisplayName
-): bool {
+): array {
     $replyToEmail = trim($replyToEmail);
     $fromDisplayName = trim($fromDisplayName);
     $fromEmail = mail_config_resolve_smtp_from($mailConfig);
     if ($replyToEmail === "" || !filter_var($replyToEmail, FILTER_VALIDATE_EMAIL)) {
-        return false;
+        return ["ok" => false, "code" => "bad_config"];
     }
     if ($fromEmail === "" || !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
-        return false;
+        return ["ok" => false, "code" => "bad_config"];
     }
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
-        return false;
+        return ["ok" => false, "code" => "bad_config"];
     }
-    $useSmtp = !empty($mailConfig["use_smtp"])
-        && !empty($mailConfig["host"])
-        && !empty($mailConfig["username"])
-        && !empty($mailConfig["password"])
-        && $fromEmail !== "";
-    $smtpReady = $useSmtp;
+
+    $host = trim((string)($mailConfig["host"] ?? ""));
+    $user = trim((string)($mailConfig["username"] ?? ""));
+    $pass = preg_replace('/\s+/', '', (string)($mailConfig["password"] ?? ""));
+    $smtpFullyConfigured = $host !== "" && $user !== "" && $pass !== "";
+
+    // Respuestas del admin: SMTP si la config está completa (no dependemos solo de use_smtp).
+    $smtpReady = $smtpFullyConfigured && $fromEmail !== "";
+
     if ($smtpReady) {
         $smtpCfg = $mailConfig;
         $smtpCfg["from_email"] = $fromEmail;
         $smtpCfg["from_name"] = $fromDisplayName;
 
         $ok = send_mail_smtp($smtpCfg, $to, $subject, $bodyPlain, $replyToEmail);
-        if (!$ok && !empty($mailConfig["debug"]) && !empty($mailConfig["debug_log"])) {
+        if ($ok) {
+            return ["ok" => true, "code" => "smtp"];
+        }
+        if (!empty($mailConfig["debug"]) && !empty($mailConfig["debug_log"])) {
             smtp_debug_log($mailConfig, "Respuesta admin: envio SMTP fallo (To=" . $to . ")");
         }
+        $fromHeaderLine = smtp_format_from_header($fromDisplayName !== "" ? $fromDisplayName : "Web", $fromEmail);
+        $headers = "From: " . $fromHeaderLine . "\r\n";
+        $headers .= "Reply-To: " . $replyToEmail . "\r\n";
+        $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+        $headers .= "MIME-Version: 1.0\r\n";
+        $mailOk = (bool)@mail($to, $subject, $bodyPlain, $headers);
+        if ($mailOk) {
+            return ["ok" => true, "code" => "php_mail_fallback"];
+        }
 
-        return $ok;
+        return ["ok" => false, "code" => "smtp_failed"];
     }
+
     $fromHeaderLine = smtp_format_from_header($fromDisplayName !== "" ? $fromDisplayName : "Web", $fromEmail);
     $headers = "From: " . $fromHeaderLine . "\r\n";
     $headers .= "Reply-To: " . $replyToEmail . "\r\n";
     $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
     $headers .= "MIME-Version: 1.0\r\n";
 
-    return @mail($to, $subject, $bodyPlain, $headers);
+    $mailOk = (bool)@mail($to, $subject, $bodyPlain, $headers);
+
+    return $mailOk ? ["ok" => true, "code" => "php_mail"] : ["ok" => false, "code" => "php_mail_failed"];
 }
 
 function admin_ajax_trace(string $message): void
@@ -501,6 +597,8 @@ if ($isLogged) {
     }
 }
 
+$adminInboxWide = $isLogged && isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1";
+
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings") {
     $personName = trim($_POST["person_name"] ?? "");
     $brandName = trim($_POST["brand_name"] ?? "");
@@ -648,6 +746,32 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
     }
 }
 
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_delete") {
+    $cid = (int)($_POST["client_id"] ?? 0);
+    if ($cid > 0) {
+        $del = $conn->prepare("DELETE FROM clients WHERE id = ?");
+        if ($del !== false) {
+            $del->bind_param("i", $cid);
+            $del->execute();
+            $del->close();
+            $message = "Cliente eliminado.";
+        }
+    }
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_active") {
+    $cid = (int)($_POST["client_id"] ?? 0);
+    if ($cid > 0) {
+        $tog = $conn->prepare("UPDATE clients SET is_active = IF(is_active = 1, 0, 1) WHERE id = ?");
+        if ($tog !== false) {
+            $tog->bind_param("i", $cid);
+            $tog->execute();
+            $tog->close();
+            $message = "Estado del cliente actualizado.";
+        }
+    }
+}
+
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "add_service") {
     $title = trim($_POST["title"] ?? "");
     $description = trim($_POST["description"] ?? "");
@@ -783,19 +907,12 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_service
     }
 }
 
-if (isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = false;
     $affected = 0;
     $err = "";
-    admin_ajax_trace(sprintf(
-        "mark_message_read recibido id=%d ajax=%s logged=%s post_keys=%s",
-        $messageId,
-        $isAjax ? "1" : "0",
-        $isLogged ? "1" : "0",
-        implode(",", array_keys($_POST))
-    ));
     if (!$isLogged) {
         $err = "no_session";
     } elseif ($messageId <= 0) {
@@ -814,12 +931,6 @@ if (isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
             $stmt->close();
         }
     }
-    admin_ajax_trace(sprintf(
-        "mark_message_read resultado ok=%s affected=%d err=%s",
-        $ok ? "1" : "0",
-        $affected,
-        $err === "" ? "-" : $err
-    ));
     if ($isAjax) {
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
@@ -904,6 +1015,66 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_whatsap
     admin_redirect_after_action();
 }
 
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_read") {
+    $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
+    $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
+    $ok = false;
+    if ($whatsappClickId > 0) {
+        $wst = $conn->prepare("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE id = ?");
+        if ($wst !== false) {
+            $wst->bind_param("i", $whatsappClickId);
+            $ok = $wst->execute();
+            $wst->close();
+        }
+    }
+    if ($isAjax) {
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["ok" => (bool)$ok, "id" => $whatsappClickId]);
+        exit;
+    }
+    admin_set_flash("success", "Marcado como leído.");
+    admin_redirect_after_action();
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_unread") {
+    $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
+    $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
+    $ok = false;
+    if ($whatsappClickId > 0) {
+        $wst = $conn->prepare("UPDATE contact_whatsapp_clicks SET is_read = 0 WHERE id = ?");
+        if ($wst !== false) {
+            $wst->bind_param("i", $whatsappClickId);
+            $ok = $wst->execute();
+            $wst->close();
+        }
+    }
+    if ($isAjax) {
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["ok" => (bool)$ok, "id" => $whatsappClickId]);
+        exit;
+    }
+    admin_set_flash("success", "Marcado como sin leer.");
+    admin_redirect_after_action();
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_read") {
+    $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
+    $ok = (bool)$conn->query("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE is_read = 0");
+    if ($isAjax) {
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["ok" => $ok]);
+        exit;
+    }
+    admin_set_flash("success", "Todos los clics de WhatsApp marcados como leídos.");
+    admin_redirect_after_action();
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_unread") {
+    $conn->query("UPDATE contact_whatsapp_clicks SET is_read = 0 WHERE is_read = 1");
+    admin_set_flash("success", "Todos los clics de WhatsApp marcados como sin leer.");
+    admin_redirect_after_action();
+}
+
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $replyBody = trim((string)($_POST["reply_body"] ?? ""));
@@ -919,7 +1090,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         admin_set_flash("error", "La respuesta es demasiado larga.");
         admin_redirect_after_action();
     }
-    $stmt = $conn->prepare("SELECT id, nombre, email, servicio, mensaje, created_at FROM contact_messages WHERE id = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT id, nombre, email, servicio, subject, mensaje, created_at, in_reply_to FROM contact_messages WHERE id = ? LIMIT 1");
     if ($stmt === false) {
         admin_set_flash("error", "No se pudo cargar el mensaje.");
         admin_redirect_after_action();
@@ -979,9 +1150,13 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
     }
     $visitorNombre = trim((string)($msgRow["nombre"] ?? ""));
     $servicio = trim((string)($msgRow["servicio"] ?? ""));
+    $msgSubject = trim((string)($msgRow["subject"] ?? ""));
     $mensajeOriginal = trim((string)($msgRow["mensaje"] ?? ""));
     $createdOriginal = (string)($msgRow["created_at"] ?? "");
     $subject = "Respuesta a tu mensaje de contacto";
+    if ($msgSubject !== "") {
+        $subject = "Re: " . $msgSubject;
+    }
     if ($brandName !== "") {
         $subject .= " (" . $brandName . ")";
     }
@@ -989,9 +1164,17 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
     $body .= "Gracias por escribirnos. Respondemos a continuacion:\n\n";
     $body .= $replyBody . "\n\n";
     $body .= "---\nTu mensaje (" . $createdOriginal . ")\n";
+    if ($msgSubject !== "") {
+        $body .= "Asunto: " . $msgSubject . "\n";
+    }
     $body .= "Servicio: " . $servicio . "\n\n" . $mensajeOriginal . "\n\n---\n";
-    $body .= "Puedes responder a este correo y llegara a nuestra bandeja.\n";
-    $sent = admin_send_visitor_reply_mail(
+    $inReplyRow = isset($msgRow["in_reply_to"]) ? (int)$msgRow["in_reply_to"] : 0;
+    if ($inReplyRow > 0) {
+        $body .= "Nota: este envío es un seguimiento enlazado al mensaje n.º " . $inReplyRow . " en el panel.\n\n";
+    }
+    $body .= "Puedes responder a este correo y llegara a nuestra bandeja.\n\n";
+    $body .= app_mail_plain_text_links_footer("visitor_reply");
+    $sendResult = admin_send_visitor_reply_mail(
         $mailConfig,
         $visitorEmail,
         $subject,
@@ -999,13 +1182,32 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         $contactEmail,
         $fromDisplayName
     );
+    $sent = (bool)($sendResult["ok"] ?? false);
     if (!$sent) {
-        $traceLine = date("c") . " admin_reply fallo To=" . $visitorEmail . " smtp=" . (!empty($mailConfig["use_smtp"]) ? "1" : "0") . "\n";
+        $traceLine = date("c") . " admin_reply fallo To=" . $visitorEmail
+            . " code=" . ($sendResult["code"] ?? "?")
+            . " smtp_cfg=" . (!empty($mailConfig["host"]) && trim((string)($mailConfig["username"] ?? "")) !== "" ? "1" : "0")
+            . "\n";
         @file_put_contents(__DIR__ . "/contact_send_trace.log", $traceLine, FILE_APPEND | LOCK_EX);
-        admin_set_flash(
-            "error",
-            "No se pudo enviar el correo. Activa use_smtp en mail_config, revisa host/usuario/contraseña de aplicacion y que username o from_email sea un correo valido. Con Gmail deben coincidir. Activa debug y mira mail_debug.log; revisa spam del destinatario."
-        );
+        $code = (string)($sendResult["code"] ?? "");
+        if ($code === "smtp_failed") {
+            admin_set_flash(
+                "error",
+                "SMTP falló (revisa la última línea [smtp] en contact_send_trace.log en esta carpeta). Con Gmail no uses la clave de la cuenta: crea una contraseña de aplicación (Google → Seguridad → verificación en 2 pasos → contraseñas de aplicaciones). username y from_email deben ser ese mismo Gmail. Si el error habla de certificado SSL en XAMPP, en mail_config puedes probar temporalmente \"smtp_relax_tls_verify\" => true (solo en local)."
+            );
+        } elseif ($code === "php_mail_failed") {
+            admin_set_flash(
+                "error",
+                "Falta configuración SMTP completa en mail_config (host, usuario, contraseña y remitente válido), y la función mail() del servidor también falló (habitual en XAMPP sin MTA). Rellena esos datos o revisa el servidor de correo."
+            );
+        } elseif ($code === "bad_config") {
+            admin_set_flash("error", "Correo del visitante, remitente SMTP o correo de contacto del sitio no válido. Revisa Configuración general y mail_config.");
+        } else {
+            admin_set_flash(
+                "error",
+                "No se pudo enviar el correo. Revisa mail_config (host, usuario, contraseña de aplicación, from_email) y el log de depuración si está activo."
+            );
+        }
         admin_redirect_after_action();
     }
     $ins = $conn->prepare("INSERT INTO contact_message_replies (contact_message_id, body) VALUES (?, ?)");
@@ -1066,7 +1268,7 @@ $contactMessages = [];
 $contactMessagesUnread = 0;
 if ($isLogged) {
     $contactMessagesQuery = $conn->query(
-        "SELECT id, nombre, email, servicio, mensaje, sent_to, is_read, created_at
+        "SELECT id, nombre, email, servicio, subject, mensaje, sent_to, is_read, created_at, client_id, in_reply_to
          FROM contact_messages
          ORDER BY created_at DESC, id DESC
          LIMIT 100"
@@ -1109,9 +1311,10 @@ if ($isLogged && count($contactMessages) > 0) {
 }
 
 $whatsappClicks = [];
+$whatsappClicksUnread = 0;
 if ($isLogged) {
     $whatsappClicksQuery = $conn->query(
-        "SELECT id, nombre, email, servicio, mensaje, composed_text, created_at
+        "SELECT id, nombre, email, servicio, mensaje, composed_text, created_at, is_read
          FROM contact_whatsapp_clicks
          ORDER BY created_at DESC, id DESC
          LIMIT 100"
@@ -1119,9 +1322,122 @@ if ($isLogged) {
     if ($whatsappClicksQuery) {
         while ($waRow = $whatsappClicksQuery->fetch_assoc()) {
             $whatsappClicks[] = $waRow;
+            if ((int)($waRow["is_read"] ?? 0) === 0) {
+                $whatsappClicksUnread++;
+            }
         }
     }
 }
+
+$portalClients = [];
+if ($isLogged) {
+    $pcQuery = $conn->query("SELECT id, email, display_name, is_active, created_at FROM clients ORDER BY id ASC");
+    if ($pcQuery) {
+        while ($pcRow = $pcQuery->fetch_assoc()) {
+            $portalClients[] = $pcRow;
+        }
+    }
+}
+
+/** Agrupa mensajes de contacto: por cuenta de cliente o, si no, por correo. */
+$contactMessageGroups = [];
+if ($isLogged && count($contactMessages) > 0) {
+    $clientDirectoryById = [];
+    foreach ($portalClients as $pcRow) {
+        $clientDirectoryById[(int)$pcRow["id"]] = $pcRow;
+    }
+    $groupsAccum = [];
+    foreach ($contactMessages as $row) {
+        $cid = (int)($row["client_id"] ?? 0);
+        if ($cid > 0) {
+            $gkey = "c:" . $cid;
+        } else {
+            $em = strtolower(trim((string)($row["email"] ?? "")));
+            $gkey = "e:" . ($em !== "" ? $em : "__sin_correo__");
+        }
+        if (!isset($groupsAccum[$gkey])) {
+            $groupsAccum[$gkey] = [
+                "key" => $gkey,
+                "slug" => "h" . substr(md5($gkey), 0, 14),
+                "type" => $cid > 0 ? "client" : "email",
+                "client_id" => $cid > 0 ? $cid : 0,
+                "anchor_email" => trim((string)($row["email"] ?? "")),
+                "messages" => [],
+                "unread" => 0,
+                "latest_ts" => 0,
+            ];
+        }
+        $groupsAccum[$gkey]["messages"][] = $row;
+        if ((int)($row["is_read"] ?? 0) === 0) {
+            $groupsAccum[$gkey]["unread"]++;
+        }
+        $ts = strtotime((string)($row["created_at"] ?? "")) ?: 0;
+        if ($ts > $groupsAccum[$gkey]["latest_ts"]) {
+            $groupsAccum[$gkey]["latest_ts"] = $ts;
+        }
+    }
+    foreach ($groupsAccum as &$g) {
+        usort($g["messages"], static function (array $a, array $b): int {
+            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
+            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
+            if ($ta !== $tb) {
+                return $ta <=> $tb;
+            }
+            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
+        });
+    }
+    unset($g);
+    $contactMessageGroups = array_values($groupsAccum);
+    usort($contactMessageGroups, static function (array $a, array $b): int {
+        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
+    });
+    foreach ($contactMessageGroups as &$g) {
+        if ($g["type"] === "client") {
+            $pid = (int)$g["client_id"];
+            $cl = $clientDirectoryById[$pid] ?? null;
+            $g["head_badge"] = "Cliente";
+            if ($cl !== null) {
+                $dn = trim((string)($cl["display_name"] ?? ""));
+                $g["head_title"] = $dn !== "" ? $dn : (string)$cl["email"];
+                $g["head_email"] = (string)$cl["email"];
+            } else {
+                $first = $g["messages"][0] ?? [];
+                $g["head_title"] = "Cliente n.º " . $pid;
+                $g["head_email"] = (string)($first["email"] ?? "");
+            }
+            $g["head_sub"] = "";
+        } else {
+            $first = $g["messages"][0] ?? [];
+            $nm = trim((string)($first["nombre"] ?? ""));
+            $em = (string)($g["anchor_email"] ?? "");
+            $g["head_badge"] = "Correo";
+            $g["head_title"] = $em !== "" ? $em : "Sin correo";
+            $g["head_email"] = $em;
+            if ($nm !== "") {
+                $g["head_sub"] = $nm;
+            } else {
+                $g["head_sub"] = "";
+            }
+        }
+        $g["msg_count"] = count($g["messages"]);
+        $g["threads"] = admin_group_messages_threads($g["messages"], $contactRepliesByMessageId);
+        $g["conv_count"] = count($g["threads"]);
+        $ts = (int)($g["latest_ts"] ?? 0);
+        $g["latest_label"] = "";
+        if ($ts > 0) {
+            $g["latest_label"] = date("d/m H:i", $ts);
+        }
+    }
+    unset($g);
+}
+
+$waSideTotal = count($whatsappClicks);
+$waSideUnread = $whatsappClicksUnread;
+$waSideCounterClass = $waSideUnread > 0 ? "text-bg-warning" : "text-bg-secondary";
+$waSideCounterTitle = $waSideUnread > 0
+    ? sprintf("%d sin leer de %d", $waSideUnread, $waSideTotal)
+    : sprintf("%d en total", $waSideTotal);
+
 ?>
 <!doctype html>
 <html lang="es">
@@ -1705,12 +2021,26 @@ if ($isLogged) {
       border-left: 4px solid #ffc107;
       box-shadow: 0 0 0 1px color-mix(in srgb, #ffc107 35%, transparent);
     }
+    .admin-inbox-threads .message-row.is-unread {
+      border-left: 4px solid #ffc107;
+      box-shadow: 0 0 0 1px color-mix(in srgb, #ffc107 35%, transparent);
+    }
     .admin-messages-accordion .message-row.is-unread .accordion-button,
     .admin-messages-accordion .message-row.is-unread .message-header-row {
       background-color: color-mix(in srgb, #ffc107 14%, var(--surface));
     }
+    .admin-inbox-threads .message-row.is-unread .admin-msg-turn-toolbar {
+      background-color: color-mix(in srgb, #ffc107 14%, var(--surface));
+    }
     .admin-messages-accordion .message-row.is-unread .accordion-button {
       font-weight: 700;
+    }
+    .admin-inbox-threads .message-row.is-unread .admin-msg-turn-head {
+      font-weight: 700;
+    }
+    .admin-inbox-threads .message-row.is-unread .admin-msg-bubble--visitor {
+      box-shadow: inset 3px 0 0 #ffc107;
+      border-color: color-mix(in srgb, #ffc107 40%, var(--border));
     }
     .admin-messages-accordion .message-row.is-unread .accordion-button::before {
       content: "";
@@ -1723,26 +2053,274 @@ if ($isLogged) {
       flex-shrink: 0;
       animation: msgUnreadPulse 1.6s ease-in-out infinite;
     }
+    .admin-inbox-threads .message-row.is-unread .admin-msg-turn-head::before {
+      content: "";
+      width: .55rem;
+      height: .55rem;
+      border-radius: 50%;
+      background-color: #ffc107;
+      box-shadow: 0 0 0 4px color-mix(in srgb, #ffc107 35%, transparent);
+      margin-right: .5rem;
+      flex-shrink: 0;
+      animation: msgUnreadPulse 1.6s ease-in-out infinite;
+    }
     /* Mostrar el botón correcto según el estado del mensaje. Renderizamos
        siempre ambos forms (y el badge "Nuevo") para que tras un toggle por
        AJAX el opuesto quede disponible sin necesidad de refrescar la página. */
-    .admin-messages-accordion .message-row.is-unread .js-mark-unread-form { display: none; }
-    .admin-messages-accordion .message-row:not(.is-unread) .js-mark-read-form { display: none; }
-    .admin-messages-accordion .message-row:not(.is-unread) .js-msg-new-badge { display: none; }
+    .admin-messages-accordion .message-row.is-unread .js-mark-unread-form,
+    .admin-inbox-threads .message-row.is-unread .js-mark-unread-form { display: none; }
+    .admin-messages-accordion .message-row:not(.is-unread) .js-mark-read-form,
+    .admin-inbox-threads .message-row:not(.is-unread) .js-mark-read-form { display: none; }
+    .admin-messages-accordion .message-row.is-unread .js-wa-mark-unread-form { display: none; }
+    .admin-messages-accordion .message-row:not(.is-unread) .js-wa-mark-read-form { display: none; }
+    .admin-messages-accordion .message-row:not(.is-unread) .js-msg-new-badge,
+    .admin-inbox-threads .message-row:not(.is-unread) .js-msg-new-badge { display: none; }
     @keyframes msgUnreadPulse {
       0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, #ffc107 35%, transparent); }
       50%      { box-shadow: 0 0 0 7px color-mix(in srgb, #ffc107 10%, transparent); }
     }
 
-    .admin-messages-accordion .message-delete-form {
+    .admin-conv-groups-accordion .conv-group-row {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 0.5rem;
+      overflow: hidden;
+      background-color: color-mix(in srgb, var(--surface) 92%, transparent);
+    }
+    .admin-conv-groups-accordion .conv-group-row.is-unread {
+      border-left: 4px solid #0d6efd;
+      box-shadow: 0 0 0 1px color-mix(in srgb, #0d6efd 25%, transparent);
+    }
+    .admin-conv-groups-accordion .conv-group-header .accordion-button {
+      background-color: color-mix(in srgb, var(--surface) 88%, transparent);
+      font-size: 0.9rem;
+    }
+
+    .admin-inbox-threads {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+    .admin-msg-thread {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--surface) 96%, var(--muted));
+      overflow: hidden;
+    }
+    .admin-msg-thread-summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.55rem 0.65rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      background: color-mix(in srgb, var(--surface) 90%, transparent);
+    }
+    .admin-msg-thread-asunto-block {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem 0.5rem;
+      line-height: 1.35;
+    }
+    .admin-msg-thread-asunto-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .admin-msg-thread-asunto-text {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text);
+      min-width: 0;
+      flex: 1;
+    }
+    .admin-msg-thread-summary::-webkit-details-marker { display: none; }
+    .admin-msg-thread-summary::marker { content: ""; }
+    .admin-msg-thread > summary {
+      position: relative;
+      padding-right: 1.25rem;
+    }
+    .admin-msg-thread > summary::after {
+      content: "\f078";
+      font-family: "Font Awesome 6 Free";
+      font-weight: 900;
+      position: absolute;
+      right: 0.55rem;
+      top: 50%;
+      transform: translateY(-50%) rotate(0deg);
+      font-size: 0.7rem;
+      color: var(--muted);
+      transition: transform 0.15s ease;
+    }
+    .admin-msg-thread[open] > summary::after {
+      transform: translateY(-50%) rotate(180deg);
+    }
+    .admin-msg-thread-summary-main {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.55rem;
+    }
+    .admin-msg-conv-meta {
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .admin-msg-thread-snippet {
+      display: block;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .admin-msg-thread-body {
+      padding: 0.65rem 0.7rem 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .admin-msg-turn {
+      border-left: none;
+      margin-left: 0;
+      padding-left: 0;
+      border-radius: 0;
+    }
+      display: inline-block;
+      margin-top: 0.35rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      padding: 0.18rem 0.42rem;
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--muted) 18%, var(--surface));
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .admin-msg-id-chip {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+      padding: 0.18rem 0.42rem;
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+      border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+      color: var(--text);
+    }
+    .admin-msg-turn-main {
+      min-width: 0;
+    }
+    .admin-msg-turn-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      align-items: stretch;
+    }
+    .admin-msg-bubble {
+      border-radius: 10px;
+      padding: 0.65rem 0.75rem;
+      margin-bottom: 0;
+      border: 1px solid var(--border);
+      box-sizing: border-box;
+    }
+    .admin-msg-bubble--visitor {
+      align-self: flex-start;
+      max-width: min(92%, 28rem);
+      margin-right: auto;
+      background: color-mix(in srgb, var(--accent) 16%, var(--field-bg));
+      border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+      border-left-width: 3px;
+      border-left-style: solid;
+      border-left-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+    }
+    .admin-msg-bubble--admin {
+      align-self: flex-end;
+      max-width: min(92%, 28rem);
+      margin-left: auto;
+      text-align: start;
+      background: color-mix(in srgb, var(--muted) 12%, var(--field-bg));
+      border-color: color-mix(in srgb, var(--muted) 28%, var(--border));
+      border-right-width: 3px;
+      border-right-style: solid;
+      border-right-color: color-mix(in srgb, var(--accent) 45%, var(--muted));
+    }
+    .admin-msg-bubble-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 0.4rem;
+      opacity: 0.95;
+    }
+    .admin-msg-reply-below {
+      margin-top: 0.45rem;
+    }
+    .admin-msg-reply-thread-end {
+      margin-top: 0.75rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+    }
+    .admin-msg-turn + .admin-msg-turn {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+    }
+    .admin-msg-turn-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.35rem;
+      margin-bottom: 0.35rem;
+    }
+    .admin-msg-turn-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.5rem;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .admin-layout--inbox-wide {
+      grid-template-columns: 1fr !important;
+    }
+    .admin-layout--inbox-wide .admin-main {
+      display: none !important;
+    }
+    .admin-layout--inbox-wide .admin-side {
+      position: static;
+      max-height: none;
+      overflow: visible;
+      grid-column: 1 / -1;
+    }
+    .admin-layout--inbox-wide .admin-side-inbox-card {
+      max-width: 960px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .admin-messages-accordion .message-delete-form,
+    .admin-inbox-threads .message-delete-form {
       display: flex;
       align-items: center;
       flex: 0 0 auto;
+      flex-shrink: 0;
       margin: 0;
       padding: 0 .55rem;
       background-color: transparent;
     }
-    .admin-messages-accordion .btn-message-delete {
+    .admin-messages-accordion .btn-message-delete,
+    .admin-inbox-threads .btn-message-delete {
       width: 2rem;
       height: 2rem;
       border-radius: 50%;
@@ -1758,13 +2336,16 @@ if ($isLogged) {
       transition: background-color .15s ease, color .15s ease, border-color .15s ease;
     }
     .admin-messages-accordion .btn-message-delete:hover,
-    .admin-messages-accordion .btn-message-delete:focus-visible {
+    .admin-messages-accordion .btn-message-delete:focus-visible,
+    .admin-inbox-threads .btn-message-delete:hover,
+    .admin-inbox-threads .btn-message-delete:focus-visible {
       background-color: #dc3545;
       border-color: #dc3545;
       color: #fff;
       outline: none;
     }
-    .admin-messages-accordion .btn-message-delete i {
+    .admin-messages-accordion .btn-message-delete i,
+    .admin-inbox-threads .btn-message-delete i {
       display: block;
       line-height: 1;
       width: 1em;
@@ -1799,11 +2380,13 @@ if ($isLogged) {
       background-color: var(--surface);
       color: var(--text);
     }
-    .admin-messages-accordion .message-meta-date {
+    .admin-messages-accordion .message-meta-date,
+    .admin-inbox-threads .message-meta-date {
       font-variant-numeric: tabular-nums;
       font-size: .9rem;
     }
-    .admin-messages-accordion .message-meta-service {
+    .admin-messages-accordion .message-meta-service,
+    .admin-inbox-threads .message-meta-service {
       font-size: .9rem;
     }
     .admin-messages-accordion .message-meta-email {
@@ -1813,7 +2396,8 @@ if ($isLogged) {
       background-color: var(--surface);
       color: var(--text);
     }
-    .admin-messages-accordion .message-body-text {
+    .admin-messages-accordion .message-body-text,
+    .admin-inbox-threads .message-body-text {
       white-space: pre-wrap;
       background-color: var(--field-bg);
       border: 1px solid var(--border);
@@ -1822,18 +2406,22 @@ if ($isLogged) {
       max-height: 320px;
       overflow: auto;
     }
-    .admin-messages-accordion .message-replies-sent {
+    .admin-messages-accordion .message-replies-sent,
+    .admin-inbox-threads .message-replies-sent {
       border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
       padding-left: .75rem;
       margin-bottom: 1rem;
     }
-    .admin-messages-accordion .message-reply-item {
+    .admin-messages-accordion .message-reply-item,
+    .admin-inbox-threads .message-reply-item {
       margin-bottom: .75rem;
     }
-    .admin-messages-accordion .message-reply-item:last-child {
+    .admin-messages-accordion .message-reply-item:last-child,
+    .admin-inbox-threads .message-reply-item:last-child {
       margin-bottom: 0;
     }
-    .admin-messages-accordion .message-reply-form textarea {
+    .admin-messages-accordion .message-reply-form textarea,
+    .admin-inbox-threads .message-reply-form textarea {
       min-height: 5rem;
     }
   </style>
@@ -1941,7 +2529,7 @@ if ($isLogged) {
       <?php if ($error !== ""): ?><div class="alert alert-danger mt-3 mb-0"><?= h($error) ?></div><?php endif; ?>
     </div>
 
-    <div class="admin-layout">
+    <div class="admin-layout<?= $adminInboxWide ? " admin-layout--inbox-wide" : "" ?>">
       <div class="admin-main">
         <div class="accordion admin-tools-accordion mb-3" id="adminToolsAccordion">
 
@@ -1963,13 +2551,86 @@ if ($isLogged) {
                     <a class="btn btn-outline-secondary" href="<?= h(app_landing_url()) ?>" target="_blank" rel="noopener">Abrir</a>
                   </div>
                 </div>
-                <div class="mb-0">
+                <div class="mb-3">
                   <label class="form-label mb-1">Panel de administración</label>
                   <div class="input-group">
                     <input type="text" class="form-control font-monospace small" readonly value="<?= h(app_admin_url()) ?>">
                     <a class="btn btn-outline-secondary" href="<?= h(app_admin_url()) ?>" target="_blank" rel="noopener">Abrir</a>
                   </div>
                 </div>
+                <div class="mb-0">
+                  <label class="form-label mb-1">Área de clientes en la landing</label>
+                  <div class="input-group">
+                    <input type="text" class="form-control font-monospace small" readonly value="<?= h(app_client_portal_url()) ?>">
+                    <a class="btn btn-outline-secondary" href="<?= h(app_client_portal_url()) ?>" target="_blank" rel="noopener">Abrir</a>
+                  </div>
+                  <div class="form-text text-light-emphasis mt-1">Misma página pública: sección «Clientes».</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="accordion-item">
+            <h2 class="accordion-header m-0">
+              <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#tools_clients_panel"
+                aria-expanded="false" aria-controls="tools_clients_panel">
+                <i class="fa-solid fa-user-group me-2"></i>Portal de clientes
+              </button>
+            </h2>
+            <div id="tools_clients_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
+              <div class="accordion-body">
+                <p class="small text-light-emphasis mb-3">
+                  Los visitantes se registran solos en la landing (sección <strong>Área de clientes</strong>).
+                  Desde aquí solo moderas: desactivar o borrar cuentas. La sesión de cliente es independiente del admin.
+                </p>
+                <?php if (count($portalClients) === 0): ?>
+                  <p class="small text-light-emphasis mb-0">Aún no hay cuentas. Comparte la URL del acordeón «Rutas» o el enlace «Clientes» del menú de la web.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm table-borderless align-middle mb-0">
+                      <thead>
+                        <tr class="text-secondary small">
+                          <th>Correo</th>
+                          <th>Nombre</th>
+                          <th>Estado</th>
+                          <th class="text-end">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($portalClients as $pc): ?>
+                          <?php
+                            $pid = (int)($pc["id"] ?? 0);
+                            $active = (int)($pc["is_active"] ?? 0) === 1;
+                          ?>
+                          <tr>
+                            <td class="font-monospace small"><?= h((string)($pc["email"] ?? "")) ?></td>
+                            <td><?= h((string)($pc["display_name"] ?? "")) ?></td>
+                            <td>
+                              <?php if ($active): ?>
+                                <span class="badge text-bg-success">Activo</span>
+                              <?php else: ?>
+                                <span class="badge text-bg-secondary">Desactivado</span>
+                              <?php endif; ?>
+                            </td>
+                            <td class="text-end">
+                              <form method="post" class="d-inline">
+                                <input type="hidden" name="action" value="client_toggle_active">
+                                <input type="hidden" name="client_id" value="<?= $pid ?>">
+                                <button type="submit" class="btn btn-outline-secondary btn-sm"><?= $active ? "Desactivar" : "Activar" ?></button>
+                              </form>
+                              <form method="post" class="d-inline ms-1" onsubmit="return confirm('¿Eliminar este cliente? No se puede deshacer.');">
+                                <input type="hidden" name="action" value="client_delete">
+                                <input type="hidden" name="client_id" value="<?= $pid ?>">
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Eliminar</button>
+                              </form>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
               </div>
             </div>
           </div>
@@ -2351,6 +3012,16 @@ if ($isLogged) {
                 aria-labelledby="headingSideMessages"
               >
                 <div class="accordion-body pt-0 px-3 pb-3">
+                  <?php if ($sideInboxTotal > 0): ?>
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2 pb-2 border-bottom border-secondary">
+                      <span class="small text-light-emphasis">Agrupado por cuenta de cliente o por correo del visitante.</span>
+                      <?php if ($adminInboxWide): ?>
+                        <a href="admin.php" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-compress me-1"></i>Vista normal</a>
+                      <?php else: ?>
+                        <a href="admin.php?inbox=1" class="btn btn-outline-info btn-sm"><i class="fa-solid fa-expand me-1"></i>Vista amplia</a>
+                      <?php endif; ?>
+                    </div>
+                  <?php endif; ?>
                   <?php if ($sideInboxUnread > 0 || $sideInboxTotal > 0): ?>
                     <div class="d-flex flex-wrap justify-content-end gap-2 mb-2">
                       <?php if ($sideInboxUnread > 0): ?>
@@ -2373,109 +3044,246 @@ if ($isLogged) {
                   <?php if ($sideInboxTotal === 0): ?>
                     <p class="text-light-emphasis mb-0">Aún no hay mensajes desde el formulario de contacto.</p>
                   <?php else: ?>
-                    <div class="accordion admin-messages-accordion" id="adminMessagesAccordion">
-                      <?php foreach ($contactMessages as $contactMsg): ?>
+                    <div id="adminInboxMessagesRoot">
+                    <div class="accordion admin-conv-groups-accordion" id="adminConvGroupsAccordion">
+                      <?php foreach ($contactMessageGroups as $grp): ?>
                         <?php
-                          $msgId = (int)$contactMsg["id"];
-                          $msgCollapseId = "collapse_msg_" . $msgId;
-                          $isUnread = (int)($contactMsg["is_read"] ?? 0) === 0;
-                          $createdAt = (string)($contactMsg["created_at"] ?? "");
-                          $createdLabel = $createdAt;
-                          try {
-                              $dt = new DateTime($createdAt);
-                              $createdLabel = $dt->format("Y-m-d H:i");
-                          } catch (Exception $e) {
-                              // si la fecha no parsea, dejamos el valor crudo.
-                          }
+                          $gSlug = (string)($grp["slug"] ?? "");
+                          $gCollapse = "collapse_conv_" . $gSlug;
+                          $gUnread = (int)($grp["unread"] ?? 0);
+                          $gHasUnread = $gUnread > 0;
                         ?>
-                        <div class="accordion-item message-row<?= $isUnread ? " is-unread" : "" ?>" data-message-id="<?= $msgId ?>">
-                          <h3 class="accordion-header m-0 message-header-row">
+                        <div class="accordion-item conv-group-row<?= $gHasUnread ? " is-unread" : "" ?>">
+                          <h3 class="accordion-header m-0 conv-group-header">
                             <button
-                              class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2"
+                              class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2 py-2 px-2"
                               type="button"
                               data-bs-toggle="collapse"
-                              data-bs-target="#<?= h($msgCollapseId) ?>"
+                              data-bs-target="#<?= h($gCollapse) ?>"
                               aria-expanded="false"
-                              aria-controls="<?= h($msgCollapseId) ?>"
+                              aria-controls="<?= h($gCollapse) ?>"
                             >
-                              <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
-                              <span class="message-meta-date"><?= h($createdLabel) ?></span>
-                              <span class="message-meta-name"><strong><?= h((string)$contactMsg["nombre"]) ?></strong></span>
-                              <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= h((string)$contactMsg["servicio"]) ?></span>
-                              <span class="message-meta-email text-light-emphasis"><?= h((string)$contactMsg["email"]) ?></span>
-                            </button>
-                            <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar este mensaje del historial?');">
-                              <input type="hidden" name="action" value="delete_message">
-                              <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                              <button class="btn-message-delete" type="submit" title="Eliminar mensaje" aria-label="Eliminar mensaje">
-                                <i class="fa-solid fa-trash"></i>
-                              </button>
-                            </form>
-                          </h3>
-                          <div id="<?= h($msgCollapseId) ?>" class="accordion-collapse collapse" data-bs-parent="#adminMessagesAccordion">
-                            <div class="accordion-body">
-                              <div class="message-body-text mb-3"><?= nl2br(h((string)$contactMsg["mensaje"])) ?></div>
-                              <div class="d-flex flex-wrap gap-2 align-items-center text-light-emphasis small mb-3">
-                                <span><i class="fa-solid fa-envelope me-1"></i><a href="mailto:<?= h((string)$contactMsg["email"]) ?>"><?= h((string)$contactMsg["email"]) ?></a></span>
-                                <?php if (!empty($contactMsg["sent_to"])): ?>
-                                  <span><i class="fa-solid fa-paper-plane me-1"></i>destino: <?= h((string)$contactMsg["sent_to"]) ?></span>
-                                <?php endif; ?>
-                              </div>
-                              <?php
-                                $repliesForMsg = $contactRepliesByMessageId[$msgId] ?? [];
-                              ?>
-                              <?php if (count($repliesForMsg) > 0): ?>
-                                <div class="message-replies-sent">
-                                  <div class="small text-light-emphasis mb-2"><i class="fa-solid fa-reply me-1"></i>Respuestas enviadas desde aquí</div>
-                                  <?php foreach ($repliesForMsg as $repRow): ?>
-                                    <?php
-                                      $repCreated = (string)($repRow["created_at"] ?? "");
-                                      $repLabel = $repCreated;
-                                      try {
-                                          $repDt = new DateTime($repCreated);
-                                          $repLabel = $repDt->format("Y-m-d H:i");
-                                      } catch (Exception $e) {
-                                      }
-                                    ?>
-                                    <div class="message-reply-item small">
-                                      <span class="text-muted"><?= h($repLabel) ?></span>
-                                      <div class="mt-1 message-body-text mb-0" style="max-height: 12rem;"><?= nl2br(h((string)($repRow["body"] ?? ""))) ?></div>
-                                    </div>
-                                  <?php endforeach; ?>
-                                </div>
+                              <span class="badge text-bg-primary"><?= h((string)($grp["head_badge"] ?? "")) ?></span>
+                              <?php if ($gHasUnread): ?>
+                                <span class="badge text-bg-warning"><?= (int)($grp["unread"]) ?> sin leer</span>
                               <?php endif; ?>
-                              <form method="post" class="message-reply-form mb-3">
-                                <input type="hidden" name="action" value="reply_contact_message">
-                                <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                                <label class="form-label small mb-1" for="reply_body_<?= $msgId ?>">Responder por correo</label>
-                                <textarea id="reply_body_<?= $msgId ?>" class="form-control form-control-sm" name="reply_body" rows="4" placeholder="Texto que recibirá <?= h((string)$contactMsg["nombre"]) ?> en su correo…" required></textarea>
-                                <div class="form-text text-light-emphasis small mt-1">
-                                  Mismo envío SMTP que el formulario: remitente = cuenta de <code>mail_config</code> (si <code>from_email</code> está vacío, se usa <code>username</code> si es un correo). <code>Reply-To</code> = correo receptor del sitio.
-                                </div>
-                                <button class="btn btn-primary btn-sm mt-2" type="submit">
-                                  <i class="fa-solid fa-paper-plane me-2"></i>Enviar respuesta
-                                </button>
-                              </form>
-                              <div class="d-flex flex-wrap gap-2 message-mark-actions">
-                                <form method="post" class="m-0 js-mark-read-form">
-                                  <input type="hidden" name="action" value="mark_message_read">
-                                  <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                                  <button class="btn btn-outline-light btn-sm" type="submit">
-                                    <i class="fa-solid fa-check me-2"></i>Marcar como leído
-                                  </button>
-                                </form>
-                                <form method="post" class="m-0 js-mark-unread-form">
-                                  <input type="hidden" name="action" value="mark_message_unread">
-                                  <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                                  <button class="btn btn-outline-warning btn-sm" type="submit">
-                                    <i class="fa-solid fa-rotate-left me-2"></i>Marcar como sin leer
-                                  </button>
-                                </form>
+                              <span class="text-truncate" style="max-width: 14rem;"><strong><?= h((string)($grp["head_title"] ?? "")) ?></strong></span>
+                              <?php if (($grp["head_sub"] ?? "") !== ""): ?>
+                                <span class="text-light-emphasis small text-truncate" style="max-width: 10rem;"><?= h((string)$grp["head_sub"]) ?></span>
+                              <?php endif; ?>
+                              <span class="text-light-emphasis small ms-auto"><?= (int)($grp["conv_count"] ?? 0) ?> conv. · <?= (int)($grp["msg_count"] ?? 0) ?> msg</span>
+                              <?php if (($grp["latest_label"] ?? "") !== ""): ?>
+                                <span class="text-secondary small">· Últ. act. <?= h((string)$grp["latest_label"]) ?></span>
+                              <?php endif; ?>
+                            </button>
+                          </h3>
+                          <div
+                            id="<?= h($gCollapse) ?>"
+                            class="accordion-collapse collapse"
+                            data-bs-parent="#adminConvGroupsAccordion"
+                          >
+                            <div class="accordion-body p-2 pt-1">
+                              <p class="small text-light-emphasis mb-2">
+                                <i class="fa-solid fa-envelope me-1"></i>
+                                <?php if ((string)($grp["head_email"] ?? "") !== ""): ?>
+                                  <a href="mailto:<?= h((string)$grp["head_email"]) ?>"><?= h((string)$grp["head_email"]) ?></a>
+                                <?php else: ?>
+                                  (sin correo en el grupo)
+                                <?php endif; ?>
+                              </p>
+                              <p class="small text-light-emphasis mb-2">
+                                <?= (int)($grp["conv_count"] ?? 0) ?> conversación(es), <?= (int)($grp["msg_count"] ?? 0) ?> envío(s). En cada hilo, los pasos van en orden de tiempo; al final del hilo hay un solo formulario para contestar por correo (enlazado al último paso).
+                              </p>
+                              <div class="admin-inbox-threads mt-2">
+                                <?php foreach (($grp["threads"] ?? []) as $ti => $thread): ?>
+                                  <?php
+                                    $tMsgs = $thread["messages"] ?? [];
+                                    $rootRow = $tMsgs[0] ?? [];
+                                    $rootServ = trim((string)($rootRow["servicio"] ?? ""));
+                                    $rootSubject = trim((string)($rootRow["subject"] ?? ""));
+                                    $threadAsunto = $rootSubject !== "" ? $rootSubject : "Sin asunto";
+                                    $rootCreated = (string)($rootRow["created_at"] ?? "");
+                                    $rootCreatedLabel = $rootCreated;
+                                    try {
+                                        $rootCreatedLabel = (new DateTime($rootCreated))->format("d/m/Y H:i");
+                                    } catch (Exception $e) {
+                                    }
+                                    $tCount = count($tMsgs);
+                                    $tLatest = (int)($thread["latest_ts"] ?? 0);
+                                    $tLatestLabel = $tLatest > 0 ? date("d/m/Y H:i", $tLatest) : "";
+                                    $tUnread = 0;
+                                    foreach ($tMsgs as $tm) {
+                                        if ((int)($tm["is_read"] ?? 0) === 0) {
+                                            $tUnread++;
+                                        }
+                                    }
+                                    $rootBody = trim(preg_replace('/\s+/u', ' ', (string)($rootRow["mensaje"] ?? "")));
+                                    $snippet = $rootBody;
+                                    if (strlen($snippet) > 96) {
+                                        $snippet = substr($snippet, 0, 96) . "…";
+                                    }
+                                    $threadConvIdAdmin = (int)($thread["root_id"] ?? 0);
+                                  ?>
+                                  <details class="admin-msg-thread admin-msg-conv-root"<?= $ti === 0 ? " open" : "" ?> data-thread-id="<?= $threadConvIdAdmin ?>">
+                                    <summary class="admin-msg-thread-summary">
+                                      <div class="admin-msg-thread-asunto-block">
+                                        <span class="admin-msg-thread-asunto-label">Asunto</span>
+                                        <span class="admin-msg-thread-asunto-text<?= $rootSubject === "" ? " text-secondary" : "" ?>" title="Asunto (título); el servicio aparece en la fila de abajo"><?= h($threadAsunto) ?></span>
+                                        <?php if ($threadConvIdAdmin > 0): ?>
+                                          <span class="admin-msg-thread-id" title="Identificador del hilo (asunto); servirá para buscar o filtrar">Conv. <?= $threadConvIdAdmin ?></span>
+                                        <?php endif; ?>
+                                      </div>
+                                      <span class="admin-msg-thread-summary-main">
+                                        <span class="message-meta-date"><?= h($rootCreatedLabel) ?></span>
+                                        <span class="message-meta-service"><i class="fa-solid fa-briefcase me-1"></i><?= h($rootServ !== "" ? $rootServ : "—") ?></span>
+                                        <?php if ($tCount > 1): ?>
+                                          <span class="admin-msg-conv-meta"><?= (int)$tCount ?> envíos</span>
+                                        <?php endif; ?>
+                                        <?php if ($tLatestLabel !== "" && $tCount > 1): ?>
+                                          <span class="admin-msg-conv-meta">Últ. act.: <?= h($tLatestLabel) ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($tUnread > 0): ?>
+                                          <span class="badge text-bg-warning"><?= (int)$tUnread ?> sin leer</span>
+                                        <?php endif; ?>
+                                        <?php if (!empty($thread["has_admin_reply"])): ?>
+                                          <span class="badge text-bg-success">Respuesta</span>
+                                        <?php endif; ?>
+                                      </span>
+                                      <?php if ($snippet !== ""): ?>
+                                        <span class="admin-msg-thread-snippet"><?= h($snippet) ?></span>
+                                      <?php endif; ?>
+                                    </summary>
+                                    <div class="admin-msg-thread-body">
+                                      <?php foreach ($tMsgs as $tmi => $contactMsg): ?>
+                                        <?php
+                                          $msgId = (int)$contactMsg["id"];
+                                          $isUnread = (int)($contactMsg["is_read"] ?? 0) === 0;
+                                          $fromClientId = (int)($contactMsg["client_id"] ?? 0);
+                                          $msgInReplyTo = (int)($contactMsg["in_reply_to"] ?? 0);
+                                          $turnSubject = trim((string)($contactMsg["subject"] ?? ""));
+                                          $createdAt = (string)($contactMsg["created_at"] ?? "");
+                                          $createdLabel = $createdAt;
+                                          try {
+                                              $dt = new DateTime($createdAt);
+                                              $createdLabel = $dt->format("d/m/Y H:i");
+                                          } catch (Exception $e) {
+                                          }
+                                          $repliesForMsg = $contactRepliesByMessageId[$msgId] ?? [];
+                                        ?>
+                                        <div class="message-row admin-msg-turn<?= $isUnread ? " is-unread" : "" ?>" data-message-id="<?= $msgId ?>">
+                                          <div class="admin-msg-turn-toolbar">
+                                            <div class="admin-msg-turn-head">
+                                              <?php if ($msgId > 0): ?>
+                                                <span class="admin-msg-id-chip" title="ID del mensaje; servirá para buscar o filtrar">Msg. <?= $msgId ?></span>
+                                              <?php endif; ?>
+                                              <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
+                                              <?php if ($fromClientId > 0): ?>
+                                                <span class="badge text-bg-info">Cliente</span>
+                                              <?php endif; ?>
+                                              <?php if ($msgInReplyTo > 0): ?>
+                                                <span class="badge text-bg-secondary" title="Seguimiento">Seg.</span>
+                                              <?php endif; ?>
+                                              <span class="message-meta-date"><?= h($createdLabel) ?></span>
+                                              <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= h((string)$contactMsg["servicio"]) ?></span>
+                                            </div>
+                                            <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar este mensaje del historial?');">
+                                              <input type="hidden" name="action" value="delete_message">
+                                              <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                              <button class="btn-message-delete" type="submit" title="Eliminar mensaje" aria-label="Eliminar mensaje">
+                                                <i class="fa-solid fa-trash"></i>
+                                              </button>
+                                            </form>
+                                          </div>
+                                          <div class="admin-msg-turn-main">
+                                            <div class="admin-msg-turn-inner">
+                                            <?php if ($tmi === 0 && $turnSubject !== ""): ?>
+                                              <p class="admin-msg-asunto-line mb-2"><span class="text-secondary small text-uppercase fw-semibold">Asunto</span><br><?= h($turnSubject) ?></p>
+                                            <?php endif; ?>
+                                            <?php if ($msgInReplyTo > 0): ?>
+                                              <p class="small text-light-emphasis mb-2">
+                                                <i class="fa-solid fa-link me-1"></i>Seguimiento enlazado al mensaje n.º <?= (int)$msgInReplyTo ?>.
+                                              </p>
+                                            <?php endif; ?>
+                                            <div class="admin-msg-bubble admin-msg-bubble--visitor">
+                                              <div class="admin-msg-bubble-label text-secondary"><i class="fa-solid fa-user me-1"></i>Mensaje del visitante</div>
+                                            <div class="message-body-text mb-2 mb-md-3"><?= nl2br(h((string)$contactMsg["mensaje"])) ?></div>
+                                            <div class="d-flex flex-wrap gap-2 align-items-center text-light-emphasis small mb-0">
+                                              <span><strong><?= h((string)$contactMsg["nombre"]) ?></strong></span>
+                                              <span><i class="fa-solid fa-envelope me-1"></i><a href="mailto:<?= h((string)$contactMsg["email"]) ?>"><?= h((string)$contactMsg["email"]) ?></a></span>
+                                            </div>
+                                            </div>
+                                            <div class="admin-msg-bubble admin-msg-bubble--admin">
+                                              <div class="admin-msg-bubble-label text-secondary"><i class="fa-solid fa-reply me-1"></i>Tus respuestas por correo (desde el panel)</div>
+                                            <?php if (count($repliesForMsg) > 0): ?>
+                                              <div class="message-replies-sent border-0 ps-0 pt-0 mt-0 mb-0">
+                                                <?php foreach ($repliesForMsg as $repRow): ?>
+                                                  <?php
+                                                    $repCreated = (string)($repRow["created_at"] ?? "");
+                                                    $repLabel = $repCreated;
+                                                    try {
+                                                        $repDt = new DateTime($repCreated);
+                                                        $repLabel = $repDt->format("d/m/Y H:i");
+                                                    } catch (Exception $e) {
+                                                    }
+                                                  ?>
+                                                  <div class="message-reply-item small">
+                                                    <span class="text-muted"><?= h($repLabel) ?></span>
+                                                    <div class="mt-1 message-body-text mb-0" style="max-height: 12rem;"><?= nl2br(h((string)($repRow["body"] ?? ""))) ?></div>
+                                                  </div>
+                                                <?php endforeach; ?>
+                                              </div>
+                                            <?php else: ?>
+                                              <p class="small text-light-emphasis mb-0">Sin respuesta registrada para este envío.</p>
+                                            <?php endif; ?>
+                                            </div>
+                                            <div class="d-flex flex-wrap gap-2 message-mark-actions">
+                                              <form method="post" class="m-0 js-mark-read-form">
+                                                <input type="hidden" name="action" value="mark_message_read">
+                                                <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                                <button class="btn btn-outline-light btn-msg-read-state" type="submit" title="Marcar como leído" aria-label="Marcar como leído">
+                                                  <i class="fa-solid fa-check" aria-hidden="true"></i>
+                                                </button>
+                                              </form>
+                                              <form method="post" class="m-0 js-mark-unread-form">
+                                                <input type="hidden" name="action" value="mark_message_unread">
+                                                <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                                <button class="btn btn-outline-warning btn-msg-read-state" type="submit" title="Marcar como no leído" aria-label="Marcar como no leído">
+                                                  <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
+                                                </button>
+                                              </form>
+                                            </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      <?php endforeach; ?>
+                                      <?php
+                                        $threadRootIdAdmin = (int)($thread["root_id"] ?? 0);
+                                        $nAdminTm = count($tMsgs);
+                                        $lastAdminTurn = $nAdminTm > 0 ? $tMsgs[$nAdminTm - 1] : [];
+                                        $lastAdminMsgId = (int)($lastAdminTurn["id"] ?? 0);
+                                        $lastVisitorName = trim((string)($lastAdminTurn["nombre"] ?? ""));
+                                      ?>
+                                      <?php if ($lastAdminMsgId > 0): ?>
+                                        <form method="post" class="message-reply-form mb-0 mt-3 admin-msg-reply-thread-end">
+                                          <input type="hidden" name="action" value="reply_contact_message">
+                                          <input type="hidden" name="message_id" value="<?= $lastAdminMsgId ?>">
+                                          <p class="small text-light-emphasis mb-2">Un solo envío al final del hilo: la respuesta queda asociada al <strong>último mensaje</strong> (Msg. <?= (int)$lastAdminMsgId ?>).</p>
+                                          <label class="form-label small mb-1" for="reply_body_root_<?= $threadRootIdAdmin ?>">Responder por correo</label>
+                                          <textarea id="reply_body_root_<?= $threadRootIdAdmin ?>" class="form-control form-control-sm" name="reply_body" rows="4" placeholder="Texto que recibirá <?= h($lastVisitorName !== "" ? $lastVisitorName : "el visitante") ?> en su correo…" required></textarea>
+                                          <button class="btn btn-primary btn-sm mt-2" type="submit">
+                                            <i class="fa-solid fa-paper-plane me-2"></i>Enviar respuesta
+                                          </button>
+                                        </form>
+                                      <?php endif; ?>
+                                    </div>
+                                  </details>
+                                <?php endforeach; ?>
                               </div>
                             </div>
                           </div>
                         </div>
                       <?php endforeach; ?>
+                    </div>
                     </div>
                   <?php endif; ?>
                 </div>
@@ -2495,7 +3303,10 @@ if ($isLogged) {
                   <span class="d-flex flex-wrap align-items-center gap-2 me-auto">
                     <i class="fa-brands fa-whatsapp text-success"></i>
                     <span>Clics WhatsApp</span>
-                    <span class="badge text-bg-secondary" title="Total"><?= count($whatsappClicks) ?></span>
+                    <span
+                      class="badge admin-whatsapp-counter <?= h($waSideCounterClass) ?>"
+                      title="<?= h($waSideCounterTitle) ?>"
+                    ><?= $waSideUnread ?>/<?= $waSideTotal ?></span>
                   </span>
                 </button>
               </h2>
@@ -2505,7 +3316,26 @@ if ($isLogged) {
                 aria-labelledby="headingSideWhatsapp"
               >
                 <div class="accordion-body pt-0 px-3 pb-3">
-                  <p class="small text-light-emphasis mb-3">Una fila por cada pulsación del botón en la web. Actualiza esta página para ver las nuevas. Responde en la app de WhatsApp; aquí no hay chat.</p>
+                  <p class="small text-light-emphasis mb-3">Cada fila es alguien que pulsó «Escribir por WhatsApp» en la web.</p>
+                  <?php if ($waSideTotal > 0): ?>
+                    <div class="d-flex flex-wrap justify-content-end gap-2 mb-2">
+                      <?php if ($waSideUnread > 0): ?>
+                        <form method="post" class="m-0">
+                          <input type="hidden" name="action" value="mark_all_whatsapp_read">
+                          <button class="btn btn-outline-light btn-sm" type="submit" title="Marcar todos como leídos">
+                            <i class="fa-solid fa-check-double me-2"></i>Marcar todos
+                          </button>
+                        </form>
+                      <?php else: ?>
+                        <form method="post" class="m-0">
+                          <input type="hidden" name="action" value="mark_all_whatsapp_unread">
+                          <button class="btn btn-outline-warning btn-sm" type="submit" title="Marcar todos como sin leer">
+                            <i class="fa-solid fa-rotate-left me-2"></i>Marcar todos como sin leer
+                          </button>
+                        </form>
+                      <?php endif; ?>
+                    </div>
+                  <?php endif; ?>
                   <?php if (count($whatsappClicks) === 0): ?>
                     <p class="text-light-emphasis mb-0">Sin clics todavía.</p>
                   <?php else: ?>
@@ -2524,8 +3354,9 @@ if ($isLogged) {
                           $waNombre = trim((string)($waClick["nombre"] ?? ""));
                           $waEmail = trim((string)($waClick["email"] ?? ""));
                           $waServicio = trim((string)($waClick["servicio"] ?? ""));
+                          $waUnreadRow = (int)($waClick["is_read"] ?? 0) === 0;
                         ?>
-                        <div class="accordion-item message-row" data-whatsapp-click-id="<?= $waId ?>">
+                        <div class="accordion-item message-row<?= $waUnreadRow ? " is-unread" : "" ?>" data-whatsapp-click-id="<?= $waId ?>">
                           <h3 class="accordion-header m-0 message-header-row">
                             <button
                               class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2"
@@ -2535,6 +3366,7 @@ if ($isLogged) {
                               aria-expanded="false"
                               aria-controls="<?= h($waCollapseId) ?>"
                             >
+                              <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
                               <span class="message-meta-date"><?= h($waLabel) ?></span>
                               <span class="message-meta-name"><strong><?= $waNombre !== "" ? h($waNombre) : "—" ?></strong></span>
                               <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= $waServicio !== "" ? h($waServicio) : "—" ?></span>
@@ -2545,15 +3377,30 @@ if ($isLogged) {
                             <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar esta entrada?');">
                               <input type="hidden" name="action" value="delete_whatsapp_click">
                               <input type="hidden" name="whatsapp_click_id" value="<?= $waId ?>">
-                              <button class="btn-message-delete" type="submit" title="Eliminar registro" aria-label="Eliminar registro">
+                              <button class="btn-message-delete" type="submit" title="Eliminar" aria-label="Eliminar">
                                 <i class="fa-solid fa-trash"></i>
                               </button>
                             </form>
                           </h3>
                           <div id="<?= h($waCollapseId) ?>" class="accordion-collapse collapse" data-bs-parent="#adminWhatsappAccordion">
                             <div class="accordion-body">
-                              <div class="small text-light-emphasis mb-1">Borrador</div>
-                              <div class="message-body-text mb-0"><?= nl2br(h((string)($waClick["composed_text"] ?? ""))) ?></div>
+                              <div class="message-body-text mb-3"><?= nl2br(h((string)($waClick["composed_text"] ?? ""))) ?></div>
+                              <div class="d-flex flex-wrap gap-2 message-mark-actions">
+                                <form method="post" class="m-0 js-wa-mark-read-form">
+                                  <input type="hidden" name="action" value="mark_whatsapp_read">
+                                  <input type="hidden" name="whatsapp_click_id" value="<?= $waId ?>">
+                                  <button class="btn btn-outline-light btn-sm" type="submit">
+                                    <i class="fa-solid fa-check me-2"></i>Marcar como leído
+                                  </button>
+                                </form>
+                                <form method="post" class="m-0 js-wa-mark-unread-form">
+                                  <input type="hidden" name="action" value="mark_whatsapp_unread">
+                                  <input type="hidden" name="whatsapp_click_id" value="<?= $waId ?>">
+                                  <button class="btn btn-outline-warning btn-sm" type="submit">
+                                    <i class="fa-solid fa-rotate-left me-2"></i>Marcar como sin leer
+                                  </button>
+                                </form>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -2767,8 +3614,7 @@ if ($isLogged) {
 
     // Marcar como leído automáticamente al desplegar un mensaje sin leer.
     (function () {
-      const messagesAccordion = document.getElementById("adminMessagesAccordion");
-      if (!messagesAccordion) return;
+      const inboxRoot = document.getElementById("adminInboxMessagesRoot");
 
       function updateUnreadCounter(delta) {
         const counter = document.querySelector(".admin-messages-counter");
@@ -2850,25 +3696,28 @@ if ($isLogged) {
         });
       }
 
-      messagesAccordion.querySelectorAll(".accordion-collapse").forEach(function (coll) {
-        coll.addEventListener("shown.bs.collapse", function () {
-          const row = coll.closest(".message-row");
-          if (row && row.classList.contains("is-unread")) {
+      if (!inboxRoot) {
+        // no hay mensajes en esta vista
+      } else {
+      inboxRoot.querySelectorAll("details.admin-msg-thread").forEach(function (det) {
+        det.addEventListener("toggle", function () {
+          if (!det.open) return;
+          det.querySelectorAll(".message-row.is-unread").forEach(function (row) {
             markRowAsRead(row);
-          }
+          });
         });
       });
 
       // Forms explícitos: en lugar de submit normal con recarga, hacemos AJAX
       // y actualizamos la fila para que el toggle inverso quede disponible.
-      messagesAccordion.querySelectorAll(".js-mark-read-form").forEach(function (form) {
+      inboxRoot.querySelectorAll(".js-mark-read-form").forEach(function (form) {
         form.addEventListener("submit", function (ev) {
           ev.preventDefault();
           const row = form.closest(".message-row");
           if (row) markRowAsRead(row);
         });
       });
-      messagesAccordion.querySelectorAll(".js-mark-unread-form").forEach(function (form) {
+      inboxRoot.querySelectorAll(".js-mark-unread-form").forEach(function (form) {
         form.addEventListener("submit", function (ev) {
           ev.preventDefault();
           const row = form.closest(".message-row");
@@ -2901,10 +3750,150 @@ if ($isLogged) {
               console.error("mark_all_messages_read no actualizó la BD", data);
               return;
             }
-            messagesAccordion.querySelectorAll(".message-row.is-unread").forEach(applyReadStateToRow);
+            inboxRoot.querySelectorAll(".message-row.is-unread").forEach(applyReadStateToRow);
             if (markAllForm.form.parentElement) markAllForm.form.parentElement.removeChild(markAllForm.form);
           }).catch(function (err) {
             console.error("Error marcando todos como leídos:", err);
+          });
+        });
+      }
+      }
+    })();
+
+    (function () {
+      const waAccordion = document.getElementById("adminWhatsappAccordion");
+      if (!waAccordion) return;
+
+      function updateWaUnreadCounter(delta) {
+        const counter = document.querySelector(".admin-whatsapp-counter");
+        if (!counter) return;
+        const txt = (counter.textContent || "").trim();
+        const parts = txt.split("/");
+        if (parts.length !== 2) return;
+        let unread = parseInt(parts[0], 10);
+        const total = parseInt(parts[1], 10);
+        if (Number.isNaN(unread) || Number.isNaN(total)) return;
+        unread = Math.max(0, unread + delta);
+        counter.textContent = unread + "/" + total;
+        if (unread === 0) {
+          counter.classList.remove("text-bg-warning");
+          counter.classList.add("text-bg-secondary");
+          counter.title = total + " en total";
+        } else {
+          counter.classList.add("text-bg-warning");
+          counter.classList.remove("text-bg-secondary");
+          counter.title = unread + " sin leer de " + total;
+        }
+      }
+
+      function applyWaReadStateToRow(row) {
+        if (!row || !row.classList.contains("is-unread")) return;
+        row.classList.remove("is-unread");
+        updateWaUnreadCounter(-1);
+      }
+
+      function applyWaUnreadStateToRow(row) {
+        if (!row || row.classList.contains("is-unread")) return;
+        row.classList.add("is-unread");
+        updateWaUnreadCounter(+1);
+      }
+
+      function postWaReadToggle(row, action) {
+        if (!row) return Promise.resolve(false);
+        const id = row.getAttribute("data-whatsapp-click-id");
+        if (!id) return Promise.resolve(false);
+        const fd = new FormData();
+        fd.append("action", action);
+        fd.append("whatsapp_click_id", id);
+        fd.append("ajax", "1");
+        return fetch(window.location.pathname, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" }
+        }).then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const ct = (r.headers.get("Content-Type") || "").toLowerCase();
+          if (ct.indexOf("application/json") === -1) {
+            return r.text().then(function (txt) {
+              throw new Error("Respuesta no-JSON: " + txt.slice(0, 200));
+            });
+          }
+          return r.json();
+        }).then(function (data) {
+          return !!(data && data.ok);
+        }).catch(function (err) {
+          console.error("Error en " + action + ":", err);
+          return false;
+        });
+      }
+
+      function markWaRowAsRead(row) {
+        postWaReadToggle(row, "mark_whatsapp_read").then(function (ok) {
+          if (ok) applyWaReadStateToRow(row);
+        });
+      }
+
+      function markWaRowAsUnread(row) {
+        postWaReadToggle(row, "mark_whatsapp_unread").then(function (ok) {
+          if (ok) applyWaUnreadStateToRow(row);
+        });
+      }
+
+      waAccordion.querySelectorAll(".accordion-collapse").forEach(function (coll) {
+        coll.addEventListener("shown.bs.collapse", function () {
+          const row = coll.closest(".message-row");
+          if (row && row.getAttribute("data-whatsapp-click-id") && row.classList.contains("is-unread")) {
+            markWaRowAsRead(row);
+          }
+        });
+      });
+
+      waAccordion.querySelectorAll(".js-wa-mark-read-form").forEach(function (form) {
+        form.addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          const row = form.closest(".message-row");
+          if (row) markWaRowAsRead(row);
+        });
+      });
+      waAccordion.querySelectorAll(".js-wa-mark-unread-form").forEach(function (form) {
+        form.addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          const row = form.closest(".message-row");
+          if (row) markWaRowAsUnread(row);
+        });
+      });
+
+      const markAllWaForm = document.querySelector("form input[name='action'][value='mark_all_whatsapp_read']");
+      if (markAllWaForm && markAllWaForm.form) {
+        markAllWaForm.form.addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          const fd = new FormData(markAllWaForm.form);
+          fd.append("ajax", "1");
+          fetch(window.location.pathname, {
+            method: "POST",
+            body: fd,
+            credentials: "same-origin",
+            headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" }
+          }).then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            const ct = (r.headers.get("Content-Type") || "").toLowerCase();
+            if (ct.indexOf("application/json") === -1) {
+              return r.text().then(function (txt) {
+                throw new Error("Respuesta no-JSON: " + txt.slice(0, 200));
+              });
+            }
+            return r.json();
+          }).then(function (data) {
+            if (!data || !data.ok) return;
+            waAccordion.querySelectorAll(".message-row.is-unread").forEach(function (row) {
+              if (row.getAttribute("data-whatsapp-click-id")) {
+                applyWaReadStateToRow(row);
+              }
+            });
+            if (markAllWaForm.form.parentElement) markAllWaForm.form.parentElement.removeChild(markAllWaForm.form);
+          }).catch(function (err) {
+            console.error("Error marcando WhatsApp como leídos:", err);
           });
         });
       }
