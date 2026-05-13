@@ -19,4 +19,12 @@ return [
      * Úsalo en servidor si hay proxy, SSL terminado delante, o la detección falla.
      */
     "public_base_url" => "",
+
+    /**
+     * Si es true, cada petición escribe UNA línea en el log de errores de PHP
+     * (error_log / log del hosting) con public_base_url calculada y valores
+     * de HTTP_HOST, SCRIPT_NAME, REQUEST_URI, HTTPS, X-Forwarded-Proto.
+     * Úsalo solo para depurar rutas; vuelve a false cuando termines.
+     */
+    "log_public_base_url" => false,
 ];
