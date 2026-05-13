@@ -1,6 +1,6 @@
 # --- Secretos y configuración local ---
-# Nunca subir credenciales reales.
-# (Si alguien clona el repo, copia *.example.php → *.php y los rellena.)
+# Nunca subir credenciales reales al repositorio.
+# Tras clonar: copia cada *.example.php al *.php correspondiente y edita valores.
 mail_config.php
 db_config.php
 admin_bootstrap.php

@@ -39,13 +39,15 @@ jobs:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
+          # SamKirkland/FTP-Deploy-Action: el secret FTP_SERVER_DIR debe terminar en /
+          # (carpeta remota; p. ej. htdocs/ o public_html/mi-landing/).
           server-dir: ${{ secrets.FTP_SERVER_DIR }}
           local-dir: ./
           # No usar dangerous-clean-slate: queremos respetar archivos que ya están en el servidor.
           dangerous-clean-slate: false
           # Archivos/carpetas que NUNCA se mandan por FTP.
           # tools/ son herramientas locales del desarrollador (provisioning, scripts);
-          # no son codigo de produccion y no deben llegar al servidor.
+          # no son código de producción y no deben llegar al servidor.
           exclude: |
             **/.git*
             **/.git*/**

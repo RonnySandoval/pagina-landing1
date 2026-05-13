@@ -2,7 +2,11 @@
 declare(strict_types=1);
 
 /**
- * Copia como mail_config.php. Cuenta SMTP real (Gmail con contraseña de aplicación, etc.).
+ * Plantilla para `mail_config.php` (copiar al mismo directorio y rellenar).
+ * No versiones el archivo real: está en .gitignore y el deploy FTP lo excluye;
+ * en el servidor créalo manualmente junto a `index.php`.
+ *
+ * Cuenta SMTP real (Gmail con contraseña de aplicación u otro proveedor).
  *
  * Flujo de correos en este proyecto:
  * 1) El visitante envía el formulario (incluye su correo personal).

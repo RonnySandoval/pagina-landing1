@@ -1,3 +1,9 @@
+-- Referencia del esquema y datos iniciales (placeholders en español).
+-- En una instalación normal no hace falta importar este archivo: `db.php` crea
+-- las tablas y el seed al cargar la landing o `admin.php`. Útil para phpMyAdmin
+-- o entornos donde quieras aplicar el SQL a mano. Debe coincidir con la lógica
+-- de migración en `db.php` (columnas nuevas se añaden allí si faltan).
+
 CREATE TABLE IF NOT EXISTS admins (
   id INT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(120) NOT NULL UNIQUE,
@@ -78,10 +84,10 @@ SELECT
   1,
   'Tu Nombre',
   'Tu Marca',
-  'Describe aqui tu propuesta principal de valor.',
-  'Agrega una breve introduccion para tu portada.',
-  'Escribe una descripcion corta sobre ti y tus servicios.',
-  'Invita a tus visitantes a contactarte para mas informacion.',
+  'Describe aquí tu propuesta principal de valor.',
+  'Agrega una breve introducción para tu portada.',
+  'Escribe una descripción corta sobre ti y tus servicios.',
+  'Invita a tus visitantes a contactarte para más información.',
   'contacto@tu-dominio.com',
   'Todos los derechos reservados.'
 WHERE NOT EXISTS (
@@ -90,10 +96,10 @@ WHERE NOT EXISTS (
 
 INSERT INTO services (title, description, icon_class, image_path, sort_order, is_active)
 SELECT * FROM (
-  SELECT 'Servicio 1', 'Describe aqui el primer servicio que ofreces.', 'fa-solid fa-book-open-reader', NULL, 1, 1
+  SELECT 'Servicio 1', 'Describe aquí el primer servicio que ofreces.', 'fa-solid fa-book-open-reader', NULL, 1, 1
   UNION ALL
-  SELECT 'Servicio 2', 'Describe aqui el segundo servicio con su beneficio principal.', 'fa-solid fa-code', NULL, 2, 1
+  SELECT 'Servicio 2', 'Describe aquí el segundo servicio con su beneficio principal.', 'fa-solid fa-code', NULL, 2, 1
   UNION ALL
-  SELECT 'Servicio 3', 'Describe aqui el tercer servicio de forma breve y clara.', 'fa-solid fa-guitar', NULL, 3, 1
+  SELECT 'Servicio 3', 'Describe aquí el tercer servicio de forma breve y clara.', 'fa-solid fa-guitar', NULL, 3, 1
 ) AS seed
 WHERE NOT EXISTS (SELECT 1 FROM services);
