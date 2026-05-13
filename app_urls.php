@@ -29,6 +29,10 @@ declare(strict_types=1);
  *
  * FUNCIONES: app_public_base_url(), app_landing_url(), app_admin_url()
  * UI para copiar URLs: panel admin → acordeón «Rutas (landing y admin)».
+ *
+ * Depuración (servidor, no UI): en app_config.php pon log_public_base_url
+ * a true; cada petición escribe una línea en el log de PHP (error_log) con
+ * la base calculada y HTTP_HOST, SCRIPT_NAME, etc. Quitar en producción estable.
  * ---------------------------------------------------------------------------
  */
 
@@ -48,8 +52,28 @@ function app_load_url_config(): array
     return $cached;
 }
 
+function app_log_public_base_url_debug(array $cfg, string $base, string $source): void
+{
+    if (empty($cfg["log_public_base_url"])) {
+        return;
+    }
+    $https = (string)($_SERVER["HTTPS"] ?? "");
+    $xff = (string)($_SERVER["HTTP_X_FORWARDED_PROTO"] ?? "");
+    $sn = (string)($_SERVER["SCRIPT_NAME"] ?? "");
+    $ru = (string)($_SERVER["REQUEST_URI"] ?? "");
+    $h = (string)($_SERVER["HTTP_HOST"] ?? "");
+    error_log(
+        "[app_urls] public_base_url={$base} | source={$source} | HTTP_HOST={$h} | SCRIPT_NAME={$sn} | REQUEST_URI={$ru} | HTTPS={$https} | X-Forwarded-Proto={$xff}"
+    );
+}
+
 function app_public_base_url(): string
 {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
     $cfg = app_load_url_config();
     $forced = trim((string)($cfg["public_base_url"] ?? ""));
     if ($forced !== "") {
@@ -60,7 +84,9 @@ function app_public_base_url(): string
             $port = isset($parsed["port"]) ? ":" . (int)$parsed["port"] : "";
             $path = isset($parsed["path"]) ? (string)$parsed["path"] : "";
             $path = $path !== "" ? rtrim($path, "/") : "";
-            return $scheme . "://" . $host . $port . $path;
+            $cached = $scheme . "://" . $host . $port . $path;
+            app_log_public_base_url_debug($cfg, $cached, "public_base_url");
+            return $cached;
         }
     }
 
@@ -80,7 +106,9 @@ function app_public_base_url(): string
     } else {
         $pathPrefix = $scriptDir;
     }
-    return $scheme . "://" . $host . $pathPrefix;
+    $cached = $scheme . "://" . $host . $pathPrefix;
+    app_log_public_base_url_debug($cfg, $cached, "auto");
+    return $cached;
 }
 
 function app_landing_url(): string
