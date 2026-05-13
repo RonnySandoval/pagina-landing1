@@ -19,7 +19,10 @@ declare(strict_types=1);
  * Remitente SMTP (From / MAIL FROM): usa from_email; si lo dejas vacío pero username es un
  * correo válido, se usa username (típico en Gmail: mismo correo en ambos).
  * Con smtp.gmail.com, username y ese remitente deben ser el mismo correo.
- * use_smtp debe ser true para que 2) y 4) salgan por SMTP (en XAMPP mail() suele fallar).
+ * use_smtp debe ser true para que 2) el formulario público use SMTP (en XAMPP mail() suele fallar).
+ * Las respuestas 4) desde admin.php: si host, usuario, contraseña y remitente están completos,
+ * también se intenta SMTP aunque use_smtp sea false (útil si solo querías desactivar el envío
+ * del formulario pero el panel sí debe enviar).
  *
  * from_name: nombre visible; si está vacío, en formulario se usa "Nombre persona" del admin.
  *
@@ -41,6 +44,9 @@ return [
     // Opcional si username ya es ese correo (el código puede reutilizarlo).
     "from_email" => "tu_correo@gmail.com",
     "from_name" => "Formulario web",
+
+    // Solo en local si STARTTLS falla por certificados (php.ini sin CA bundle): true desactiva verify_peer.
+    // "smtp_relax_tls_verify" => true,
 
     // Solo para depuración local: escribe errores SMTP en mail_debug.log
     // "debug" => true,

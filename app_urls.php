@@ -10,6 +10,7 @@ declare(strict_types=1);
  *   Landing pública  → index.php
  *   Panel admin      → admin.php
  *   Formulario       → send.php (POST desde la landing)
+ *   Login clientes   → index.php#area-cliente (misma página tras sesión)
  *
  * URLS (dependen de dónde cuelgue la carpeta en el servidor web):
  *   Local típico (carpeta htdocs/pag-nombre):
@@ -18,6 +19,7 @@ declare(strict_types=1);
  *   Producción (ejemplo):
  *     Landing  https://tudominio.com/
  *     Admin    https://tudominio.com/admin.php
+ *     Clientes https://tudominio.com/index.php#area-cliente
  *   Si la instalación está en subcarpeta, el mismo patrón lleva el segmento
  *   extra: .../subcarpeta/ y .../subcarpeta/admin.php
  *
@@ -28,7 +30,8 @@ declare(strict_types=1);
  *   2) Si no → app_public_base_url() usa HTTP_HOST + HTTPS / X-Forwarded-Proto
  *      + dirname(SCRIPT_NAME) en cada petición.
  *
- * FUNCIONES: app_public_base_url(), app_landing_url(), app_admin_url()
+ * FUNCIONES: app_public_base_url(), app_landing_url(), app_admin_url(), app_client_portal_url()
+ *             app_mail_plain_text_links_footer() — una URL en pie (admin o área cliente).
  * UI para copiar URLs: panel admin → acordeón «Rutas (landing y admin)».
  *
  * Depuración (servidor, no UI): en app_config.php pon log_public_base_url
@@ -120,6 +123,40 @@ function app_landing_url(): string
 function app_admin_url(): string
 {
     return app_public_base_url() . "/admin.php";
+}
+
+function app_client_login_url(): string
+{
+    return app_public_base_url() . "/index.php#area-cliente";
+}
+
+function app_client_dashboard_url(): string
+{
+    return app_public_base_url() . "/index.php#area-cliente";
+}
+
+/** Registro, login y vista de cliente en la misma landing. */
+function app_client_portal_url(): string
+{
+    return app_public_base_url() . "/index.php#area-cliente";
+}
+
+/**
+ * Una sola URL en pie de correo (texto plano).
+ *
+ * @param "admin_notify"|"visitor_reply"
+ */
+function app_mail_plain_text_links_footer(string $kind): string
+{
+    $kind = strtolower(trim($kind));
+    if ($kind === "admin_notify") {
+        return "---\nPanel de administración: " . app_admin_url() . "\n";
+    }
+    if ($kind === "visitor_reply") {
+        return "---\nTu área de clientes y mensajes: " . app_client_portal_url() . "\n";
+    }
+
+    return "";
 }
 
 function app_public_url_source_description(): string

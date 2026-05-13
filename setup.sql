@@ -10,6 +10,16 @@ CREATE TABLE IF NOT EXISTS admins (
   password VARCHAR(255) NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS clients (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(180) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  display_name VARCHAR(180) NOT NULL DEFAULT '',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_clients_active (is_active)
+);
+
 CREATE TABLE IF NOT EXISTS site_settings (
   id INT PRIMARY KEY,
   person_name VARCHAR(180) NOT NULL,
@@ -40,10 +50,15 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   nombre VARCHAR(180) NOT NULL,
   email VARCHAR(180) NOT NULL,
   servicio VARCHAR(180) NOT NULL,
+  subject VARCHAR(200) NOT NULL DEFAULT '',
   mensaje TEXT NOT NULL,
   sent_to VARCHAR(180) NOT NULL,
   is_read TINYINT(1) NOT NULL DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  client_id INT NULL DEFAULT NULL,
+  in_reply_to INT NULL DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_messages_client (client_id),
+  INDEX idx_contact_messages_in_reply (in_reply_to)
 );
 
 CREATE TABLE IF NOT EXISTS contact_message_replies (
@@ -61,6 +76,7 @@ CREATE TABLE IF NOT EXISTS contact_whatsapp_clicks (
   servicio VARCHAR(180) NOT NULL DEFAULT '',
   mensaje TEXT NOT NULL,
   composed_text TEXT NOT NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_contact_whatsapp_clicks_created (created_at)
 );

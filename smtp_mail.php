@@ -78,6 +78,13 @@ function smtp_debug_log(array $cfg, string $message): void {
     @file_put_contents($path, $line, FILE_APPEND);
 }
 
+/** Una línea en contact_send_trace.log aunque no haya debug_log (diagnóstico SMTP). */
+function smtp_trace_public(string $message): void {
+    $path = __DIR__ . "/contact_send_trace.log";
+    $line = date("c") . " [smtp] " . $message . "\n";
+    @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+}
+
 function send_mail_smtp(array $cfg, string $to, string $subject, string $body, string $replyTo): bool {
     $host = (string)($cfg["host"] ?? "");
     $port = (int)($cfg["port"] ?? 587);
@@ -92,10 +99,11 @@ function send_mail_smtp(array $cfg, string $to, string $subject, string $body, s
     }
 
     // Contexto SSL con peer_name: necesario para STARTTLS con Gmail en muchos entornos Windows/PHP.
+    $relaxTls = !empty($cfg["smtp_relax_tls_verify"]);
     $sslContext = [
         "peer_name" => $host,
-        "verify_peer" => true,
-        "verify_peer_name" => true,
+        "verify_peer" => !$relaxTls,
+        "verify_peer_name" => !$relaxTls,
     ];
     $streamContext = stream_context_create([
         "ssl" => $sslContext,
@@ -120,6 +128,7 @@ function send_mail_smtp(array $cfg, string $to, string $subject, string $body, s
         $msg = "SMTP connect falló: {$errstr} ({$errno})";
         error_log($msg);
         smtp_debug_log($cfg, $msg);
+        smtp_trace_public($msg . " host={$host} port={$port} enc={$encryption}");
         return false;
     }
 
@@ -187,6 +196,7 @@ function send_mail_smtp(array $cfg, string $to, string $subject, string $body, s
         $err = "SMTP error: " . $e->getMessage();
         error_log($err);
         smtp_debug_log($cfg, $err);
+        smtp_trace_public($err . " user=" . $user);
         fclose($fp);
         return false;
     }

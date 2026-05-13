@@ -216,7 +216,21 @@ ctaImages.forEach((img) => {
 
 const contactForm = document.getElementById("contactForm");
 if (contactForm) {
-  contactForm.addEventListener("submit", function () {
+  contactForm.addEventListener("submit", function (ev) {
+    const emailEl = document.getElementById("email");
+    const emailVal = emailEl ? String(emailEl.value || "").trim() : "";
+    if (emailVal === "") {
+      ev.preventDefault();
+      if (emailEl) {
+        try {
+          emailEl.focus();
+        } catch (_e) {}
+        emailEl.setCustomValidity("Indica un correo para enviar por esta vía.");
+        emailEl.reportValidity();
+        emailEl.setCustomValidity("");
+      }
+      return;
+    }
     const submitBtn = contactForm.querySelector("button[type='submit']");
     if (!submitBtn || submitBtn.disabled) return;
     submitBtn.disabled = true;
@@ -243,6 +257,7 @@ if (whatsappBtn && contactForm) {
     const nombre = (document.getElementById("nombre")?.value || "").trim();
     const email = (document.getElementById("email")?.value || "").trim();
     const servicio = (document.getElementById("servicio")?.value || "").trim();
+    const asunto = (document.getElementById("contact_asunto")?.value || "").trim();
     const mensaje = (document.getElementById("mensaje")?.value || "").trim();
 
     // Si ya hay mensaje en el formulario, es el cuerpo completo: no repetir servicio ni plantillas.
@@ -252,6 +267,7 @@ if (whatsappBtn && contactForm) {
     } else {
       const parts = ["Hola"];
       if (nombre !== "") parts[0] = "Hola, soy " + nombre;
+      if (asunto !== "") parts.push('Asunto: "' + asunto + '".');
       if (servicio !== "") parts.push('Me interesa el servicio "' + servicio + '".');
       if (parts.length === 1) parts.push("Quisiera más información, por favor.");
       else parts.push("¿Me puedes orientar?");

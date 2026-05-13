@@ -3,6 +3,197 @@ declare(strict_types=1);
 
 // Punto de entrada de la landing. Patrones de URL local/servidor: ver app_urls.php (mapa al inicio del archivo).
 require __DIR__ . "/db.php";
+require_once __DIR__ . "/client_portal_lib.php";
+require_once __DIR__ . "/app_urls.php";
+
+client_session_start();
+
+if (isset($_GET["client_logout"])) {
+    client_session_destroy();
+    header("Location: " . app_public_base_url() . "/index.php");
+    exit;
+}
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $postAction = (string)($_POST["action"] ?? "");
+    if ($postAction === "client_login") {
+        $err = client_try_login($conn, (string)($_POST["email"] ?? ""), (string)($_POST["password"] ?? ""));
+        if ($err !== null) {
+            client_set_flash("danger", $err);
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=login#area-cliente");
+        } else {
+            client_set_flash("success", "Sesión iniciada. Ya puedes usar las ventajas de tu cuenta en esta misma página.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+        }
+        exit;
+    }
+    if ($postAction === "client_register") {
+        $err = client_try_register(
+            $conn,
+            (string)($_POST["reg_email"] ?? ""),
+            (string)($_POST["reg_password"] ?? ""),
+            (string)($_POST["reg_password_confirm"] ?? ""),
+            (string)($_POST["reg_display_name"] ?? "")
+        );
+        if ($err !== null) {
+            client_set_flash("danger", $err);
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        } else {
+            client_set_flash("success", "Cuenta creada. Ya estás dentro como cliente en esta web.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+        }
+        exit;
+    }
+    if (
+        $postAction === "client_mark_message_read"
+        || $postAction === "client_mark_message_unread"
+    ) {
+        $isAjax = isset($_POST["ajax"]) && (string)($_POST["ajax"] ?? "") === "1";
+        $messageId = (int)($_POST["message_id"] ?? 0);
+        if (!client_portal_resume_session($conn)) {
+            if ($isAjax) {
+                header("Content-Type: application/json; charset=UTF-8");
+                echo json_encode(["ok" => false, "err" => "no_session"]);
+                exit;
+            }
+            client_set_flash("danger", "Inicia sesión para gestionar el estado de los mensajes.");
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=login#area-cliente");
+            exit;
+        }
+        $sessClientId = (int)($_SESSION["client_id"] ?? 0);
+        $sessEmailNorm = strtolower(trim((string)($_SESSION["client_email"] ?? "")));
+        if ($messageId <= 0 || !client_contact_message_owned_by($conn, $sessClientId, $sessEmailNorm, $messageId)) {
+            if ($isAjax) {
+                header("Content-Type: application/json; charset=UTF-8");
+                echo json_encode(["ok" => false, "err" => "not_found"]);
+                exit;
+            }
+            client_set_flash("danger", "Ese mensaje no está en tu cuenta.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+            exit;
+        }
+        $wantRead = $postAction === "client_mark_message_read";
+        $readVal = $wantRead ? 1 : 0;
+        $stmt = $conn->prepare("UPDATE contact_messages SET is_read = ? WHERE id = ?");
+        if ($stmt === false) {
+            if ($isAjax) {
+                header("Content-Type: application/json; charset=UTF-8");
+                echo json_encode(["ok" => false, "err" => "prepare"]);
+                exit;
+            }
+            client_set_flash("danger", "No se pudo actualizar el mensaje.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+            exit;
+        }
+        $stmt->bind_param("ii", $readVal, $messageId);
+        $ok = $stmt->execute();
+        $stmt->close();
+        if ($isAjax) {
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["ok" => (bool)$ok, "id" => $messageId]);
+            exit;
+        }
+        client_set_flash("success", $wantRead ? "Marcado como leído." : "Marcado como no leído.");
+        header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+        exit;
+    }
+}
+
+$clientFlash = client_take_flash();
+$clientContactStatus = (string)($_GET["client_contact"] ?? "");
+$clientContactReason = (string)($_GET["reason"] ?? "");
+$clientUser = null;
+if (client_portal_resume_session($conn)) {
+    $clientUser = [
+        "id" => (int)($_SESSION["client_id"] ?? 0),
+        "email" => (string)($_SESSION["client_email"] ?? ""),
+        "display_name" => trim((string)($_SESSION["client_display_name"] ?? "")),
+    ];
+}
+
+$clientTab = (string)($_GET["client_tab"] ?? "");
+if ($clientTab !== "login" && $clientTab !== "register") {
+    $clientTab = "";
+}
+
+$clientPrefillNombre = "";
+$clientPrefillEmail = "";
+$clientMyMessages = [];
+$clientRepliesByMessageId = [];
+if ($clientUser !== null) {
+    $clientPrefillNombre = $clientUser["display_name"] !== ""
+        ? $clientUser["display_name"]
+        : (preg_match('/^([^@]+)/u', $clientUser["email"], $m) ? $m[1] : "");
+    $clientPrefillEmail = $clientUser["email"];
+
+    $clientIdForQuery = (int)$clientUser["id"];
+    $clientEmailNorm = strtolower(trim($clientUser["email"]));
+    $stmt = $conn->prepare("
+        SELECT id, nombre, servicio, subject, mensaje, created_at, in_reply_to, is_read,
+               (SELECT COUNT(*) FROM contact_message_replies r WHERE r.contact_message_id = m.id) AS reply_count
+        FROM contact_messages m
+        WHERE m.client_id = ? OR (m.client_id IS NULL AND LOWER(TRIM(m.email)) = ?)
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT 40
+    ");
+    if ($stmt !== false) {
+        $stmt->bind_param("is", $clientIdForQuery, $clientEmailNorm);
+        $stmt->execute();
+        $cmRes = $stmt->get_result();
+        if ($cmRes) {
+            while ($cmRow = $cmRes->fetch_assoc()) {
+                $clientMyMessages[] = $cmRow;
+            }
+        }
+        $stmt->close();
+    }
+    $msgIds = [];
+    foreach ($clientMyMessages as $cm) {
+        $mid = (int)($cm["id"] ?? 0);
+        if ($mid > 0) {
+            $msgIds[$mid] = true;
+        }
+    }
+    if (count($msgIds) > 0) {
+        $inList = implode(",", array_keys($msgIds));
+        $repQ = $conn->query(
+            "SELECT id, contact_message_id, body, created_at FROM contact_message_replies WHERE contact_message_id IN ($inList) ORDER BY created_at ASC, id ASC"
+        );
+        if ($repQ) {
+            while ($rp = $repQ->fetch_assoc()) {
+                $mid = (int)$rp["contact_message_id"];
+                if (!isset($clientRepliesByMessageId[$mid])) {
+                    $clientRepliesByMessageId[$mid] = [];
+                }
+                $clientRepliesByMessageId[$mid][] = $rp;
+            }
+        }
+    }
+}
+
+$clientMsgMetaById = [];
+foreach ($clientMyMessages as $cmRow) {
+    $mid = (int)($cmRow["id"] ?? 0);
+    if ($mid > 0) {
+        $clientMsgMetaById[$mid] = $cmRow;
+    }
+}
+
+$clientThreads = [];
+if ($clientUser !== null && count($clientMyMessages) > 0) {
+    $clientThreads = index_client_group_messages_threads($clientMyMessages, $clientRepliesByMessageId);
+}
+
+$landingContactErrorLabels = [
+    "nombre" => "Por favor escribe tu nombre.",
+    "email_vacio" => "Por favor escribe tu correo.",
+    "email_invalido" => "El correo no es válido. Asegúrate de incluir “@” y un dominio (por ejemplo: tunombre@email.com).",
+    "servicio" => "Selecciona un servicio en el desplegable.",
+    "asunto" => "Escribe un título o asunto en el campo de texto (no es el servicio: elige el servicio en su desplegable).",
+    "mensaje" => "Escribe el mensaje que quieres enviar.",
+    "sesion_seguimiento" => "Para enviar un seguimiento necesitas tener la sesión iniciada en esta página.",
+    "seguimiento_invalido" => "Ese mensaje no está en tu historial o ya no está disponible. Actualiza la página e inténtalo de nuevo.",
+];
 
 $defaultSettings = [
     "person_name" => "Tu Nombre",
@@ -35,6 +226,89 @@ function brand_monogram(string $brandName): string {
         if (mb_strlen($letters, "UTF-8") >= 2) break;
     }
     return $letters !== "" ? $letters : "?";
+}
+
+/** Fecha legible para el historial de mensajes del cliente. */
+function index_format_datetime(string $sqlDatetime): string
+{
+    try {
+        $dt = new DateTimeImmutable($sqlDatetime);
+        return $dt->format("d/m/Y H:i");
+    } catch (Throwable $e) {
+        return $sqlDatetime;
+    }
+}
+
+/**
+ * Agrupa mensajes en hilos según in_reply_to (un bloque = una conversación con el sitio).
+ *
+ * @param array<int, list<array>> $repliesByMessageId
+ * @return list<array{root_id:int, messages:list<array>, latest_ts:int, has_admin_reply:bool}>
+ */
+function index_client_group_messages_threads(array $messages, array $repliesByMessageId): array
+{
+    $byId = [];
+    foreach ($messages as $m) {
+        $id = (int)($m["id"] ?? 0);
+        if ($id > 0) {
+            $byId[$id] = $m;
+        }
+    }
+    $buckets = [];
+    foreach ($messages as $m) {
+        $mid = (int)($m["id"] ?? 0);
+        if ($mid <= 0) {
+            continue;
+        }
+        $root = $mid;
+        $p = (int)($m["in_reply_to"] ?? 0);
+        $guard = 0;
+        while ($p > 0 && isset($byId[$p]) && $guard++ < 64) {
+            $root = $p;
+            $p = (int)($byId[$p]["in_reply_to"] ?? 0);
+        }
+        if (!isset($buckets[$root])) {
+            $buckets[$root] = [];
+        }
+        $buckets[$root][] = $m;
+    }
+    $threads = [];
+    foreach ($buckets as $rootId => $rows) {
+        usort($rows, static function (array $a, array $b): int {
+            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
+            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
+            if ($ta !== $tb) {
+                return $ta <=> $tb;
+            }
+            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
+        });
+        $latestTs = 0;
+        foreach ($rows as $r) {
+            $t = strtotime((string)($r["created_at"] ?? "")) ?: 0;
+            if ($t > $latestTs) {
+                $latestTs = $t;
+            }
+        }
+        $hasAdmin = false;
+        foreach ($rows as $r) {
+            $rid = (int)($r["id"] ?? 0);
+            if ($rid > 0 && !empty($repliesByMessageId[$rid])) {
+                $hasAdmin = true;
+                break;
+            }
+        }
+        $threads[] = [
+            "root_id" => (int)$rootId,
+            "messages" => $rows,
+            "latest_ts" => $latestTs,
+            "has_admin_reply" => $hasAdmin,
+        ];
+    }
+    usort($threads, static function (array $a, array $b): int {
+        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
+    });
+
+    return $threads;
 }
 
 $settings = $defaultSettings;
@@ -115,6 +389,12 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <a href="#sobre-mi"><i class="fa-solid fa-user"></i> Sobre mí</a>
         <a href="#servicios"><i class="fa-solid fa-briefcase"></i> Servicios</a>
         <a href="#contacto"><i class="fa-solid fa-envelope"></i> Contacto</a>
+        <?php if ($clientUser !== null): ?>
+          <a href="#area-cliente" class="nav-client-active"><i class="fa-solid fa-user-check"></i> Mi cuenta</a>
+          <a href="index.php?client_logout=1"><i class="fa-solid fa-right-from-bracket"></i> Salir</a>
+        <?php else: ?>
+          <a href="#area-cliente"><i class="fa-solid fa-circle-user"></i> Clientes</a>
+        <?php endif; ?>
       </nav>
       <div class="theme-controls">
         <?php require __DIR__ . "/palette_picker.php"; ?>
@@ -145,6 +425,276 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
             <?php endforeach; ?>
           </ul>
         </aside>
+      </div>
+    </section>
+
+    <section id="area-cliente" class="section section-client reveal">
+      <div class="container">
+        <h2><i class="fa-solid fa-circle-user"></i> Área de clientes</h2>
+        <?php if ($clientFlash["msg"] !== ""): ?>
+          <p class="<?= $clientFlash["type"] === "success" ? "form-ok" : "form-error" ?> client-portal-flash" role="alert">
+            <?= htmlspecialchars($clientFlash["msg"]) ?>
+          </p>
+        <?php endif; ?>
+
+        <?php if ($clientUser !== null && ($clientContactStatus === "ok" || $clientContactStatus === "saved" || $clientContactStatus === "error")): ?>
+          <?php if ($clientContactStatus === "ok"): ?>
+            <p class="form-ok client-portal-flash" role="status">Seguimiento enviado. Aparece en tu historial y en el panel del sitio.</p>
+          <?php elseif ($clientContactStatus === "saved"): ?>
+            <p class="form-ok client-portal-flash" role="status">Tu mensaje quedó guardado; el aviso por correo al sitio puede no haberse enviado (revisa la configuración SMTP).</p>
+          <?php else: ?>
+            <p class="form-error client-portal-flash" role="alert">
+              <?= htmlspecialchars($landingContactErrorLabels[$clientContactReason] ?? "No se pudo enviar el seguimiento. Revisa los datos e inténtalo de nuevo.") ?>
+            </p>
+          <?php endif; ?>
+        <?php endif; ?>
+
+        <?php if ($clientUser !== null): ?>
+          <p class="lead mb-4 client-zone-intro">
+            Tu historial de contacto con esta web se guarda aquí. El correo sirve sobre todo para el primer aviso o notificaciones; lo que quede registrado en detalle es esta bandeja.
+          </p>
+          <div class="client-auth-box client-perks mb-4">
+              <h3><i class="fa-solid fa-wand-magic-sparkles"></i> Cómo funciona</h3>
+              <ul class="mb-0">
+                <li><strong>Nueva consulta:</strong> <strong>Servicio</strong> y <strong>asunto</strong> (obligatorio) en la misma fila, luego el mensaje; o el formulario al pie con el mismo criterio.</li>
+                <li><strong>Conversaciones:</strong> cada bloque es un tema con su <strong>ID de conversación</strong> (Conv.); dentro, los envíos van en orden de tiempo y cada uno muestra su <strong>ID de mensaje</strong> (Msg.). Al final del hilo puedes enviar un seguimiento.</li>
+              </ul>
+          </div>
+
+          <div class="client-messages-panel client-auth-box">
+            <h3><i class="fa-solid fa-inbox"></i> Mis mensajes</h3>
+
+            <div class="client-msg-new-inquiry">
+              <p class="client-msg-label">Nueva consulta</p>
+              <p class="client-muted small mb-2">Nueva conversación: <strong>servicio</strong> y <strong>asunto</strong> (obligatorio) en la misma fila, luego el mensaje.</p>
+              <form method="post" action="send.php" class="client-msg-new-inquiry-form contact-form">
+                <input type="hidden" name="return_anchor" value="area-cliente">
+                <input type="hidden" name="nombre" value="<?= htmlspecialchars($clientPrefillNombre) ?>">
+                <input type="hidden" name="email" value="<?= htmlspecialchars($clientPrefillEmail) ?>">
+                <div class="form-servicio-asunto-row">
+                  <div class="form-servicio-asunto-cell">
+                    <label for="client_new_servicio">Servicio de interés</label>
+                    <select id="client_new_servicio" name="servicio" required>
+                      <option value="">Selecciona una opción</option>
+                      <?php foreach ($services as $service): ?>
+                        <option value="<?= htmlspecialchars($service["title"]) ?>"><?= htmlspecialchars($service["title"]) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="form-servicio-asunto-cell">
+                    <label for="client_new_asunto">Asunto o título <span class="contact-required-hint">(obligatorio)</span></label>
+                    <input id="client_new_asunto" name="asunto" type="text" maxlength="200" required minlength="1" placeholder="Título breve (texto)" autocomplete="off">
+                  </div>
+                </div>
+                <p class="client-muted small mb-0 mt-1">Servicio: lista de la web. Asunto: frase propia para localizar el hilo (no sustituye al servicio).</p>
+                <label for="client_new_mensaje" class="mt-3">Mensaje</label>
+                <textarea id="client_new_mensaje" name="mensaje" rows="4" required placeholder="Describe tu consulta"></textarea>
+                <button type="submit" class="btn btn-primary"><i class="fa-solid fa-paper-plane"></i> Enviar consulta</button>
+              </form>
+            </div>
+
+            <?php if (count($clientMyMessages) === 0): ?>
+              <p class="client-muted small mb-0 mt-3">Aún no hay mensajes anteriores en tu historial.</p>
+            <?php else: ?>
+              <p class="client-muted small mb-3 mt-3">
+                <?= count($clientThreads) ?> conversación(es), <?= count($clientMyMessages) ?> mensaje(s) en total. Abre un bloque para ver el hilo y responder. Puedes marcar cada envío como leído o no leído para organizarte.
+              </p>
+              <div id="clientInboxMessagesRoot" class="client-msg-list">
+                <?php foreach ($clientThreads as $ti => $thread): ?>
+                  <?php
+                    $tMsgs = $thread["messages"] ?? [];
+                    $rootRow = $tMsgs[0] ?? [];
+                    $rootServ = (string)($rootRow["servicio"] ?? "");
+                    $rootSubject = trim((string)($rootRow["subject"] ?? ""));
+                    $rootSubjectDisp = $rootSubject !== "" ? $rootSubject : "Sin asunto";
+                    $rootStart = (string)($rootRow["created_at"] ?? "");
+                    $tCount = count($tMsgs);
+                    $tLatest = (int)($thread["latest_ts"] ?? 0);
+                    $tLatestLabel = $tLatest > 0 ? index_format_datetime(date("Y-m-d H:i:s", $tLatest)) : "";
+                    $threadUnread = 0;
+                    foreach ($tMsgs as $tmU) {
+                        if ((int)($tmU["is_read"] ?? 0) === 0) {
+                            $threadUnread++;
+                        }
+                    }
+                    $threadConvId = (int)($thread["root_id"] ?? 0);
+                  ?>
+                  <details class="client-msg-thread client-msg-conv-root"<?= $ti === 0 ? " open" : "" ?> data-thread-id="<?= $threadConvId ?>">
+                    <summary>
+                      <span class="client-msg-summary-main">
+                        <?php if ($threadConvId > 0): ?>
+                          <span class="client-msg-thread-id" title="Identificador de esta conversación (asunto/hilo); servirá para buscar o filtrar">Conv. <?= $threadConvId ?></span>
+                        <?php endif; ?>
+                        <span class="client-msg-thread-subject<?= $rootSubject === "" ? " client-msg-thread-subject--empty" : "" ?>" title="Asunto (título); el servicio se muestra aparte"><?= htmlspecialchars($rootSubjectDisp) ?></span>
+                        <span class="client-msg-date"><?= htmlspecialchars(index_format_datetime($rootStart)) ?></span>
+                        <span class="client-msg-service"><i class="fa-solid fa-briefcase" aria-hidden="true"></i> <?= htmlspecialchars($rootServ !== "" ? $rootServ : "—") ?></span>
+                        <?php if ($tCount > 1): ?>
+                          <span class="client-msg-conv-meta"><?= (int)$tCount ?> envíos</span>
+                        <?php endif; ?>
+                        <?php if ($tLatestLabel !== "" && $tCount > 1): ?>
+                          <span class="client-msg-conv-meta">Última act.: <?= htmlspecialchars($tLatestLabel) ?></span>
+                        <?php endif; ?>
+                      </span>
+                      <span class="client-msg-summary-badges">
+                        <?php if ($threadUnread > 0): ?>
+                          <span class="client-msg-badge client-msg-badge-unread" title="Hay envíos sin leer en este hilo"><?= (int)$threadUnread ?> sin leer</span>
+                        <?php endif; ?>
+                        <?php if (!empty($thread["has_admin_reply"])): ?>
+                          <span class="client-msg-badge" title="Hay respuesta del sitio en este hilo">Respuesta</span>
+                        <?php endif; ?>
+                      </span>
+                    </summary>
+                    <div class="client-msg-detail client-msg-conv-body">
+                      <?php foreach ($tMsgs as $mi => $cm): ?>
+                        <?php
+                          $cmId = (int)($cm["id"] ?? 0);
+                          $cmServicio = (string)($cm["servicio"] ?? "");
+                          $cmSubject = trim((string)($cm["subject"] ?? ""));
+                          $cmMensaje = (string)($cm["mensaje"] ?? "");
+                          $cmCreated = (string)($cm["created_at"] ?? "");
+                          $cmReplies = $clientRepliesByMessageId[$cmId] ?? [];
+                          $cmReplyCount = (int)($cm["reply_count"] ?? 0);
+                          $cmInReplyTo = isset($cm["in_reply_to"]) ? (int)$cm["in_reply_to"] : 0;
+                          $isRootTurn = $cmInReplyTo <= 0 || !isset($clientMsgMetaById[$cmInReplyTo]);
+                          $isCmUnread = (int)($cm["is_read"] ?? 0) === 0;
+                        ?>
+                        <div class="client-msg-turn client-msg-own-row<?= $isCmUnread ? " is-unread" : "" ?>" data-message-id="<?= $cmId ?>">
+                          <div class="client-msg-turn-main">
+                          <div class="client-msg-turn-head">
+                            <?php if ($cmId > 0): ?>
+                              <span class="client-msg-id-chip" title="ID del mensaje; servirá para buscar o filtrar">Msg. <?= $cmId ?></span>
+                            <?php endif; ?>
+                            <span class="client-msg-turn-date"><?= htmlspecialchars(index_format_datetime($cmCreated)) ?></span>
+                            <?php if (!$isRootTurn): ?>
+                              <span class="client-msg-badge client-msg-badge-muted">Seguimiento</span>
+                            <?php endif; ?>
+                            <?php if ($cmReplyCount > 0): ?>
+                              <span class="client-msg-badge">Respuesta</span>
+                            <?php endif; ?>
+                            <?php if ($tCount > 1 && $cmServicio !== ""): ?>
+                              <span class="client-msg-turn-svc"><?= htmlspecialchars($cmServicio) ?></span>
+                            <?php endif; ?>
+                          </div>
+                          <div class="client-msg-turn-body">
+                            <div class="client-msg-bubble client-msg-bubble--you">
+                            <?php if ($cmSubject !== "" && $isRootTurn): ?>
+                              <p class="client-msg-subject-line"><span class="client-msg-label">Asunto</span> <?= htmlspecialchars($cmSubject) ?></p>
+                            <?php endif; ?>
+                            <p class="client-msg-bubble-label"><i class="fa-solid fa-user" aria-hidden="true"></i> Tu mensaje</p>
+                            <div class="client-msg-body"><?= nl2br(htmlspecialchars($cmMensaje)) ?></div>
+                            </div>
+                            <div class="client-msg-bubble client-msg-bubble--site">
+                            <p class="client-msg-bubble-label"><i class="fa-solid fa-building" aria-hidden="true"></i> Respuesta del sitio</p>
+                            <?php if (count($cmReplies) > 0): ?>
+                              <div class="client-msg-replies">
+                                <?php foreach ($cmReplies as $rep): ?>
+                                  <div class="client-msg-reply">
+                                    <span class="client-msg-reply-meta"><?= htmlspecialchars(index_format_datetime((string)($rep["created_at"] ?? ""))) ?></span>
+                                    <div class="client-msg-reply-body"><?= nl2br(htmlspecialchars((string)($rep["body"] ?? ""))) ?></div>
+                                  </div>
+                                <?php endforeach; ?>
+                              </div>
+                            <?php else: ?>
+                              <p class="client-muted small mb-0">Aún no hay respuesta a este envío.</p>
+                            <?php endif; ?>
+                            </div>
+                            <div class="client-msg-read-actions" role="group" aria-label="Estado de lectura de este envío">
+                              <span class="client-msg-badge client-msg-badge-new js-client-msg-new-badge">Nuevo</span>
+                              <form method="post" class="client-msg-mark-form js-client-mark-read-form">
+                                <input type="hidden" name="action" value="client_mark_message_read">
+                                <input type="hidden" name="message_id" value="<?= $cmId ?>">
+                                <button type="submit" class="btn btn-ghost btn-msg-read-state" title="Marcar como leído" aria-label="Marcar como leído">
+                                  <i class="fa-solid fa-check" aria-hidden="true"></i>
+                                </button>
+                              </form>
+                              <form method="post" class="client-msg-mark-form js-client-mark-unread-form">
+                                <input type="hidden" name="action" value="client_mark_message_unread">
+                                <input type="hidden" name="message_id" value="<?= $cmId ?>">
+                                <button type="submit" class="btn btn-ghost btn-msg-read-state" title="Marcar como no leído" aria-label="Marcar como no leído">
+                                  <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
+                                </button>
+                              </form>
+                            </div>
+                          </div>
+                        </div>
+                        </div>
+                      <?php endforeach; ?>
+                      <?php
+                        $threadRootId = (int)($thread["root_id"] ?? 0);
+                        $nTm = count($tMsgs);
+                        $lastCm = $nTm > 0 ? $tMsgs[$nTm - 1] : [];
+                        $lastCmId = (int)($lastCm["id"] ?? 0);
+                        $lastNombre = trim((string)($lastCm["nombre"] ?? "")) !== "" ? trim((string)$lastCm["nombre"]) : $clientPrefillNombre;
+                        $lastServicio = trim((string)($lastCm["servicio"] ?? ""));
+                        if ($lastServicio === "" && $nTm > 0) {
+                            $lastServicio = trim((string)($tMsgs[0]["servicio"] ?? ""));
+                        }
+                      ?>
+                      <?php if ($lastCmId > 0): ?>
+                        <div class="client-msg-followup client-msg-followup-thread-end">
+                          <p class="client-msg-bubble-label"><i class="fa-solid fa-reply" aria-hidden="true"></i> Siguiente mensaje en este hilo</p>
+                          <p class="client-muted small mb-2">Un solo envío al final del hilo: queda enlazado al <strong>último mensaje</strong> (Msg. <?= (int)$lastCmId ?>).</p>
+                          <form method="post" action="send.php" class="client-msg-followup-form">
+                            <input type="hidden" name="return_anchor" value="area-cliente">
+                            <input type="hidden" name="in_reply_to" value="<?= $lastCmId ?>">
+                            <input type="hidden" name="nombre" value="<?= htmlspecialchars($lastNombre) ?>">
+                            <input type="hidden" name="email" value="<?= htmlspecialchars($clientPrefillEmail) ?>">
+                            <input type="hidden" name="servicio" value="<?= htmlspecialchars($lastServicio) ?>">
+                            <label class="theme-sr-only" for="followup_thread_<?= $threadRootId ?>">Texto del seguimiento</label>
+                            <textarea id="followup_thread_<?= $threadRootId ?>" name="mensaje" rows="3" required placeholder="Escribe aquí tu siguiente mensaje en esta conversación"></textarea>
+                            <button type="submit" class="btn btn-ghost">Enviar seguimiento</button>
+                          </form>
+                        </div>
+                      <?php endif; ?>
+                    </div>
+                  </details>
+                <?php endforeach; ?>
+              </div>
+              <p class="client-muted small mt-3 mb-0">También puedes usar el <a href="#contacto">formulario de contacto</a> al pie de la página si lo prefieres.</p>
+            <?php endif; ?>
+          </div>
+        <?php else: ?>
+          <p class="client-muted mb-3">
+            Si ya te pusiste en contacto sin cuenta, puedes seguir por correo; si quieres un historial ordenado en esta web, <strong><a href="#client-login-card">inicia sesión</a></strong> o <strong><a href="#client-register-card">regístrate</a></strong> con el mismo correo y usa el formulario de contacto estando dentro.
+          </p>
+          <p class="client-muted mb-4">
+            Crea tu usuario desde aquí o entra si ya te registraste. El administrador puede desactivar cuentas desde su panel si hace falta.
+          </p>
+          <div class="client-auth-grid">
+            <div class="client-auth-box <?= $clientTab === "register" ? "client-card-highlight" : "" ?>" id="client-register-card">
+              <h3><i class="fa-solid fa-user-plus"></i> Crear cuenta</h3>
+              <form method="post" class="contact-form client-auth-form">
+                <input type="hidden" name="action" value="client_register">
+                <label for="reg_email">Correo</label>
+                <input id="reg_email" name="reg_email" type="email" required autocomplete="email">
+
+                <label for="reg_display_name">Nombre para mostrar (opcional)</label>
+                <input id="reg_display_name" name="reg_display_name" type="text" maxlength="180" autocomplete="name" placeholder="Cómo te saludamos">
+
+                <label for="reg_password">Clave</label>
+                <input id="reg_password" name="reg_password" type="password" required minlength="10" autocomplete="new-password" placeholder="Mín. 10 caracteres, A, a, 0">
+
+                <label for="reg_password_confirm">Repetir clave</label>
+                <input id="reg_password_confirm" name="reg_password_confirm" type="password" required minlength="10" autocomplete="new-password">
+
+                <button type="submit" class="btn btn-primary">Registrarme</button>
+              </form>
+              </div>
+            <div class="client-auth-box <?= $clientTab === "login" ? "client-card-highlight" : "" ?>" id="client-login-card">
+              <h3><i class="fa-solid fa-right-to-bracket"></i> Iniciar sesión</h3>
+              <form method="post" class="contact-form client-auth-form">
+                <input type="hidden" name="action" value="client_login">
+                <label for="login_email">Correo</label>
+                <input id="login_email" name="email" type="email" required autocomplete="username">
+
+                <label for="login_password">Clave</label>
+                <input id="login_password" name="password" type="password" required autocomplete="current-password">
+
+                <button type="submit" class="btn btn-ghost">Entrar</button>
+              </form>
+              </div>
+          </div>
+        <?php endif; ?>
       </div>
     </section>
 
@@ -233,14 +783,15 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <div>
           <h2><i class="fa-solid fa-paper-plane"></i> Contacto</h2>
           <p><?= htmlspecialchars($settings["contact_intro"]) ?></p>
+          <div class="contact-flow-hint">
+            <p><strong>Primera consulta:</strong> este formulario envía un aviso al correo del sitio. Es la forma habitual de empezar.</p>
+            <?php if ($clientUser === null): ?>
+              <p><strong>Seguimiento:</strong> para que las respuestas y tus envíos queden reunidos en un solo historial (sin depender solo del correo), te conviene <a href="#area-cliente">crear cuenta o iniciar sesión</a> con el mismo correo y seguir escribiendo desde el área de clientes.</p>
+            <?php else: ?>
+              <p><strong>Seguimiento:</strong> en <a href="#area-cliente">Mis mensajes</a> puedes enviar una <strong>nueva consulta</strong> desde el mismo panel o un <strong>seguimiento</strong> dentro de un hilo abierto.</p>
+            <?php endif; ?>
+          </div>
           <?php
-            $errorMessages = [
-                "nombre"          => "Por favor escribe tu nombre.",
-                "email_vacio"     => "Por favor escribe tu correo.",
-                "email_invalido"  => "El correo no es válido. Asegúrate de incluir “@” y un dominio (por ejemplo: tunombre@email.com).",
-                "servicio"        => "Selecciona un servicio en el desplegable.",
-                "mensaje"         => "Escribe el mensaje que quieres enviar.",
-            ];
             $status = $_GET["status"] ?? "";
             $reason = $_GET["reason"] ?? "";
           ?>
@@ -250,7 +801,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
             <p class="form-ok">Mensaje guardado. Revisa la configuración de correo del servidor.</p>
           <?php elseif ($status === "error"): ?>
             <p class="form-error">
-              <?= htmlspecialchars($errorMessages[$reason] ?? "No se pudo procesar el mensaje. Revisa los datos del formulario.") ?>
+              <?= htmlspecialchars($landingContactErrorLabels[$reason] ?? "No se pudo procesar el mensaje. Revisa los datos del formulario.") ?>
             </p>
           <?php endif; ?>
         </div>
@@ -265,24 +816,33 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         ?>
         <form id="contactForm" class="contact-form reveal" method="post" action="send.php" data-whatsapp="<?= htmlspecialchars($whatsappDigits) ?>">
           <label for="nombre">Nombre</label>
-          <input id="nombre" name="nombre" type="text" placeholder="Tu nombre" required>
+          <input id="nombre" name="nombre" type="text" placeholder="Tu nombre" required value="<?= htmlspecialchars($clientPrefillNombre) ?>">
 
-          <label for="email">Correo</label>
-          <input id="email" name="email" type="email" placeholder="tunombre@email.com" required>
+          <label for="email">Correo <span class="contact-required-hint">(obligatorio si envías con «Enviar…»)</span></label>
+          <input id="email" name="email" type="email" placeholder="tunombre@email.com" required autocomplete="email" inputmode="email" value="<?= htmlspecialchars($clientPrefillEmail) ?>">
 
-          <label for="servicio">Servicio de interés</label>
-          <select id="servicio" name="servicio" required>
-            <option value="">Selecciona una opción</option>
-            <?php foreach ($services as $service): ?>
-              <option value="<?= htmlspecialchars($service["title"]) ?>"><?= htmlspecialchars($service["title"]) ?></option>
-            <?php endforeach; ?>
-          </select>
+          <div class="form-servicio-asunto-row">
+            <div class="form-servicio-asunto-cell">
+              <label for="servicio">Servicio de interés</label>
+              <select id="servicio" name="servicio" required>
+                <option value="">Selecciona una opción</option>
+                <?php foreach ($services as $service): ?>
+                  <option value="<?= htmlspecialchars($service["title"]) ?>"><?= htmlspecialchars($service["title"]) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="form-servicio-asunto-cell">
+              <label for="contact_asunto">Asunto o título <span class="contact-required-hint">(obligatorio)</span></label>
+              <input id="contact_asunto" name="asunto" type="text" maxlength="200" required minlength="1" placeholder="Título breve (texto)" autocomplete="off">
+            </div>
+          </div>
+          <p class="client-muted small mb-0 mt-1">Servicio y asunto en la misma fila (en móvil se apilan). El asunto es obligatorio y no reemplaza al servicio.</p>
 
-          <label for="mensaje">Mensaje</label>
+          <label for="mensaje" class="mt-3">Mensaje</label>
           <textarea id="mensaje" name="mensaje" rows="4" placeholder="Cuéntame cómo te puedo ayudar" required></textarea>
 
           <div class="contact-actions">
-            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> Enviar por correo</button>
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> <?= $clientUser !== null ? "Enviar consulta" : "Enviar (aviso por correo)" ?></button>
             <button
               type="button"
               id="contactWhatsappBtn"
@@ -306,5 +866,70 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
   </footer>
 
   <script src="script.js?v=<?= htmlspecialchars($scriptVersion) ?>"></script>
+  <?php if ($clientUser !== null && count($clientMyMessages) > 0): ?>
+  <script>
+    (function () {
+      var root = document.getElementById("clientInboxMessagesRoot");
+      if (!root) return;
+
+      function applyRead(row) {
+        if (!row || !row.classList.contains("is-unread")) return;
+        row.classList.remove("is-unread");
+      }
+      function applyUnread(row) {
+        if (!row || row.classList.contains("is-unread")) return;
+        row.classList.add("is-unread");
+      }
+
+      function postToggle(row, action) {
+        var id = row.getAttribute("data-message-id");
+        if (!id) return Promise.resolve(false);
+        var fd = new FormData();
+        fd.append("action", action);
+        fd.append("message_id", id);
+        fd.append("ajax", "1");
+        return fetch(window.location.pathname || "index.php", {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+          headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" }
+        }).then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          var ct = (r.headers.get("Content-Type") || "").toLowerCase();
+          if (ct.indexOf("application/json") === -1) {
+            return r.text().then(function (txt) {
+              throw new Error("Respuesta no-JSON: " + txt.slice(0, 200));
+            });
+          }
+          return r.json();
+        }).then(function (data) {
+          return !!(data && data.ok);
+        }).catch(function (err) {
+          console.error("Error en " + action + ":", err);
+          return false;
+        });
+      }
+
+      root.querySelectorAll(".js-client-mark-read-form").forEach(function (form) {
+        form.addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          var row = form.closest(".client-msg-own-row");
+          postToggle(row, "client_mark_message_read").then(function (ok) {
+            if (ok) applyRead(row);
+          });
+        });
+      });
+      root.querySelectorAll(".js-client-mark-unread-form").forEach(function (form) {
+        form.addEventListener("submit", function (ev) {
+          ev.preventDefault();
+          var row = form.closest(".client-msg-own-row");
+          postToggle(row, "client_mark_message_unread").then(function (ok) {
+            if (ok) applyUnread(row);
+          });
+        });
+      });
+    })();
+  </script>
+  <?php endif; ?>
 </body>
 </html>
