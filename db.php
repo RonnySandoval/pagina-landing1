@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS site_settings (
   contact_intro TEXT NOT NULL,
   contact_email VARCHAR(180) NOT NULL,
   contact_whatsapp VARCHAR(32) DEFAULT NULL,
+  contact_whatsapp_country_code VARCHAR(8) DEFAULT NULL,
   footer_text VARCHAR(180) NOT NULL,
   logo_image_path VARCHAR(255) DEFAULT NULL
 )");
@@ -157,6 +158,22 @@ if ($siteSettingsWhatsappColumnResult && $siteSettingsWhatsappColumnResult->num_
 }
 if (!$siteSettingsHasWhatsapp) {
     $conn->query("ALTER TABLE site_settings ADD COLUMN contact_whatsapp VARCHAR(32) DEFAULT NULL AFTER contact_email");
+}
+
+$siteSettingsHasWhatsappCc = false;
+$siteSettingsWhatsappCcColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'site_settings'
+  AND COLUMN_NAME = 'contact_whatsapp_country_code'
+LIMIT 1
+");
+if ($siteSettingsWhatsappCcColumnResult && $siteSettingsWhatsappCcColumnResult->num_rows === 1) {
+    $siteSettingsHasWhatsappCc = true;
+}
+if (!$siteSettingsHasWhatsappCc) {
+    $conn->query("ALTER TABLE site_settings ADD COLUMN contact_whatsapp_country_code VARCHAR(8) DEFAULT NULL AFTER contact_whatsapp");
 }
 
 $conn->query("
@@ -213,6 +230,27 @@ if ($messagesIsReadColumnResult && $messagesIsReadColumnResult->num_rows === 1) 
 if (!$messagesHasIsRead) {
     $conn->query("ALTER TABLE contact_messages ADD COLUMN is_read TINYINT(1) NOT NULL DEFAULT 0 AFTER sent_to");
 }
+
+$conn->query("
+CREATE TABLE IF NOT EXISTS contact_message_replies (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  contact_message_id INT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_message_replies_msg (contact_message_id)
+)");
+
+$conn->query("
+CREATE TABLE IF NOT EXISTS contact_whatsapp_clicks (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(180) NOT NULL DEFAULT '',
+  email VARCHAR(180) NOT NULL DEFAULT '',
+  servicio VARCHAR(180) NOT NULL DEFAULT '',
+  mensaje TEXT NOT NULL,
+  composed_text TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_whatsapp_clicks_created (created_at)
+)");
 
 $conn->query("
 CREATE TABLE IF NOT EXISTS service_gallery (

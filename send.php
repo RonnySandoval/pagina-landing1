@@ -129,14 +129,15 @@ $subject = "Nuevo contacto desde tu web";
 $body = "Nombre: $nombre\nCorreo: $email\nServicio: $servicio\n\nMensaje:\n$mensaje\n";
 
 $useSmtp = !empty($mailConfig["use_smtp"]);
+$smtpFromResolved = mail_config_resolve_smtp_from($mailConfig);
 $smtpReady = $useSmtp
     && !empty($mailConfig["host"])
     && !empty($mailConfig["username"])
     && !empty($mailConfig["password"])
-    && !empty($mailConfig["from_email"]);
+    && $smtpFromResolved !== "";
 
 $fromEmailFallback = filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : $to;
-$fromForPhpMail = !empty($mailConfig["from_email"]) ? (string)$mailConfig["from_email"] : $fromEmailFallback;
+$fromForPhpMail = $smtpFromResolved !== "" ? $smtpFromResolved : $fromEmailFallback;
 
 // Nombre visible del remitente: from_name en mail_config → "Nombre persona" del admin.
 // No usamos "Marca" (brand_name): suele ser un nombre corto tipo carpeta del proyecto (Pagina1).
@@ -182,6 +183,7 @@ $mailSent = false;
 
 if ($smtpReady) {
     $smtpCfg = $mailConfig;
+    $smtpCfg["from_email"] = $smtpFromResolved;
     $smtpCfg["from_name"] = $fromDisplayName;
     $mailSent = send_mail_smtp($smtpCfg, $to, $subject, $body, $email);
 }

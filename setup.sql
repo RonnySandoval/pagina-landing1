@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS site_settings (
   contact_intro TEXT NOT NULL,
   contact_email VARCHAR(180) NOT NULL,
   contact_whatsapp VARCHAR(32) DEFAULT NULL,
+  contact_whatsapp_country_code VARCHAR(8) DEFAULT NULL,
   footer_text VARCHAR(180) NOT NULL,
   logo_image_path VARCHAR(255) DEFAULT NULL
 );
@@ -35,7 +36,27 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   servicio VARCHAR(180) NOT NULL,
   mensaje TEXT NOT NULL,
   sent_to VARCHAR(180) NOT NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS contact_message_replies (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  contact_message_id INT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_message_replies_msg (contact_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS contact_whatsapp_clicks (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(180) NOT NULL DEFAULT '',
+  email VARCHAR(180) NOT NULL DEFAULT '',
+  servicio VARCHAR(180) NOT NULL DEFAULT '',
+  mensaje TEXT NOT NULL,
+  composed_text TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_contact_whatsapp_clicks_created (created_at)
 );
 
 CREATE TABLE IF NOT EXISTS service_gallery (

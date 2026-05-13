@@ -1,8 +1,62 @@
 const menuToggle = document.getElementById("menuToggle");
 const mainNav = document.getElementById("mainNav");
 const year = document.getElementById("year");
-const themeModeBtn = document.getElementById("themeModeBtn");
-const paletteSelect = document.getElementById("paletteSelect");
+const themeDropdown = document.querySelector("[data-theme-dropdown]");
+const themeDropdownToggle = document.querySelector("[data-theme-dropdown-toggle]");
+const themeDropdownPanel = document.querySelector("[data-theme-dropdown-panel]");
+const themeModeBtns = Array.from(document.querySelectorAll("[data-theme-mode]"));
+const paletteButtons = Array.from(document.querySelectorAll(".palette-swatch-btn"));
+
+const allowedModes = new Set(["dark", "light"]);
+const allowedPalettes = new Set([
+  "blue",
+  "cyan",
+  "emerald",
+  "lime",
+  "amber",
+  "sunset",
+  "rose",
+  "magenta",
+  "violet",
+  "indigo",
+]);
+
+function setThemeDropdownOpen(open) {
+  if (!themeDropdownToggle || !themeDropdownPanel) return;
+  themeDropdownToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    themeDropdownPanel.removeAttribute("hidden");
+  } else {
+    themeDropdownPanel.setAttribute("hidden", "");
+  }
+}
+
+function syncModeButtons(activeMode) {
+  themeModeBtns.forEach((btn) => {
+    const m = btn.getAttribute("data-theme-mode") || "";
+    const isOn = m === activeMode;
+    btn.classList.toggle("is-active", isOn);
+    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
+  });
+}
+
+function syncPaletteButtons(activePalette) {
+  paletteButtons.forEach((btn) => {
+    const p = btn.getAttribute("data-palette") || "";
+    const isOn = p === activePalette;
+    btn.classList.toggle("is-active", isOn);
+    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
+  });
+}
+
+function applyTheme(mode, palette) {
+  const safeMode = allowedModes.has(mode) ? mode : "dark";
+  const safePalette = allowedPalettes.has(palette) ? palette : "blue";
+  document.documentElement.setAttribute("data-theme", safeMode);
+  document.documentElement.setAttribute("data-palette", safePalette);
+  syncModeButtons(safeMode);
+  syncPaletteButtons(safePalette);
+}
 
 if (year) {
   year.textContent = new Date().getFullYear();
@@ -15,48 +69,54 @@ if (menuToggle && mainNav) {
   });
 }
 
-const allowedModes = new Set(["dark", "light"]);
-const allowedPalettes = new Set(["blue", "violet", "emerald", "sunset"]);
-
-function applyTheme(mode, palette) {
-  const safeMode = allowedModes.has(mode) ? mode : "dark";
-  const safePalette = allowedPalettes.has(palette) ? palette : "blue";
-  document.documentElement.setAttribute("data-theme", safeMode);
-  document.documentElement.setAttribute("data-palette", safePalette);
-
-  if (themeModeBtn) {
-    const icon = themeModeBtn.querySelector("i");
-    if (icon) {
-      icon.className = safeMode === "dark" ? "fa-solid fa-moon" : "fa-solid fa-sun";
-    }
-  }
-  if (paletteSelect) {
-    paletteSelect.value = safePalette;
-  }
-}
-
 const initialMode = localStorage.getItem("ui-mode") || document.documentElement.getAttribute("data-theme") || "dark";
 const initialPalette = localStorage.getItem("ui-palette") || document.documentElement.getAttribute("data-palette") || "blue";
 applyTheme(initialMode, initialPalette);
 
-if (themeModeBtn) {
-  themeModeBtn.addEventListener("click", () => {
-    const current = document.documentElement.getAttribute("data-theme") || "dark";
-    const nextMode = current === "dark" ? "light" : "dark";
+if (themeDropdownToggle && themeDropdownPanel) {
+  themeDropdownToggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = themeDropdownToggle.getAttribute("aria-expanded") === "true";
+    setThemeDropdownOpen(!open);
+  });
+}
+
+if (themeDropdown) {
+  themeDropdown.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+}
+
+document.addEventListener("click", (e) => {
+  if (!themeDropdown || !themeDropdownPanel) return;
+  if (themeDropdown.contains(e.target)) return;
+  setThemeDropdownOpen(false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  setThemeDropdownOpen(false);
+});
+
+themeModeBtns.forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nextMode = btn.getAttribute("data-theme-mode") || "dark";
     const palette = document.documentElement.getAttribute("data-palette") || "blue";
     applyTheme(nextMode, palette);
     localStorage.setItem("ui-mode", nextMode);
   });
-}
+});
 
-if (paletteSelect) {
-  paletteSelect.addEventListener("change", () => {
+paletteButtons.forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nextPalette = btn.getAttribute("data-palette") || "blue";
     const mode = document.documentElement.getAttribute("data-theme") || "dark";
-    const nextPalette = paletteSelect.value;
     applyTheme(mode, nextPalette);
     localStorage.setItem("ui-palette", nextPalette);
   });
-}
+});
 
 document.querySelectorAll(".service-toggle-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -181,18 +241,60 @@ if (whatsappBtn && contactForm) {
     if (phone === "") return;
 
     const nombre = (document.getElementById("nombre")?.value || "").trim();
+    const email = (document.getElementById("email")?.value || "").trim();
     const servicio = (document.getElementById("servicio")?.value || "").trim();
     const mensaje = (document.getElementById("mensaje")?.value || "").trim();
 
-    const parts = ["Hola"];
-    if (nombre !== "") parts[0] = `Hola, soy ${nombre}`;
-    if (servicio !== "") parts.push(`Me interesa el servicio "${servicio}".`);
-    if (mensaje !== "") parts.push(mensaje);
-    if (parts.length === 1) parts.push("Quisiera más información, por favor.");
+    // Si ya hay mensaje en el formulario, es el cuerpo completo: no repetir servicio ni plantillas.
+    let text = "";
+    if (mensaje !== "") {
+      text = mensaje;
+    } else {
+      const parts = ["Hola"];
+      if (nombre !== "") parts[0] = "Hola, soy " + nombre;
+      if (servicio !== "") parts.push('Me interesa el servicio "' + servicio + '".');
+      if (parts.length === 1) parts.push("Quisiera más información, por favor.");
+      else parts.push("¿Me puedes orientar?");
+      text = parts.join(" ");
+    }
 
-    const text = parts.join(" ");
-    const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-    window.open(url, "_blank", "noopener");
+    const url = "https://wa.me/" + phone + "?text=" + encodeURIComponent(text);
+
+    const logUrl = new URL("contact_click_log.php", window.location.href).href;
+    const body = new URLSearchParams();
+    body.set("nombre", nombre);
+    body.set("email", email);
+    body.set("servicio", servicio);
+    body.set("mensaje", mensaje);
+    body.set("composed_text", text);
+
+    // Abrir pestaña en blanco en el mismo clic (no la bloquea el navegador); luego wa.me cuando termine el POST del registro.
+    const tab = window.open("about:blank", "_blank");
+    const navigateWa = function () {
+      try {
+        if (tab && !tab.closed) {
+          tab.location.href = url;
+        } else {
+          const w = window.open(url, "_blank", "noopener");
+          if (!w) window.location.href = url;
+        }
+      } catch (_e) {
+        window.location.href = url;
+      }
+    };
+    const maxWait = 8000;
+    const timeoutId = window.setTimeout(navigateWa, maxWait);
+    fetch(logUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: body.toString(),
+      keepalive: true,
+    })
+      .catch(function () {})
+      .finally(function () {
+        window.clearTimeout(timeoutId);
+        navigateWa();
+      });
   });
 }
 

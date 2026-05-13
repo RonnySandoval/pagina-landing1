@@ -13,6 +13,7 @@ $defaultSettings = [
     "contact_intro" => "Invita a tus visitantes a contactarte para mas informacion.",
     "contact_email" => "contacto@tu-dominio.com",
     "contact_whatsapp" => "",
+    "contact_whatsapp_country_code" => null,
     "footer_text" => "Todos los derechos reservados.",
     "logo_image_path" => null
 ];
@@ -116,15 +117,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <a href="#contacto"><i class="fa-solid fa-envelope"></i> Contacto</a>
       </nav>
       <div class="theme-controls">
-        <button id="themeModeBtn" class="theme-btn" type="button" aria-label="Cambiar modo de color">
-          <i class="fa-solid fa-moon"></i>
-        </button>
-        <select id="paletteSelect" class="palette-select" aria-label="Seleccionar paleta de color">
-          <option value="blue">Azul</option>
-          <option value="violet">Violeta</option>
-          <option value="emerald">Esmeralda</option>
-          <option value="sunset">Sunset</option>
-        </select>
+        <?php require __DIR__ . "/palette_picker.php"; ?>
       </div>
     </div>
   </header>
@@ -264,8 +257,11 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <?php
           // wa.me solo acepta dígitos. Aunque el admin valida, sanitizamos aquí también
           // para no inyectar HTML/JS en el data-attribute y evitar prefijos como "+57".
-          $whatsappRaw = (string)($settings["contact_whatsapp"] ?? "");
-          $whatsappDigits = preg_replace('/\D+/', '', $whatsappRaw) ?? "";
+          $whatsappLocalDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp"] ?? "")) ?? "";
+          $whatsappCcDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp_country_code"] ?? "")) ?? "";
+          $whatsappDigits = $whatsappCcDigits !== ""
+            ? $whatsappCcDigits . $whatsappLocalDigits
+            : $whatsappLocalDigits;
         ?>
         <form id="contactForm" class="contact-form reveal" method="post" action="send.php" data-whatsapp="<?= htmlspecialchars($whatsappDigits) ?>">
           <label for="nombre">Nombre</label>
@@ -295,7 +291,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
             ><i class="fa-brands fa-whatsapp"></i> Escribir por WhatsApp</button>
           </div>
           <?php if ($whatsappDigits === ""): ?>
-            <p class="contact-whatsapp-hint">Activa el botón de WhatsApp guardando tu número (solo dígitos, con código de país) en el panel de administración.</p>
+            <p class="contact-whatsapp-hint">Configúralo en Administración.</p>
           <?php endif; ?>
           <p id="formMessage" class="form-message" role="status" aria-live="polite"></p>
         </form>

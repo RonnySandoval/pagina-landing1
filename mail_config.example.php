@@ -2,29 +2,24 @@
 declare(strict_types=1);
 
 /**
- * Copia este archivo como mail_config.php y rellena datos REALES de tu proveedor.
- * No inventes usuario/clave: deben ser de una cuenta que permita SMTP (Gmail con
- * contraseña de aplicación, Outlook, hosting propio, etc.).
+ * Copia como mail_config.php. Cuenta SMTP real (Gmail con contraseña de aplicación, etc.).
  *
- * El correo DONDE LLEGAN los mensajes del formulario se define en el panel admin
- * ("Correo receptor del formulario"); send.php ya usa ese valor como destino (To).
- * Nombre visible del remitente: si rellenas from_name aquí, ese texto gana; si lo
- * dejas vacío, se usa "Nombre persona" del admin. La "Marca" del sitio no se usa
- * en correos (evita nombres tipo carpeta del proyecto en el remitente).
- * Aquí configuras la cuenta que ENVÍA por SMTP (From / login).
+ * Flujo de correos en este proyecto:
+ * 1) El visitante envía el formulario (incluye su correo personal).
+ * 2) El servidor envía un correo AL correo receptor del sitio (admin → Configuración general),
+ *    usando esta cuenta SMTP. Reply-To = correo del visitante (para responderle con un clic).
+ * 3) El admin puede responder desde el panel (Mensajes → Responder), sin abrir Outlook/Gmail.
+ * 4) El servidor envía AL correo personal del visitante con la misma cuenta SMTP.
+ *    Reply-To = correo receptor del sitio (si el visitante pulsa "Responder", te escribe ahí).
  *
- * Si en el buzón del destinatario ves algo como "Pagina1, Ronny" aunque from_name sea
- * otro texto, Gmail suele mezclar el nombre de tu CUENTA DE GOOGLE (organización +
- * nombre) con la cabecera. Revisa: https://myaccount.google.com/personal-info
- * (Nombre, y si aparece "Pagina1" como empresa u organización, corrígelo o bórralo).
- * Con debug=true, send.php escribe en mail_debug.log la línea From exacta que envía PHP.
+ * Remitente SMTP (From / MAIL FROM): usa from_email; si lo dejas vacío pero username es un
+ * correo válido, se usa username (típico en Gmail: mismo correo en ambos).
+ * Con smtp.gmail.com, username y ese remitente deben ser el mismo correo.
+ * use_smtp debe ser true para que 2) y 4) salgan por SMTP (en XAMPP mail() suele fallar).
  *
- * Privacidad: no subas mail_config.php a Git público. En este proyecto .htaccess
- * impide abrir mail_config.php y db.php por URL; guarda igualmente el archivo fuera
- * de copias públicas si puedes.
+ * from_name: nombre visible; si está vacío, en formulario se usa "Nombre persona" del admin.
  *
- * Gmail: "Contraseña de aplicaciones" (no la clave de la cuenta).
- * https://support.google.com/accounts/answer/185833
+ * https://support.google.com/accounts/answer/185833 (contraseña de aplicación Gmail)
  */
 
 return [
@@ -39,7 +34,7 @@ return [
     "username" => "tu_correo@gmail.com",
     "password" => "tu_contraseña_de_aplicacion",
 
-    // Debe coincidir con la cuenta SMTP en muchos proveedores
+    // Opcional si username ya es ese correo (el código puede reutilizarlo).
     "from_email" => "tu_correo@gmail.com",
     "from_name" => "Formulario web",
 

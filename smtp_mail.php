@@ -51,6 +51,23 @@ function smtp_format_from_header(string $fromName, string $fromEmail): string {
     return "=?UTF-8?B?" . base64_encode($fromName) . "?= <{$fromEmail}>";
 }
 
+/**
+ * Correo usado en SMTP como MAIL FROM / cabecera From (debe ser una cuenta que puedas autenticar).
+ * Si from_email va vacío pero username es un correo válido (típico en Gmail), se usa username.
+ */
+function mail_config_resolve_smtp_from(array $cfg): string {
+    $from = trim((string)($cfg["from_email"] ?? ""));
+    if ($from !== "" && filter_var($from, FILTER_VALIDATE_EMAIL)) {
+        return $from;
+    }
+    $user = trim((string)($cfg["username"] ?? ""));
+    if ($user !== "" && filter_var($user, FILTER_VALIDATE_EMAIL)) {
+        return $user;
+    }
+
+    return "";
+}
+
 function smtp_debug_log(array $cfg, string $message): void {
     $path = (string)($cfg["debug_log"] ?? "");
     if ($path === "" || empty($cfg["debug"])) {

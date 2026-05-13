@@ -29,8 +29,62 @@ require __DIR__ . "/db.php";
 require_once __DIR__ . "/app_urls.php";
 require_once __DIR__ . "/smtp_mail.php";
 
+$adminAssetStylesVer = is_file(__DIR__ . "/styles.css") ? (string) filemtime(__DIR__ . "/styles.css") : "1";
+$adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DIR__ . "/script.js") : "1";
+
 function h(string $value): string {
     return htmlspecialchars($value, ENT_QUOTES, "UTF-8");
+}
+
+/**
+ * Correo al visitante (respuesta desde el admin). Reply-To = correo receptor del sitio.
+ * El From SMTP se toma de mail_config (from_email o username si es correo).
+ */
+function admin_send_visitor_reply_mail(
+    array $mailConfig,
+    string $to,
+    string $subject,
+    string $bodyPlain,
+    string $replyToEmail,
+    string $fromDisplayName
+): bool {
+    $replyToEmail = trim($replyToEmail);
+    $fromDisplayName = trim($fromDisplayName);
+    $fromEmail = mail_config_resolve_smtp_from($mailConfig);
+    if ($replyToEmail === "" || !filter_var($replyToEmail, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    if ($fromEmail === "" || !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    $useSmtp = !empty($mailConfig["use_smtp"])
+        && !empty($mailConfig["host"])
+        && !empty($mailConfig["username"])
+        && !empty($mailConfig["password"])
+        && $fromEmail !== "";
+    $smtpReady = $useSmtp;
+    if ($smtpReady) {
+        $smtpCfg = $mailConfig;
+        $smtpCfg["from_email"] = $fromEmail;
+        $smtpCfg["from_name"] = $fromDisplayName;
+
+        $ok = send_mail_smtp($smtpCfg, $to, $subject, $bodyPlain, $replyToEmail);
+        if (!$ok && !empty($mailConfig["debug"]) && !empty($mailConfig["debug_log"])) {
+            smtp_debug_log($mailConfig, "Respuesta admin: envio SMTP fallo (To=" . $to . ")");
+        }
+
+        return $ok;
+    }
+    $fromHeaderLine = smtp_format_from_header($fromDisplayName !== "" ? $fromDisplayName : "Web", $fromEmail);
+    $headers = "From: " . $fromHeaderLine . "\r\n";
+    $headers .= "Reply-To: " . $replyToEmail . "\r\n";
+    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+    $headers .= "MIME-Version: 1.0\r\n";
+
+    return @mail($to, $subject, $bodyPlain, $headers);
 }
 
 function admin_ajax_trace(string $message): void
@@ -77,22 +131,25 @@ function admin_send_password_reset_email(string $toEmail, string $resetUrl): boo
     $mailConfig = is_array($mailConfig) ? $mailConfig : [];
 
     $useSmtp = !empty($mailConfig["use_smtp"]);
+    $smtpFrom = mail_config_resolve_smtp_from($mailConfig);
     $smtpReady = $useSmtp
         && !empty($mailConfig["host"])
         && !empty($mailConfig["username"])
         && !empty($mailConfig["password"])
-        && !empty($mailConfig["from_email"]);
+        && $smtpFrom !== "";
 
     if ($smtpReady) {
-        $replyTo = (string)($mailConfig["from_email"] ?? $toEmail);
-        $smtpSent = send_mail_smtp($mailConfig, $toEmail, $subject, $body, $replyTo);
+        $replyTo = $smtpFrom;
+        $smtpCfg = $mailConfig;
+        $smtpCfg["from_email"] = $smtpFrom;
+        $smtpSent = send_mail_smtp($smtpCfg, $toEmail, $subject, $body, $replyTo);
         admin_ajax_trace("password_reset smtp send result=" . ($smtpSent ? "ok" : "fail") . " to=" . $toEmail);
         if ($smtpSent) {
             return true;
         }
     }
 
-    $fromEmail = trim((string)($mailConfig["from_email"] ?? ""));
+    $fromEmail = $smtpFrom;
     $fromName = trim((string)($mailConfig["from_name"] ?? "Panel Administrador"));
     $headers = "Content-Type: text/plain; charset=UTF-8\r\n";
     if ($fromEmail !== "") {
@@ -452,14 +509,23 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings"
     $aboutText = trim($_POST["about_text"] ?? "");
     $contactIntro = trim($_POST["contact_intro"] ?? "");
     $contactEmail = trim($_POST["contact_email"] ?? "");
-    $contactWhatsappRaw = trim((string)($_POST["contact_whatsapp"] ?? ""));
-    // wa.me exige solo dígitos (E.164 sin '+'). Aceptamos lo que escriba el admin
-    // y descartamos todo lo demás. Vacío = WhatsApp deshabilitado en la landing.
-    $contactWhatsapp = preg_replace('/\D+/', '', $contactWhatsappRaw) ?? "";
-    if ($contactWhatsapp === "") {
+    $waCountryRaw = trim((string)($_POST["contact_whatsapp_country"] ?? ""));
+    $waLocalRaw = trim((string)($_POST["contact_whatsapp_local"] ?? ""));
+    $waCountryDigits = preg_replace('/\D+/', '', $waCountryRaw) ?? "";
+    $waLocalDigits = preg_replace('/\D+/', '', $waLocalRaw) ?? "";
+    $waCountryDigits = substr($waCountryDigits, 0, 3);
+    $waLocalDigits = substr($waLocalDigits, 0, 32);
+    // wa.me: solo dígitos E.164. Con código de país: columna país + número nacional.
+    // Sin código de país: todo en contact_whatsapp (compatibilidad con datos antiguos).
+    if ($waLocalDigits === "") {
         $contactWhatsappForDb = null;
+        $contactWhatsappCountryForDb = null;
+    } elseif ($waCountryDigits === "") {
+        $contactWhatsappForDb = $waLocalDigits;
+        $contactWhatsappCountryForDb = null;
     } else {
-        $contactWhatsappForDb = substr($contactWhatsapp, 0, 32);
+        $contactWhatsappForDb = $waLocalDigits;
+        $contactWhatsappCountryForDb = $waCountryDigits;
     }
     $footerText = trim($_POST["footer_text"] ?? "");
 
@@ -490,10 +556,10 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings"
         $logoForDb = $logoPath !== "" ? $logoPath : null;
         $stmt = $conn->prepare("
           UPDATE site_settings
-          SET person_name = ?, brand_name = ?, hero_title = ?, hero_intro = ?, about_text = ?, contact_intro = ?, contact_email = ?, contact_whatsapp = ?, footer_text = ?, logo_image_path = ?
+          SET person_name = ?, brand_name = ?, hero_title = ?, hero_intro = ?, about_text = ?, contact_intro = ?, contact_email = ?, contact_whatsapp = ?, contact_whatsapp_country_code = ?, footer_text = ?, logo_image_path = ?
           WHERE id = 1
         ");
-        $stmt->bind_param("ssssssssss", $personName, $brandName, $heroTitle, $heroIntro, $aboutText, $contactIntro, $contactEmail, $contactWhatsappForDb, $footerText, $logoForDb);
+        $stmt->bind_param("sssssssssss", $personName, $brandName, $heroTitle, $heroIntro, $aboutText, $contactIntro, $contactEmail, $contactWhatsappForDb, $contactWhatsappCountryForDb, $footerText, $logoForDb);
         $stmt->execute();
         $message = "Configuración general actualizada.";
     }
@@ -810,11 +876,151 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_messa
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_message") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     if ($messageId > 0) {
+        $delReplies = $conn->prepare("DELETE FROM contact_message_replies WHERE contact_message_id = ?");
+        if ($delReplies !== false) {
+            $delReplies->bind_param("i", $messageId);
+            $delReplies->execute();
+            $delReplies->close();
+        }
         $stmt = $conn->prepare("DELETE FROM contact_messages WHERE id = ?");
         $stmt->bind_param("i", $messageId);
         $stmt->execute();
     }
     admin_set_flash("success", "Mensaje eliminado.");
+    admin_redirect_after_action();
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_whatsapp_click") {
+    $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
+    if ($whatsappClickId > 0) {
+        $waDel = $conn->prepare("DELETE FROM contact_whatsapp_clicks WHERE id = ?");
+        if ($waDel !== false) {
+            $waDel->bind_param("i", $whatsappClickId);
+            $waDel->execute();
+            $waDel->close();
+        }
+    }
+    admin_set_flash("success", "Entrada eliminada.");
+    admin_redirect_after_action();
+}
+
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
+    $messageId = (int)($_POST["message_id"] ?? 0);
+    $replyBody = trim((string)($_POST["reply_body"] ?? ""));
+    if ($messageId <= 0) {
+        admin_set_flash("error", "Mensaje no valido.");
+        admin_redirect_after_action();
+    }
+    if ($replyBody === "") {
+        admin_set_flash("error", "Escribe el texto de la respuesta.");
+        admin_redirect_after_action();
+    }
+    if (strlen($replyBody) > 20000) {
+        admin_set_flash("error", "La respuesta es demasiado larga.");
+        admin_redirect_after_action();
+    }
+    $stmt = $conn->prepare("SELECT id, nombre, email, servicio, mensaje, created_at FROM contact_messages WHERE id = ? LIMIT 1");
+    if ($stmt === false) {
+        admin_set_flash("error", "No se pudo cargar el mensaje.");
+        admin_redirect_after_action();
+    }
+    $stmt->bind_param("i", $messageId);
+    $stmt->execute();
+    $msgRes = $stmt->get_result();
+    $stmt->close();
+    if (!$msgRes || $msgRes->num_rows !== 1) {
+        admin_set_flash("error", "Ese mensaje ya no existe.");
+        admin_redirect_after_action();
+    }
+    $msgRow = $msgRes->fetch_assoc();
+    $visitorEmail = trim((string)($msgRow["email"] ?? ""));
+    if (!filter_var($visitorEmail, FILTER_VALIDATE_EMAIL)) {
+        admin_set_flash("error", "El correo del visitante no es valido.");
+        admin_redirect_after_action();
+    }
+    $settingsRes = $conn->query("SELECT contact_email, person_name, brand_name FROM site_settings WHERE id = 1 LIMIT 1");
+    $contactEmail = "";
+    $personName = "";
+    $brandName = "";
+    if ($settingsRes && $settingsRes->num_rows === 1) {
+        $srow = $settingsRes->fetch_assoc();
+        $contactEmail = trim((string)($srow["contact_email"] ?? ""));
+        $personName = trim((string)($srow["person_name"] ?? ""));
+        $brandName = trim((string)($srow["brand_name"] ?? ""));
+    }
+    if ($contactEmail === "" || !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+        admin_set_flash("error", "Configura un correo receptor valido en Configuracion general.");
+        admin_redirect_after_action();
+    }
+    $mailConfigPath = __DIR__ . "/mail_config.php";
+    $mailConfig = is_readable($mailConfigPath) ? require $mailConfigPath : [];
+    $mailConfig = is_array($mailConfig) ? $mailConfig : [];
+    $fromEmail = mail_config_resolve_smtp_from($mailConfig);
+    if ($fromEmail === "") {
+        admin_set_flash("error", "En mail_config indica from_email o un username que sea un correo valido (cuenta SMTP).");
+        admin_redirect_after_action();
+    }
+    $smtpHost = strtolower((string)($mailConfig["host"] ?? ""));
+    $smtpUser = trim((string)($mailConfig["username"] ?? ""));
+    if (!empty($mailConfig["use_smtp"]) && str_contains($smtpHost, "gmail") && strcasecmp($fromEmail, $smtpUser) !== 0) {
+        admin_set_flash(
+            "error",
+            "Con Gmail (smtp.gmail.com), username y remitente SMTP deben ser el mismo correo (rellena from_email o usa ese correo en username)."
+        );
+        admin_redirect_after_action();
+    }
+    $fromDisplayName = trim((string)($mailConfig["from_name"] ?? ""));
+    if ($fromDisplayName === "") {
+        $fromDisplayName = $personName !== "" ? $personName : $brandName;
+    }
+    if ($fromDisplayName === "") {
+        $localPart = str_contains($fromEmail, "@") ? trim(explode("@", $fromEmail, 2)[0] ?? "") : "";
+        $fromDisplayName = $localPart !== "" ? $localPart : "Web";
+    }
+    $visitorNombre = trim((string)($msgRow["nombre"] ?? ""));
+    $servicio = trim((string)($msgRow["servicio"] ?? ""));
+    $mensajeOriginal = trim((string)($msgRow["mensaje"] ?? ""));
+    $createdOriginal = (string)($msgRow["created_at"] ?? "");
+    $subject = "Respuesta a tu mensaje de contacto";
+    if ($brandName !== "") {
+        $subject .= " (" . $brandName . ")";
+    }
+    $body = "Hola" . ($visitorNombre !== "" ? " " . $visitorNombre : "") . ",\n\n";
+    $body .= "Gracias por escribirnos. Respondemos a continuacion:\n\n";
+    $body .= $replyBody . "\n\n";
+    $body .= "---\nTu mensaje (" . $createdOriginal . ")\n";
+    $body .= "Servicio: " . $servicio . "\n\n" . $mensajeOriginal . "\n\n---\n";
+    $body .= "Puedes responder a este correo y llegara a nuestra bandeja.\n";
+    $sent = admin_send_visitor_reply_mail(
+        $mailConfig,
+        $visitorEmail,
+        $subject,
+        $body,
+        $contactEmail,
+        $fromDisplayName
+    );
+    if (!$sent) {
+        $traceLine = date("c") . " admin_reply fallo To=" . $visitorEmail . " smtp=" . (!empty($mailConfig["use_smtp"]) ? "1" : "0") . "\n";
+        @file_put_contents(__DIR__ . "/contact_send_trace.log", $traceLine, FILE_APPEND | LOCK_EX);
+        admin_set_flash(
+            "error",
+            "No se pudo enviar el correo. Activa use_smtp en mail_config, revisa host/usuario/contraseña de aplicacion y que username o from_email sea un correo valido. Con Gmail deben coincidir. Activa debug y mira mail_debug.log; revisa spam del destinatario."
+        );
+        admin_redirect_after_action();
+    }
+    $ins = $conn->prepare("INSERT INTO contact_message_replies (contact_message_id, body) VALUES (?, ?)");
+    if ($ins !== false) {
+        $ins->bind_param("is", $messageId, $replyBody);
+        $ins->execute();
+        $ins->close();
+    }
+    $mark = $conn->prepare("UPDATE contact_messages SET is_read = 1 WHERE id = ?");
+    if ($mark !== false) {
+        $mark->bind_param("i", $messageId);
+        $mark->execute();
+        $mark->close();
+    }
+    admin_set_flash("success", "Respuesta enviada a " . $visitorEmail . ".");
     admin_redirect_after_action();
 }
 
@@ -827,6 +1033,7 @@ $settings = [
     "contact_intro" => "",
     "contact_email" => "",
     "contact_whatsapp" => "",
+    "contact_whatsapp_country_code" => null,
     "footer_text" => ""
 ];
 
@@ -873,6 +1080,48 @@ if ($isLogged) {
         }
     }
 }
+
+$contactRepliesByMessageId = [];
+if ($isLogged && count($contactMessages) > 0) {
+    $msgIds = [];
+    foreach ($contactMessages as $row) {
+        $mid = (int)($row["id"] ?? 0);
+        if ($mid > 0) {
+            $msgIds[$mid] = true;
+        }
+    }
+    $idList = array_keys($msgIds);
+    if (count($idList) > 0) {
+        $inList = implode(",", $idList);
+        $repQuery = $conn->query(
+            "SELECT id, contact_message_id, body, created_at FROM contact_message_replies WHERE contact_message_id IN ($inList) ORDER BY created_at ASC, id ASC"
+        );
+        if ($repQuery) {
+            while ($r = $repQuery->fetch_assoc()) {
+                $mid = (int)$r["contact_message_id"];
+                if (!isset($contactRepliesByMessageId[$mid])) {
+                    $contactRepliesByMessageId[$mid] = [];
+                }
+                $contactRepliesByMessageId[$mid][] = $r;
+            }
+        }
+    }
+}
+
+$whatsappClicks = [];
+if ($isLogged) {
+    $whatsappClicksQuery = $conn->query(
+        "SELECT id, nombre, email, servicio, mensaje, composed_text, created_at
+         FROM contact_whatsapp_clicks
+         ORDER BY created_at DESC, id DESC
+         LIMIT 100"
+    );
+    if ($whatsappClicksQuery) {
+        while ($waRow = $whatsappClicksQuery->fetch_assoc()) {
+            $whatsappClicks[] = $waRow;
+        }
+    }
+}
 ?>
 <!doctype html>
 <html lang="es">
@@ -892,15 +1141,50 @@ if ($isLogged) {
   <title>Panel de Administración</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=<?= h($adminAssetStylesVer) ?>">
   <style>
-    .admin-wrap { width: min(1280px, 96%); margin: 2rem auto; }
+    .admin-wrap {
+      width: min(1280px, 96%);
+      margin: 2rem auto;
+      color: var(--text);
+      /* Bootstrap 5.3 usa variables propias; las alineamos al tema de la plantilla para herencia correcta */
+      --bs-body-color: var(--text);
+      --bs-body-bg: var(--bg);
+      --bs-secondary-color: var(--muted);
+      --bs-tertiary-color: color-mix(in srgb, var(--muted) 78%, transparent);
+      --bs-emphasis-color: var(--text);
+      --bs-heading-color: inherit;
+      --bs-border-color: var(--border);
+      --bs-link-color: var(--accent);
+      --bs-link-hover-color: var(--accent-strong);
+      --bs-light-text-emphasis: var(--muted);
+      --bs-dark-text-emphasis: var(--text);
+      --bs-card-color: var(--text);
+      --bs-card-bg: color-mix(in srgb, var(--surface) 96%, transparent);
+      --bs-card-border-color: var(--border);
+      --bs-accordion-color: var(--text);
+      --bs-accordion-bg: var(--surface);
+      --bs-accordion-btn-color: var(--text);
+      --bs-accordion-btn-bg: var(--surface-2);
+      --bs-accordion-active-color: var(--text);
+      --bs-accordion-active-bg: color-mix(in srgb, var(--accent) 18%, var(--surface));
+      --bs-accordion-border-color: var(--border);
+    }
     .admin-layout {
       display: grid;
       gap: 1rem;
       grid-template-columns: 1fr;
+      isolation: isolate;
     }
-    .admin-main { min-width: 0; }
+    /* Columna lateral después en el DOM + sticky: sin capa clara, compite con el main.
+       Bootstrap además pone z-index 2/3 en .accordion-button:hover:focus → parpadeo
+       entre columnas; aislamos el main y anulamos esos z-index en todo el admin. */
+    .admin-main {
+      min-width: 0;
+      position: relative;
+      z-index: 8;
+      isolation: isolate;
+    }
     .admin-side { min-width: 0; }
     @media (min-width: 992px) {
       .admin-layout {
@@ -913,7 +1197,13 @@ if ($isLogged) {
         align-self: start;
         max-height: calc(100vh - 2rem);
         overflow-y: auto;
+        z-index: 0;
+        isolation: isolate;
       }
+    }
+    .admin-wrap .accordion-button:hover,
+    .admin-wrap .accordion-button:focus {
+      z-index: auto !important;
     }
     .admin-tools-accordion .accordion-button {
       background-color: var(--surface);
@@ -929,6 +1219,20 @@ if ($isLogged) {
       color: var(--text);
     }
     .admin-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+    .wa-phone-input-group .input-group-text {
+      font-weight: 700;
+      padding-inline: 0.65rem;
+    }
+    .wa-phone-input-group .wa-cc-field {
+      flex: 0 0 auto;
+      width: 3.35rem;
+      max-width: 3.35rem;
+      text-align: center;
+      padding-inline: 0.35rem;
+    }
+    .wa-phone-input-group .wa-local-field {
+      min-width: 0;
+    }
     .admin-grid { display: grid; gap: .8rem; }
     .admin-grid-2 { display: grid; gap: .8rem; grid-template-columns: 1fr; }
     .admin-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
@@ -941,6 +1245,10 @@ if ($isLogged) {
       place-items: center;
       background: radial-gradient(circle at top, color-mix(in srgb, var(--accent) 45%, transparent) 0%, var(--bg) 45%, var(--bg-strong) 100%);
       padding: 1rem;
+      color: var(--text);
+      --bs-body-color: var(--text);
+      --bs-secondary-color: var(--muted);
+      --bs-light-text-emphasis: var(--muted);
     }
     .login-card {
       width: min(460px, 96%);
@@ -1022,10 +1330,183 @@ if ($isLogged) {
       font-size: .95rem;
     }
     .admin-wrap .card {
-      background: color-mix(in srgb, var(--surface) 96%, transparent);
+      background: var(--bs-card-bg);
       border: 1px solid var(--border);
-      color: var(--text);
+      color: var(--bs-card-color);
       border-radius: 14px;
+    }
+    /* Encabezado (tema/colores) por encima del grid: el panel de paleta sigue al frente
+       hasta cerrarse; si no, la columna mensajes (sticky) lo tapa al interactuar. */
+    .admin-wrap > .admin-header-card {
+      position: relative;
+      z-index: 400;
+    }
+    .admin-theme-toolbar {
+      position: relative;
+      z-index: 1;
+    }
+    /* Menú tema: reglas completas aquí (el admin antes solo “pinteaba” encima de styles.css;
+       con CSS en caché sin .theme-dropdown*, el panel quedaba en flujo y los botones nativos). */
+    .admin-wrap .theme-sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .admin-wrap .theme-dropdown {
+      position: relative;
+    }
+    .admin-wrap .theme-btn {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background:
+        linear-gradient(155deg, var(--palette-soft), transparent 58%),
+        var(--surface-2);
+      color: var(--text);
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .admin-wrap .theme-dropdown-toggle.theme-btn {
+      flex-shrink: 0;
+      background: var(--field-bg);
+      border-color: var(--border);
+      color: var(--text);
+    }
+    .admin-wrap .theme-dropdown-toggle.theme-btn:hover {
+      border-color: var(--ring);
+      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
+    }
+    .admin-wrap .theme-dropdown-toggle[aria-expanded="true"] {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 40%, transparent);
+    }
+    .admin-wrap .theme-dropdown-panel {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 500;
+      width: min(320px, calc(100vw - 1.5rem));
+      padding: 0.75rem 0.8rem 0.85rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-family: inherit;
+      box-shadow:
+        0 22px 56px color-mix(in srgb, #000 58%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--border) 55%, transparent);
+    }
+    .admin-wrap .theme-dropdown-panel[hidden] {
+      display: none !important;
+    }
+    .admin-wrap .theme-dropdown-section + .theme-dropdown-section {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .admin-wrap .theme-dropdown-section-title {
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.45rem;
+    }
+    .admin-wrap .theme-mode-toggle {
+      display: flex;
+      gap: 0.35rem;
+    }
+    .admin-wrap .theme-mode-btn {
+      flex: 1;
+      min-width: 0;
+      min-height: 2.5rem;
+      padding: 0.35rem 0.5rem;
+      display: grid;
+      place-items: center;
+      font-size: 1.05rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--field-bg);
+      color: var(--text);
+      line-height: 1;
+      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .admin-wrap .theme-mode-btn:hover {
+      border-color: var(--ring);
+      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
+    }
+    .admin-wrap .theme-mode-btn.is-active {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 35%, transparent);
+      background: color-mix(in srgb, var(--field-bg) 68%, var(--palette-soft));
+    }
+    .admin-wrap .palette-picker {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.35rem;
+    }
+    .admin-wrap .palette-swatch-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      width: 100%;
+      min-width: 0;
+      min-height: 2.35rem;
+      padding: 0.3rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      font-family: inherit;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--field-bg);
+      color: var(--text);
+      white-space: nowrap;
+      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .admin-wrap .palette-swatch-btn:hover {
+      border-color: var(--ring);
+      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
+    }
+    .admin-wrap .palette-swatch-btn.is-active {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 45%, transparent);
+      background: color-mix(in srgb, var(--field-bg) 70%, var(--palette-soft));
+    }
+    .admin-wrap .palette-swatch {
+      display: inline-block;
+      vertical-align: middle;
+      width: 1.1rem;
+      height: 1.1rem;
+      border-radius: 50%;
+      flex-shrink: 0;
+      border: 1px solid rgb(255 255 255 / 22%);
+      box-shadow: inset 0 0 0 1px rgb(0 0 0 / 15%);
+    }
+    html[data-theme="light"] .admin-wrap .palette-swatch {
+      border-color: rgb(0 0 0 / 12%);
+      box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
+    }
+    html[data-theme="light"] .admin-wrap .theme-dropdown-panel {
+      box-shadow:
+        0 16px 44px color-mix(in srgb, #000 14%, transparent),
+        0 0 0 1px var(--border);
     }
     .admin-wrap .form-label {
       color: var(--text);
@@ -1295,6 +1776,29 @@ if ($isLogged) {
       font-variant-numeric: tabular-nums;
       letter-spacing: .02em;
     }
+    .admin-side-inbox-accordion .accordion-item {
+      background: transparent;
+      border-color: var(--border);
+    }
+    .admin-side-inbox-accordion .accordion-button {
+      background-color: var(--surface);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 1.05rem;
+      box-shadow: none;
+    }
+    .admin-side-inbox-accordion .accordion-button:not(.collapsed) {
+      background-color: color-mix(in srgb, var(--accent) 14%, var(--surface));
+      color: var(--text);
+    }
+    .admin-side-inbox-accordion .accordion-button:focus {
+      box-shadow: none;
+      border-color: var(--border);
+    }
+    .admin-side-inbox-accordion .accordion-body {
+      background-color: var(--surface);
+      color: var(--text);
+    }
     .admin-messages-accordion .message-meta-date {
       font-variant-numeric: tabular-nums;
       font-size: .9rem;
@@ -1317,6 +1821,20 @@ if ($isLogged) {
       padding: .8rem;
       max-height: 320px;
       overflow: auto;
+    }
+    .admin-messages-accordion .message-replies-sent {
+      border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+      padding-left: .75rem;
+      margin-bottom: 1rem;
+    }
+    .admin-messages-accordion .message-reply-item {
+      margin-bottom: .75rem;
+    }
+    .admin-messages-accordion .message-reply-item:last-child {
+      margin-bottom: 0;
+    }
+    .admin-messages-accordion .message-reply-form textarea {
+      min-height: 5rem;
     }
   </style>
 </head>
@@ -1406,22 +1924,14 @@ if ($isLogged) {
     </div>
   <?php else: ?>
   <div class="admin-wrap">
-    <div class="card p-3 p-md-4 mb-3">
+    <div class="card admin-header-card p-3 p-md-4 mb-3">
       <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
         <div>
           <h1 class="h3 mb-1"><i class="fa-solid fa-screwdriver-wrench me-2"></i>Panel de Administración</h1>
           <p class="mb-0 text-light-emphasis">Sesión: <?= h($_SESSION["admin_email"] ?? "") ?></p>
         </div>
-        <div class="d-flex align-items-center gap-2 flex-wrap">
-          <button id="themeModeBtn" class="theme-btn" type="button" aria-label="Cambiar modo de color">
-            <i class="fa-solid fa-moon"></i>
-          </button>
-          <select id="paletteSelect" class="palette-select" aria-label="Seleccionar paleta de color">
-            <option value="blue">Azul</option>
-            <option value="violet">Violeta</option>
-            <option value="emerald">Esmeralda</option>
-            <option value="sunset">Sunset</option>
-          </select>
+        <div class="d-flex align-items-center gap-2 flex-wrap admin-theme-toolbar">
+          <?php require __DIR__ . "/palette_picker.php"; ?>
           <a href="admin.php?logout=1" class="btn btn-outline-light">
             <i class="fa-solid fa-right-from-bracket me-2"></i>Cerrar sesión
           </a>
@@ -1492,10 +2002,17 @@ if ($isLogged) {
           </div>
           <div class="col-md-6">
             <label class="form-label">WhatsApp de contacto (opcional)</label>
-            <input class="form-control" type="tel" name="contact_whatsapp" value="<?= h($settings["contact_whatsapp"] ?? "") ?>" placeholder="573001234567" inputmode="numeric">
-            <div class="form-text text-light-emphasis">
-              Número en formato internacional, solo dígitos (código de país + número, sin <code>+</code> ni espacios). Ej: <code>573001234567</code>. Déjalo vacío para ocultar el botón de WhatsApp en la landing.
+            <?php
+            $waCcDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp_country_code"] ?? "")) ?? "";
+            $waCcDigits = substr($waCcDigits, 0, 3);
+            $waLocalDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp"] ?? "")) ?? "";
+            ?>
+            <div class="input-group wa-phone-input-group">
+              <span class="input-group-text" title="Prefijo internacional">+</span>
+              <input class="form-control wa-cc-field" type="text" name="contact_whatsapp_country" value="<?= h($waCcDigits) ?>" placeholder="57" maxlength="3" inputmode="numeric" pattern="[0-9]{0,3}" autocomplete="tel-country-code" aria-label="Indicativo (máx. 3 dígitos)">
+              <input class="form-control wa-local-field" type="tel" name="contact_whatsapp_local" value="<?= h($waLocalDigits) ?>" placeholder="300 123 4567" inputmode="numeric" autocomplete="tel-national" aria-label="Número de teléfono (sin indicativo)">
             </div>
+            <div class="form-text text-light-emphasis">Vacío: sin botón WhatsApp en la web.</div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Texto footer</label>
@@ -1798,113 +2315,255 @@ if ($isLogged) {
       </div>
 
       <aside class="admin-side">
-        <div class="card p-3 p-md-4">
-          <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
-            <h2 class="h4 mb-0 d-flex align-items-center gap-2">
-              <i class="fa-solid fa-inbox"></i>
-              <span>Mensajes</span>
-              <?php
-                $totalMsgs = count($contactMessages);
-                $unreadMsgs = (int)$contactMessagesUnread;
-                $counterClass = $unreadMsgs > 0 ? "text-bg-warning" : "text-bg-secondary";
-                $counterTitle = $unreadMsgs > 0
-                    ? sprintf("%d sin leer de %d", $unreadMsgs, $totalMsgs)
-                    : sprintf("%d en total", $totalMsgs);
-              ?>
-              <span
-                class="badge admin-messages-counter <?= $counterClass ?>"
-                title="<?= h($counterTitle) ?>"
-              ><?= $unreadMsgs ?>/<?= $totalMsgs ?></span>
-            </h2>
-            <?php if ($unreadMsgs > 0): ?>
-              <form method="post" class="m-0">
-                <input type="hidden" name="action" value="mark_all_messages_read">
-                <button class="btn btn-outline-light btn-sm" type="submit" title="Marcar todos como leídos">
-                  <i class="fa-solid fa-check-double me-2"></i>Marcar todos
+        <?php
+        $sideInboxTotal = count($contactMessages);
+        $sideInboxUnread = (int)$contactMessagesUnread;
+        $sideInboxCounterClass = $sideInboxUnread > 0 ? "text-bg-warning" : "text-bg-secondary";
+        $sideInboxCounterTitle = $sideInboxUnread > 0
+            ? sprintf("%d sin leer de %d", $sideInboxUnread, $sideInboxTotal)
+            : sprintf("%d en total", $sideInboxTotal);
+        ?>
+        <div class="card admin-side-inbox-card overflow-hidden">
+          <div class="accordion accordion-flush admin-side-inbox-accordion" id="adminSideInboxAccordion">
+            <div class="accordion-item border-0 border-bottom">
+              <h2 class="accordion-header m-0" id="headingSideMessages">
+                <button
+                  class="accordion-button py-3 px-3"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#collapseSideMessages"
+                  aria-expanded="true"
+                  aria-controls="collapseSideMessages"
+                >
+                  <span class="d-flex flex-wrap align-items-center gap-2 me-auto">
+                    <i class="fa-solid fa-inbox"></i>
+                    <span>Mensajes</span>
+                    <span
+                      class="badge admin-messages-counter <?= h($sideInboxCounterClass) ?>"
+                      title="<?= h($sideInboxCounterTitle) ?>"
+                    ><?= $sideInboxUnread ?>/<?= $sideInboxTotal ?></span>
+                  </span>
                 </button>
-              </form>
-            <?php elseif ($totalMsgs > 0): ?>
-              <form method="post" class="m-0">
-                <input type="hidden" name="action" value="mark_all_messages_unread">
-                <button class="btn btn-outline-warning btn-sm" type="submit" title="Marcar todos como sin leer">
-                  <i class="fa-solid fa-rotate-left me-2"></i>Marcar todos como sin leer
-                </button>
-              </form>
-            <?php endif; ?>
-          </div>
-          <?php if (count($contactMessages) === 0): ?>
-            <p class="text-light-emphasis mb-0">Aún no hay mensajes desde el formulario de contacto.</p>
-          <?php else: ?>
-            <div class="accordion admin-messages-accordion" id="adminMessagesAccordion">
-              <?php foreach ($contactMessages as $contactMsg): ?>
-                <?php
-                  $msgId = (int)$contactMsg["id"];
-                  $msgCollapseId = "collapse_msg_" . $msgId;
-                  $isUnread = (int)($contactMsg["is_read"] ?? 0) === 0;
-                  $createdAt = (string)($contactMsg["created_at"] ?? "");
-                  $createdLabel = $createdAt;
-                  try {
-                      $dt = new DateTime($createdAt);
-                      $createdLabel = $dt->format("Y-m-d H:i");
-                  } catch (Exception $e) {
-                      // si la fecha no parsea, dejamos el valor crudo.
-                  }
-                ?>
-                <div class="accordion-item message-row<?= $isUnread ? " is-unread" : "" ?>" data-message-id="<?= $msgId ?>">
-                  <h3 class="accordion-header m-0 message-header-row">
-                    <button
-                      class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2"
-                      type="button"
-                      data-bs-toggle="collapse"
-                      data-bs-target="#<?= h($msgCollapseId) ?>"
-                      aria-expanded="false"
-                      aria-controls="<?= h($msgCollapseId) ?>"
-                    >
-                      <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
-                      <span class="message-meta-date"><?= h($createdLabel) ?></span>
-                      <span class="message-meta-name"><strong><?= h((string)$contactMsg["nombre"]) ?></strong></span>
-                      <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= h((string)$contactMsg["servicio"]) ?></span>
-                      <span class="message-meta-email text-light-emphasis"><?= h((string)$contactMsg["email"]) ?></span>
-                    </button>
-                    <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar este mensaje del historial?');">
-                      <input type="hidden" name="action" value="delete_message">
-                      <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                      <button class="btn-message-delete" type="submit" title="Eliminar mensaje" aria-label="Eliminar mensaje">
-                        <i class="fa-solid fa-trash"></i>
-                      </button>
-                    </form>
-                  </h3>
-                  <div id="<?= h($msgCollapseId) ?>" class="accordion-collapse collapse" data-bs-parent="#adminMessagesAccordion">
-                    <div class="accordion-body">
-                      <div class="message-body-text mb-3"><?= nl2br(h((string)$contactMsg["mensaje"])) ?></div>
-                      <div class="d-flex flex-wrap gap-2 align-items-center text-light-emphasis small mb-3">
-                        <span><i class="fa-solid fa-envelope me-1"></i><a href="mailto:<?= h((string)$contactMsg["email"]) ?>"><?= h((string)$contactMsg["email"]) ?></a></span>
-                        <?php if (!empty($contactMsg["sent_to"])): ?>
-                          <span><i class="fa-solid fa-paper-plane me-1"></i>destino: <?= h((string)$contactMsg["sent_to"]) ?></span>
-                        <?php endif; ?>
-                      </div>
-                      <div class="d-flex flex-wrap gap-2 message-mark-actions">
-                        <form method="post" class="m-0 js-mark-read-form">
-                          <input type="hidden" name="action" value="mark_message_read">
-                          <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                          <button class="btn btn-outline-light btn-sm" type="submit">
-                            <i class="fa-solid fa-check me-2"></i>Marcar como leído
+              </h2>
+              <div
+                id="collapseSideMessages"
+                class="accordion-collapse collapse show"
+                aria-labelledby="headingSideMessages"
+              >
+                <div class="accordion-body pt-0 px-3 pb-3">
+                  <?php if ($sideInboxUnread > 0 || $sideInboxTotal > 0): ?>
+                    <div class="d-flex flex-wrap justify-content-end gap-2 mb-2">
+                      <?php if ($sideInboxUnread > 0): ?>
+                        <form method="post" class="m-0">
+                          <input type="hidden" name="action" value="mark_all_messages_read">
+                          <button class="btn btn-outline-light btn-sm" type="submit" title="Marcar todos como leídos">
+                            <i class="fa-solid fa-check-double me-2"></i>Marcar todos
                           </button>
                         </form>
-                        <form method="post" class="m-0 js-mark-unread-form">
-                          <input type="hidden" name="action" value="mark_message_unread">
-                          <input type="hidden" name="message_id" value="<?= $msgId ?>">
-                          <button class="btn btn-outline-warning btn-sm" type="submit">
-                            <i class="fa-solid fa-rotate-left me-2"></i>Marcar como sin leer
+                      <?php elseif ($sideInboxTotal > 0): ?>
+                        <form method="post" class="m-0">
+                          <input type="hidden" name="action" value="mark_all_messages_unread">
+                          <button class="btn btn-outline-warning btn-sm" type="submit" title="Marcar todos como sin leer">
+                            <i class="fa-solid fa-rotate-left me-2"></i>Marcar todos como sin leer
                           </button>
                         </form>
-                      </div>
+                      <?php endif; ?>
                     </div>
-                  </div>
+                  <?php endif; ?>
+                  <?php if ($sideInboxTotal === 0): ?>
+                    <p class="text-light-emphasis mb-0">Aún no hay mensajes desde el formulario de contacto.</p>
+                  <?php else: ?>
+                    <div class="accordion admin-messages-accordion" id="adminMessagesAccordion">
+                      <?php foreach ($contactMessages as $contactMsg): ?>
+                        <?php
+                          $msgId = (int)$contactMsg["id"];
+                          $msgCollapseId = "collapse_msg_" . $msgId;
+                          $isUnread = (int)($contactMsg["is_read"] ?? 0) === 0;
+                          $createdAt = (string)($contactMsg["created_at"] ?? "");
+                          $createdLabel = $createdAt;
+                          try {
+                              $dt = new DateTime($createdAt);
+                              $createdLabel = $dt->format("Y-m-d H:i");
+                          } catch (Exception $e) {
+                              // si la fecha no parsea, dejamos el valor crudo.
+                          }
+                        ?>
+                        <div class="accordion-item message-row<?= $isUnread ? " is-unread" : "" ?>" data-message-id="<?= $msgId ?>">
+                          <h3 class="accordion-header m-0 message-header-row">
+                            <button
+                              class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2"
+                              type="button"
+                              data-bs-toggle="collapse"
+                              data-bs-target="#<?= h($msgCollapseId) ?>"
+                              aria-expanded="false"
+                              aria-controls="<?= h($msgCollapseId) ?>"
+                            >
+                              <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
+                              <span class="message-meta-date"><?= h($createdLabel) ?></span>
+                              <span class="message-meta-name"><strong><?= h((string)$contactMsg["nombre"]) ?></strong></span>
+                              <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= h((string)$contactMsg["servicio"]) ?></span>
+                              <span class="message-meta-email text-light-emphasis"><?= h((string)$contactMsg["email"]) ?></span>
+                            </button>
+                            <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar este mensaje del historial?');">
+                              <input type="hidden" name="action" value="delete_message">
+                              <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                              <button class="btn-message-delete" type="submit" title="Eliminar mensaje" aria-label="Eliminar mensaje">
+                                <i class="fa-solid fa-trash"></i>
+                              </button>
+                            </form>
+                          </h3>
+                          <div id="<?= h($msgCollapseId) ?>" class="accordion-collapse collapse" data-bs-parent="#adminMessagesAccordion">
+                            <div class="accordion-body">
+                              <div class="message-body-text mb-3"><?= nl2br(h((string)$contactMsg["mensaje"])) ?></div>
+                              <div class="d-flex flex-wrap gap-2 align-items-center text-light-emphasis small mb-3">
+                                <span><i class="fa-solid fa-envelope me-1"></i><a href="mailto:<?= h((string)$contactMsg["email"]) ?>"><?= h((string)$contactMsg["email"]) ?></a></span>
+                                <?php if (!empty($contactMsg["sent_to"])): ?>
+                                  <span><i class="fa-solid fa-paper-plane me-1"></i>destino: <?= h((string)$contactMsg["sent_to"]) ?></span>
+                                <?php endif; ?>
+                              </div>
+                              <?php
+                                $repliesForMsg = $contactRepliesByMessageId[$msgId] ?? [];
+                              ?>
+                              <?php if (count($repliesForMsg) > 0): ?>
+                                <div class="message-replies-sent">
+                                  <div class="small text-light-emphasis mb-2"><i class="fa-solid fa-reply me-1"></i>Respuestas enviadas desde aquí</div>
+                                  <?php foreach ($repliesForMsg as $repRow): ?>
+                                    <?php
+                                      $repCreated = (string)($repRow["created_at"] ?? "");
+                                      $repLabel = $repCreated;
+                                      try {
+                                          $repDt = new DateTime($repCreated);
+                                          $repLabel = $repDt->format("Y-m-d H:i");
+                                      } catch (Exception $e) {
+                                      }
+                                    ?>
+                                    <div class="message-reply-item small">
+                                      <span class="text-muted"><?= h($repLabel) ?></span>
+                                      <div class="mt-1 message-body-text mb-0" style="max-height: 12rem;"><?= nl2br(h((string)($repRow["body"] ?? ""))) ?></div>
+                                    </div>
+                                  <?php endforeach; ?>
+                                </div>
+                              <?php endif; ?>
+                              <form method="post" class="message-reply-form mb-3">
+                                <input type="hidden" name="action" value="reply_contact_message">
+                                <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                <label class="form-label small mb-1" for="reply_body_<?= $msgId ?>">Responder por correo</label>
+                                <textarea id="reply_body_<?= $msgId ?>" class="form-control form-control-sm" name="reply_body" rows="4" placeholder="Texto que recibirá <?= h((string)$contactMsg["nombre"]) ?> en su correo…" required></textarea>
+                                <div class="form-text text-light-emphasis small mt-1">
+                                  Mismo envío SMTP que el formulario: remitente = cuenta de <code>mail_config</code> (si <code>from_email</code> está vacío, se usa <code>username</code> si es un correo). <code>Reply-To</code> = correo receptor del sitio.
+                                </div>
+                                <button class="btn btn-primary btn-sm mt-2" type="submit">
+                                  <i class="fa-solid fa-paper-plane me-2"></i>Enviar respuesta
+                                </button>
+                              </form>
+                              <div class="d-flex flex-wrap gap-2 message-mark-actions">
+                                <form method="post" class="m-0 js-mark-read-form">
+                                  <input type="hidden" name="action" value="mark_message_read">
+                                  <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                  <button class="btn btn-outline-light btn-sm" type="submit">
+                                    <i class="fa-solid fa-check me-2"></i>Marcar como leído
+                                  </button>
+                                </form>
+                                <form method="post" class="m-0 js-mark-unread-form">
+                                  <input type="hidden" name="action" value="mark_message_unread">
+                                  <input type="hidden" name="message_id" value="<?= $msgId ?>">
+                                  <button class="btn btn-outline-warning btn-sm" type="submit">
+                                    <i class="fa-solid fa-rotate-left me-2"></i>Marcar como sin leer
+                                  </button>
+                                </form>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                  <?php endif; ?>
                 </div>
-              <?php endforeach; ?>
+              </div>
             </div>
-          <?php endif; ?>
+
+            <div class="accordion-item border-0">
+              <h2 class="accordion-header m-0" id="headingSideWhatsapp">
+                <button
+                  class="accordion-button collapsed py-3 px-3"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#collapseSideWhatsapp"
+                  aria-expanded="false"
+                  aria-controls="collapseSideWhatsapp"
+                >
+                  <span class="d-flex flex-wrap align-items-center gap-2 me-auto">
+                    <i class="fa-brands fa-whatsapp text-success"></i>
+                    <span>Clics WhatsApp</span>
+                    <span class="badge text-bg-secondary" title="Total"><?= count($whatsappClicks) ?></span>
+                  </span>
+                </button>
+              </h2>
+              <div
+                id="collapseSideWhatsapp"
+                class="accordion-collapse collapse"
+                aria-labelledby="headingSideWhatsapp"
+              >
+                <div class="accordion-body pt-0 px-3 pb-3">
+                  <p class="small text-light-emphasis mb-3">Una fila por cada pulsación del botón en la web. Actualiza esta página para ver las nuevas. Responde en la app de WhatsApp; aquí no hay chat.</p>
+                  <?php if (count($whatsappClicks) === 0): ?>
+                    <p class="text-light-emphasis mb-0">Sin clics todavía.</p>
+                  <?php else: ?>
+                    <div class="accordion admin-messages-accordion" id="adminWhatsappAccordion">
+                      <?php foreach ($whatsappClicks as $waClick): ?>
+                        <?php
+                          $waId = (int)$waClick["id"];
+                          $waCollapseId = "collapse_wa_" . $waId;
+                          $waCreated = (string)($waClick["created_at"] ?? "");
+                          $waLabel = $waCreated;
+                          try {
+                              $waDt = new DateTime($waCreated);
+                              $waLabel = $waDt->format("Y-m-d H:i");
+                          } catch (Exception $e) {
+                          }
+                          $waNombre = trim((string)($waClick["nombre"] ?? ""));
+                          $waEmail = trim((string)($waClick["email"] ?? ""));
+                          $waServicio = trim((string)($waClick["servicio"] ?? ""));
+                        ?>
+                        <div class="accordion-item message-row" data-whatsapp-click-id="<?= $waId ?>">
+                          <h3 class="accordion-header m-0 message-header-row">
+                            <button
+                              class="accordion-button collapsed d-flex flex-wrap align-items-center gap-2"
+                              type="button"
+                              data-bs-toggle="collapse"
+                              data-bs-target="#<?= h($waCollapseId) ?>"
+                              aria-expanded="false"
+                              aria-controls="<?= h($waCollapseId) ?>"
+                            >
+                              <span class="message-meta-date"><?= h($waLabel) ?></span>
+                              <span class="message-meta-name"><strong><?= $waNombre !== "" ? h($waNombre) : "—" ?></strong></span>
+                              <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= $waServicio !== "" ? h($waServicio) : "—" ?></span>
+                              <?php if ($waEmail !== ""): ?>
+                                <span class="message-meta-email text-light-emphasis"><?= h($waEmail) ?></span>
+                              <?php endif; ?>
+                            </button>
+                            <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar esta entrada?');">
+                              <input type="hidden" name="action" value="delete_whatsapp_click">
+                              <input type="hidden" name="whatsapp_click_id" value="<?= $waId ?>">
+                              <button class="btn-message-delete" type="submit" title="Eliminar registro" aria-label="Eliminar registro">
+                                <i class="fa-solid fa-trash"></i>
+                              </button>
+                            </form>
+                          </h3>
+                          <div id="<?= h($waCollapseId) ?>" class="accordion-collapse collapse" data-bs-parent="#adminWhatsappAccordion">
+                            <div class="accordion-body">
+                              <div class="small text-light-emphasis mb-1">Borrador</div>
+                              <div class="message-body-text mb-0"><?= nl2br(h((string)($waClick["composed_text"] ?? ""))) ?></div>
+                            </div>
+                          </div>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                  <?php endif; ?>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </aside>
     </div>
@@ -2251,6 +2910,6 @@ if ($isLogged) {
       }
     })();
   </script>
-  <script src="script.js"></script>
+  <script src="script.js?v=<?= h($adminAssetScriptVer) ?>"></script>
 </body>
 </html>
