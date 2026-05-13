@@ -1,0 +1,38 @@
+# --- Secretos y configuración local ---
+# Nunca subir credenciales reales.
+# (Si alguien clona el repo, copia *.example.php → *.php y los rellena.)
+mail_config.php
+db_config.php
+admin_bootstrap.php
+app_config.php
+
+# --- Logs y trazas ---
+*.log
+contact_send_trace.log
+mail_debug.log
+
+# --- Volcados de base de datos ---
+*.sql
+!setup.sql
+
+# --- Contenido subido por el admin ---
+# Las imágenes son contenido dinámico; no se versionan.
+# admin.php recrea uploads/services/ con mkdir si no existe.
+uploads/
+
+# --- Editores / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# --- Sistema operativo ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# --- Otros ---
+node_modules/
