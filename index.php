@@ -8,6 +8,21 @@ require_once __DIR__ . "/app_urls.php";
 
 client_session_start();
 
+if (isset($_GET["client_verify"])) {
+    $vTok = trim((string)($_GET["client_verify"] ?? ""));
+    if ($vTok !== "") {
+        $vErr = client_try_register_confirm_token($conn, $vTok);
+        if ($vErr !== null) {
+            client_set_flash("danger", $vErr);
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        } else {
+            client_set_flash("success", "Correo verificado. Tu cuenta ya está activa.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+        }
+        exit;
+    }
+}
+
 if (isset($_GET["client_logout"])) {
     client_session_destroy();
     header("Location: " . app_public_base_url() . "/index.php");
@@ -28,20 +43,50 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         exit;
     }
     if ($postAction === "client_register") {
-        $err = client_try_register(
+        $reg = client_try_register(
             $conn,
             (string)($_POST["reg_email"] ?? ""),
             (string)($_POST["reg_password"] ?? ""),
             (string)($_POST["reg_password_confirm"] ?? ""),
             (string)($_POST["reg_display_name"] ?? "")
         );
+        if (!empty($reg["ok"])) {
+            $em = htmlspecialchars((string)($reg["email"] ?? ""));
+            client_set_flash(
+                "warning",
+                "Mensaje enviado a {$em}. Abre el enlace del correo (48 h) o, si no llega, usa las opciones debajo."
+            );
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        } elseif (!empty($reg["need_email_choice"])) {
+            client_set_flash(
+                "warning",
+                "No se pudo enviar el correo de confirmación. Puedes crear la cuenta solo en la web o probar otro correo (debajo)."
+            );
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        } else {
+            client_set_flash("danger", (string)($reg["error"] ?? "No se pudo registrar."));
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        }
+        exit;
+    }
+    if ($postAction === "client_register_no_mail") {
+        $err = client_try_register_finalize_no_mail($conn);
         if ($err !== null) {
             client_set_flash("danger", $err);
             header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
         } else {
-            client_set_flash("success", "Cuenta creada. Ya estás dentro como cliente en esta web.");
+            client_set_flash(
+                "success",
+                "Cuenta activa. Sin avisos por correo desde el sitio; el historial queda aquí."
+            );
             header("Location: " . app_public_base_url() . "/index.php#area-cliente");
         }
+        exit;
+    }
+    if ($postAction === "client_register_retry_email") {
+        client_register_retry_clear($conn);
+        client_set_flash("info", "Vuelve a rellenar el registro con otro correo.");
+        header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
         exit;
     }
     if (
@@ -115,6 +160,8 @@ $clientTab = (string)($_GET["client_tab"] ?? "");
 if ($clientTab !== "login" && $clientTab !== "register") {
     $clientTab = "";
 }
+
+$clientRegisterPending = $clientUser === null ? client_register_pending_get() : null;
 
 $clientPrefillNombre = "";
 $clientPrefillEmail = "";
@@ -432,7 +479,12 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
       <div class="container">
         <h2><i class="fa-solid fa-circle-user"></i> Área de clientes</h2>
         <?php if ($clientFlash["msg"] !== ""): ?>
-          <p class="<?= $clientFlash["type"] === "success" ? "form-ok" : "form-error" ?> client-portal-flash" role="alert">
+          <p class="<?php
+            $ft = (string)$clientFlash["type"];
+            echo ($ft === "success" || $ft === "info")
+                ? "form-ok"
+                : ($ft === "warning" ? "form-warn" : "form-error");
+            ?> client-portal-flash client-portal-flash--compact" role="alert">
             <?= htmlspecialchars($clientFlash["msg"]) ?>
           </p>
         <?php endif; ?>
@@ -654,13 +706,43 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
             <?php endif; ?>
           </div>
         <?php else: ?>
-          <p class="client-muted mb-3">
-            Si ya te pusiste en contacto sin cuenta, puedes seguir por correo; si quieres un historial ordenado en esta web, <strong><a href="#client-login-card">inicia sesión</a></strong> o <strong><a href="#client-register-card">regístrate</a></strong> con el mismo correo y usa el formulario de contacto estando dentro.
-          </p>
-          <p class="client-muted mb-4">
-            Crea tu usuario desde aquí o entra si ya te registraste. El administrador puede desactivar cuentas desde su panel si hace falta.
+          <p class="client-auth-guest-hint">
+            <a href="#client-login-card">Entrar</a> o <a href="#client-register-card">registrarse</a> con el mismo correo que uses al contactar para ver el historial aquí. Registro: enlace de confirmación al correo (48 h).
           </p>
           <div class="client-auth-grid">
+            <?php if ($clientRegisterPending !== null): ?>
+              <?php
+                $pendEmail = htmlspecialchars((string)($clientRegisterPending["email"] ?? ""));
+                $pendName = htmlspecialchars((string)($clientRegisterPending["display_name"] ?? ""));
+                $pendMailSent = !empty($clientRegisterPending["verification_sent"]);
+              ?>
+              <div class="client-auth-box client-card-highlight client-reg-pending-card" id="client-register-pending-card" style="grid-column: 1 / -1;">
+                <?php if ($pendMailSent): ?>
+                <h3><i class="fa-solid fa-envelope"></i> Confirma el correo</h3>
+                <p class="client-reg-pending-meta">
+                  <?= $pendEmail ?><?php if ($pendName !== ""): ?> · <?= $pendName ?><?php endif; ?>
+                </p>
+                <p class="client-reg-pending-lead">Revisa bandeja y spam. La cuenta se activa al abrir el enlace (48 h).</p>
+                <p class="client-reg-pending-hint">¿No llega? Puedes activar solo en la web o probar otro correo.</p>
+                <?php else: ?>
+                <h3><i class="fa-solid fa-envelope-circle-check"></i> Correo de confirmación no enviado</h3>
+                <p class="client-reg-pending-meta">
+                  <?= $pendEmail ?><?php if ($pendName !== ""): ?> · <?= $pendName ?><?php endif; ?>
+                </p>
+                <p class="client-reg-pending-lead">Aún no hay cuenta. Crea una sin correos del sitio o cambia el correo.</p>
+                <?php endif; ?>
+                <div class="client-reg-pending-actions">
+                  <form method="post" class="m-0">
+                    <input type="hidden" name="action" value="client_register_no_mail">
+                    <button type="submit" class="btn btn-primary">Activar sin correos del sitio</button>
+                  </form>
+                  <form method="post" class="m-0">
+                    <input type="hidden" name="action" value="client_register_retry_email">
+                    <button type="submit" class="btn btn-ghost">Cambiar correo</button>
+                  </form>
+                </div>
+              </div>
+            <?php else: ?>
             <div class="client-auth-box <?= $clientTab === "register" ? "client-card-highlight" : "" ?>" id="client-register-card">
               <h3><i class="fa-solid fa-user-plus"></i> Crear cuenta</h3>
               <form method="post" class="contact-form client-auth-form">
@@ -680,6 +762,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
                 <button type="submit" class="btn btn-primary">Registrarme</button>
               </form>
               </div>
+            <?php endif; ?>
             <div class="client-auth-box <?= $clientTab === "login" ? "client-card-highlight" : "" ?>" id="client-login-card">
               <h3><i class="fa-solid fa-right-to-bracket"></i> Iniciar sesión</h3>
               <form method="post" class="contact-form client-auth-form">

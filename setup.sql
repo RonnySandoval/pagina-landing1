@@ -16,8 +16,22 @@ CREATE TABLE IF NOT EXISTS clients (
   password VARCHAR(255) NOT NULL,
   display_name VARCHAR(180) NOT NULL DEFAULT '',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  email_notify_outbound TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_clients_active (is_active)
+);
+
+CREATE TABLE IF NOT EXISTS client_registration_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(180) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(180) NOT NULL DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  UNIQUE KEY uq_crt_token (token_hash),
+  INDEX idx_crt_email (email),
+  INDEX idx_crt_expires (expires_at)
 );
 
 CREATE TABLE IF NOT EXISTS site_settings (

@@ -326,6 +326,7 @@ function storeLogoImage(array $file): array {
 
 $message = "";
 $error = "";
+$messageAlertClass = "alert-success";
 $resetTokenFromUrl = trim((string)($_GET["reset_token"] ?? ""));
 // Cuando el usuario envía el form de "Olvidaste tu clave?" (POST de reset request),
 // preservamos esa vista al re-renderizar para mostrarle el mensaje genérico.
@@ -335,8 +336,12 @@ $adminFlash = admin_consume_flash();
 if ($adminFlash["msg"] !== "") {
     if ($adminFlash["type"] === "error") {
         $error = $adminFlash["msg"];
+    } elseif ($adminFlash["type"] === "warning") {
+        $message = $adminFlash["msg"];
+        $messageAlertClass = "alert-warning";
     } else {
         $message = $adminFlash["msg"];
+        $messageAlertClass = "alert-success";
     }
 }
 $iconOptions = [
@@ -1075,6 +1080,19 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whats
     admin_redirect_after_action();
 }
 
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_email_notify") {
+    $cid = (int)($_POST["client_id"] ?? 0);
+    if ($cid > 0) {
+        $tog = $conn->prepare("UPDATE clients SET email_notify_outbound = IF(email_notify_outbound = 1, 0, 1) WHERE id = ?");
+        if ($tog !== false) {
+            $tog->bind_param("i", $cid);
+            $tog->execute();
+            $tog->close();
+            $message = "Preferencia de correo al cliente actualizada.";
+        }
+    }
+}
+
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $replyBody = trim((string)($_POST["reply_body"] ?? ""));
@@ -1090,7 +1108,9 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         admin_set_flash("error", "La respuesta es demasiado larga.");
         admin_redirect_after_action();
     }
-    $stmt = $conn->prepare("SELECT id, nombre, email, servicio, subject, mensaje, created_at, in_reply_to FROM contact_messages WHERE id = ? LIMIT 1");
+    $stmt = $conn->prepare(
+        "SELECT id, nombre, email, servicio, subject, mensaje, created_at, in_reply_to, client_id FROM contact_messages WHERE id = ? LIMIT 1"
+    );
     if ($stmt === false) {
         admin_set_flash("error", "No se pudo cargar el mensaje.");
         admin_redirect_after_action();
@@ -1109,6 +1129,49 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         admin_set_flash("error", "El correo del visitante no es valido.");
         admin_redirect_after_action();
     }
+
+    $ins = $conn->prepare("INSERT INTO contact_message_replies (contact_message_id, body) VALUES (?, ?)");
+    if ($ins === false) {
+        admin_set_flash("error", "No se pudo guardar la respuesta.");
+        admin_redirect_after_action();
+    }
+    $ins->bind_param("is", $messageId, $replyBody);
+    if (!$ins->execute()) {
+        $ins->close();
+        admin_set_flash("error", "No se pudo guardar la respuesta.");
+        admin_redirect_after_action();
+    }
+    $ins->close();
+    $mark = $conn->prepare("UPDATE contact_messages SET is_read = 1 WHERE id = ?");
+    if ($mark !== false) {
+        $mark->bind_param("i", $messageId);
+        $mark->execute();
+        $mark->close();
+    }
+
+    $msgClientId = (int)($msgRow["client_id"] ?? 0);
+    $skipOutbound = false;
+    if ($msgClientId > 0) {
+        $cst = $conn->prepare("SELECT email_notify_outbound FROM clients WHERE id = ? LIMIT 1");
+        if ($cst !== false) {
+            $cst->bind_param("i", $msgClientId);
+            $cst->execute();
+            $cres = $cst->get_result();
+            $crow = $cres ? $cres->fetch_assoc() : null;
+            $cst->close();
+            if ($crow !== null && (int)($crow["email_notify_outbound"] ?? 1) === 0) {
+                $skipOutbound = true;
+            }
+        }
+    }
+    if ($skipOutbound) {
+        admin_set_flash(
+            "success",
+            "Respuesta guardada. Este cliente no recibe correos del sitio (solo verá el mensaje en la web)."
+        );
+        admin_redirect_after_action();
+    }
+
     $settingsRes = $conn->query("SELECT contact_email, person_name, brand_name FROM site_settings WHERE id = 1 LIMIT 1");
     $contactEmail = "";
     $personName = "";
@@ -1120,7 +1183,10 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         $brandName = trim((string)($srow["brand_name"] ?? ""));
     }
     if ($contactEmail === "" || !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
-        admin_set_flash("error", "Configura un correo receptor valido en Configuracion general.");
+        admin_set_flash(
+            "warning",
+            "Respuesta guardada en el panel. Configura un correo receptor valido en Configuracion general para poder enviar por SMTP al visitante."
+        );
         admin_redirect_after_action();
     }
     $mailConfigPath = __DIR__ . "/mail_config.php";
@@ -1128,15 +1194,18 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
     $mailConfig = is_array($mailConfig) ? $mailConfig : [];
     $fromEmail = mail_config_resolve_smtp_from($mailConfig);
     if ($fromEmail === "") {
-        admin_set_flash("error", "En mail_config indica from_email o un username que sea un correo valido (cuenta SMTP).");
+        admin_set_flash(
+            "warning",
+            "Respuesta guardada. En mail_config indica from_email o un username que sea un correo valido (cuenta SMTP) para enviar al visitante."
+        );
         admin_redirect_after_action();
     }
     $smtpHost = strtolower((string)($mailConfig["host"] ?? ""));
     $smtpUser = trim((string)($mailConfig["username"] ?? ""));
     if (!empty($mailConfig["use_smtp"]) && str_contains($smtpHost, "gmail") && strcasecmp($fromEmail, $smtpUser) !== 0) {
         admin_set_flash(
-            "error",
-            "Con Gmail (smtp.gmail.com), username y remitente SMTP deben ser el mismo correo (rellena from_email o usa ese correo en username)."
+            "warning",
+            "Respuesta guardada. Con Gmail (smtp.gmail.com), username y remitente SMTP deben ser el mismo correo para poder enviar al visitante."
         );
         admin_redirect_after_action();
     }
@@ -1192,37 +1261,25 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_
         $code = (string)($sendResult["code"] ?? "");
         if ($code === "smtp_failed") {
             admin_set_flash(
-                "error",
-                "SMTP falló (revisa la última línea [smtp] en contact_send_trace.log en esta carpeta). Con Gmail no uses la clave de la cuenta: crea una contraseña de aplicación (Google → Seguridad → verificación en 2 pasos → contraseñas de aplicaciones). username y from_email deben ser ese mismo Gmail. Si el error habla de certificado SSL en XAMPP, en mail_config puedes probar temporalmente \"smtp_relax_tls_verify\" => true (solo en local)."
+                "warning",
+                "Respuesta guardada en el panel, pero SMTP falló al enviar al visitante (revisa contact_send_trace.log). Con Gmail usa contraseña de aplicación; username y from_email deben coincidir."
             );
         } elseif ($code === "php_mail_failed") {
             admin_set_flash(
-                "error",
-                "Falta configuración SMTP completa en mail_config (host, usuario, contraseña y remitente válido), y la función mail() del servidor también falló (habitual en XAMPP sin MTA). Rellena esos datos o revisa el servidor de correo."
+                "warning",
+                "Respuesta guardada. Falta SMTP completo en mail_config y mail() del servidor también falló; el visitante no recibió correo."
             );
         } elseif ($code === "bad_config") {
-            admin_set_flash("error", "Correo del visitante, remitente SMTP o correo de contacto del sitio no válido. Revisa Configuración general y mail_config.");
+            admin_set_flash("warning", "Respuesta guardada. Revisa correo del visitante, remitente SMTP y contacto del sitio.");
         } else {
             admin_set_flash(
-                "error",
-                "No se pudo enviar el correo. Revisa mail_config (host, usuario, contraseña de aplicación, from_email) y el log de depuración si está activo."
+                "warning",
+                "Respuesta guardada. No se pudo completar el envío por correo; revisa mail_config y el log de depuración."
             );
         }
         admin_redirect_after_action();
     }
-    $ins = $conn->prepare("INSERT INTO contact_message_replies (contact_message_id, body) VALUES (?, ?)");
-    if ($ins !== false) {
-        $ins->bind_param("is", $messageId, $replyBody);
-        $ins->execute();
-        $ins->close();
-    }
-    $mark = $conn->prepare("UPDATE contact_messages SET is_read = 1 WHERE id = ?");
-    if ($mark !== false) {
-        $mark->bind_param("i", $messageId);
-        $mark->execute();
-        $mark->close();
-    }
-    admin_set_flash("success", "Respuesta enviada a " . $visitorEmail . ".");
+    admin_set_flash("success", "Respuesta guardada y enviada a " . $visitorEmail . ".");
     admin_redirect_after_action();
 }
 
@@ -1331,7 +1388,7 @@ if ($isLogged) {
 
 $portalClients = [];
 if ($isLogged) {
-    $pcQuery = $conn->query("SELECT id, email, display_name, is_active, created_at FROM clients ORDER BY id ASC");
+    $pcQuery = $conn->query("SELECT id, email, display_name, is_active, email_notify_outbound, created_at FROM clients ORDER BY id ASC");
     if ($pcQuery) {
         while ($pcRow = $pcQuery->fetch_assoc()) {
             $portalClients[] = $pcRow;
@@ -2525,7 +2582,7 @@ $waSideCounterTitle = $waSideUnread > 0
           </a>
         </div>
       </div>
-      <?php if ($message !== ""): ?><div class="alert alert-success mt-3 mb-0"><?= h($message) ?></div><?php endif; ?>
+      <?php if ($message !== ""): ?><div class="alert <?= h($messageAlertClass) ?> mt-3 mb-0"><?= h($message) ?></div><?php endif; ?>
       <?php if ($error !== ""): ?><div class="alert alert-danger mt-3 mb-0"><?= h($error) ?></div><?php endif; ?>
     </div>
 
@@ -2583,6 +2640,7 @@ $waSideCounterTitle = $waSideUnread > 0
                 <p class="small text-light-emphasis mb-3">
                   Los visitantes se registran solos en la landing (sección <strong>Área de clientes</strong>).
                   Desde aquí solo moderas: desactivar o borrar cuentas. La sesión de cliente es independiente del admin.
+                  <strong>Correo al cliente:</strong> si está activo, al responder desde Mensajes se intentará enviar SMTP a su correo; si lo desactivas, la respuesta solo quedará en la web (útil si el correo no recibe o el cliente lo prefirió al registrarse).
                 </p>
                 <?php if (count($portalClients) === 0): ?>
                   <p class="small text-light-emphasis mb-0">Aún no hay cuentas. Comparte la URL del acordeón «Rutas» o el enlace «Clientes» del menú de la web.</p>
@@ -2594,6 +2652,7 @@ $waSideCounterTitle = $waSideUnread > 0
                           <th>Correo</th>
                           <th>Nombre</th>
                           <th>Estado</th>
+                          <th>SMTP al cliente</th>
                           <th class="text-end">Acciones</th>
                         </tr>
                       </thead>
@@ -2602,6 +2661,7 @@ $waSideCounterTitle = $waSideUnread > 0
                           <?php
                             $pid = (int)($pc["id"] ?? 0);
                             $active = (int)($pc["is_active"] ?? 0) === 1;
+                            $notifyOut = (int)($pc["email_notify_outbound"] ?? 1) === 1;
                           ?>
                           <tr>
                             <td class="font-monospace small"><?= h((string)($pc["email"] ?? "")) ?></td>
@@ -2613,7 +2673,19 @@ $waSideCounterTitle = $waSideUnread > 0
                                 <span class="badge text-bg-secondary">Desactivado</span>
                               <?php endif; ?>
                             </td>
+                            <td>
+                              <?php if ($notifyOut): ?>
+                                <span class="badge text-bg-info" title="Se intentará enviar respuestas del panel por correo">Activo</span>
+                              <?php else: ?>
+                                <span class="badge text-bg-secondary" title="Solo bandeja web; no SMTP al cliente">Solo web</span>
+                              <?php endif; ?>
+                            </td>
                             <td class="text-end">
+                              <form method="post" class="d-inline">
+                                <input type="hidden" name="action" value="client_toggle_email_notify">
+                                <input type="hidden" name="client_id" value="<?= $pid ?>">
+                                <button type="submit" class="btn btn-outline-info btn-sm" title="Alternar envío de correos al cliente"><?= $notifyOut ? "Desactivar correo" : "Activar correo" ?></button>
+                              </form>
                               <form method="post" class="d-inline">
                                 <input type="hidden" name="action" value="client_toggle_active">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS clients (
   password VARCHAR(255) NOT NULL,
   display_name VARCHAR(180) NOT NULL DEFAULT '',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  email_notify_outbound TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_clients_active (is_active)
 )");
@@ -296,6 +297,37 @@ if ($messagesSubjectColumnResult && $messagesSubjectColumnResult->num_rows === 1
 if (!$messagesHasSubject) {
     $conn->query("ALTER TABLE contact_messages ADD COLUMN subject VARCHAR(200) NOT NULL DEFAULT '' AFTER servicio");
 }
+
+$clientsHasEmailNotifyOutbound = false;
+$clientsEmailNotifyColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'clients'
+  AND COLUMN_NAME = 'email_notify_outbound'
+LIMIT 1
+");
+if ($clientsEmailNotifyColumnResult && $clientsEmailNotifyColumnResult->num_rows === 1) {
+    $clientsHasEmailNotifyOutbound = true;
+}
+if (!$clientsHasEmailNotifyOutbound) {
+    $conn->query("ALTER TABLE clients ADD COLUMN email_notify_outbound TINYINT(1) NOT NULL DEFAULT 1 AFTER is_active");
+}
+
+$conn->query("
+CREATE TABLE IF NOT EXISTS client_registration_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(180) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(180) NOT NULL DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  UNIQUE KEY uq_crt_token (token_hash),
+  INDEX idx_crt_email (email),
+  INDEX idx_crt_expires (expires_at)
+)
+");
 
 $conn->query("
 CREATE TABLE IF NOT EXISTS contact_message_replies (
