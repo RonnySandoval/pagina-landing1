@@ -12,9 +12,9 @@ declare(strict_types=1);
  *   Formulario       → send.php (POST desde la landing)
  *
  * URLS (dependen de dónde cuelgue la carpeta en el servidor web):
- *   Local típico (carpeta htdocs/pag-laura):
- *     Landing  http://localhost/pag-laura/
- *     Admin    http://localhost/pag-laura/admin.php
+ *   Local típico (carpeta htdocs/pag-nombre):
+ *     Landing  http://localhost/pag-nombre/
+ *     Admin    http://localhost/pag-nombre/admin.php
  *   Producción (ejemplo):
  *     Landing  https://tudominio.com/
  *     Admin    https://tudominio.com/admin.php
@@ -22,8 +22,9 @@ declare(strict_types=1);
  *   extra: .../subcarpeta/ y .../subcarpeta/admin.php
  *
  * CÓMO SE CALCULA LA BASE (local y servidor):
- *   1) Si existe app_config.php con "public_base_url" → esa es la base (útil
- *      en hosting con proxy o dominio fijo). Plantilla: app_config.example.php
+ *   1) Si existe app_config.php con "public_base_url" (idealmente sin "/" final;
+ *      si la lleva en la ruta, se normaliza) → esa es la base (útil en hosting con
+ *      proxy o dominio fijo). Plantilla: app_config.example.php
  *   2) Si no → app_public_base_url() usa HTTP_HOST + HTTPS / X-Forwarded-Proto
  *      + dirname(SCRIPT_NAME) en cada petición.
  *

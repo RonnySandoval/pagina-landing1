@@ -1,8 +1,8 @@
 <?php
 declare(strict_types=1);
 
-// Credenciales por defecto (XAMPP). Se sobrescriben con db_config.php si existe.
-// Crea db_config.php a partir de db_config.example.php en cada entorno.
+// Credenciales por defecto (XAMPP). Si existe `db_config.php` en esta carpeta,
+// sus valores sustituyen a los de abajo. Plantilla: `db_config.example.php`.
 $dbHost = "127.0.0.1";
 $dbUser = "root";
 $dbPass = "";
@@ -274,10 +274,10 @@ INSERT IGNORE INTO site_settings (
   1,
   'Tu Nombre',
   'Tu Marca',
-  'Describe aqui tu propuesta principal de valor.',
-  'Agrega una breve introduccion para tu portada.',
-  'Escribe una descripcion corta sobre ti y tus servicios.',
-  'Invita a tus visitantes a contactarte para mas informacion.',
+  'Describe aquí tu propuesta principal de valor.',
+  'Agrega una breve introducción para tu portada.',
+  'Escribe una descripción corta sobre ti y tus servicios.',
+  'Invita a tus visitantes a contactarte para más información.',
   'contacto@tu-dominio.com',
   'Todos los derechos reservados.'
 )
@@ -294,8 +294,8 @@ if ($servicesTotal === 0) {
     $conn->query("
     INSERT INTO services (title, description, icon_class, image_path, sort_order, is_active)
     VALUES
-      ('Servicio 1', 'Describe aqui el primer servicio que ofreces.', 'fa-solid fa-book-open-reader', NULL, 1, 1),
-      ('Servicio 2', 'Describe aqui el segundo servicio con su beneficio principal.', 'fa-solid fa-code', NULL, 2, 1),
-      ('Servicio 3', 'Describe aqui el tercer servicio de forma breve y clara.', 'fa-solid fa-guitar', NULL, 3, 1)
+      ('Servicio 1', 'Describe aquí el primer servicio que ofreces.', 'fa-solid fa-book-open-reader', NULL, 1, 1),
+      ('Servicio 2', 'Describe aquí el segundo servicio con su beneficio principal.', 'fa-solid fa-code', NULL, 2, 1),
+      ('Servicio 3', 'Describe aquí el tercer servicio de forma breve y clara.', 'fa-solid fa-guitar', NULL, 3, 1)
     ");
 }

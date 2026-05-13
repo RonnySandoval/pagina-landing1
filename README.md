@@ -56,23 +56,26 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 
    Sustituye `<URL-de-tu-repo-o-fork>` por la URL HTTPS o SSH de **tu** copia del proyecto (fork propio, repo de organización, etc.). Si clonas con otro nombre de carpeta, tendrás que usar `-Template "ese-nombre"` al provisionar landings adicionales.
 
-2. Crear los tres archivos de configuración a partir de los `*.example.php`:
+2. Crear los archivos de configuración a partir de los `*.example.php`:
 
    ```powershell
    cd pag-template
-   Copy-Item db_config.example.php   db_config.php
-   Copy-Item mail_config.example.php mail_config.php
+   Copy-Item db_config.example.php        db_config.php
+   Copy-Item mail_config.example.php     mail_config.php
    Copy-Item admin_bootstrap.example.php admin_bootstrap.php
+   # Opcional (URLs fijas o depuración de rutas): descomenta la siguiente línea.
+   # Copy-Item app_config.example.php app_config.php
    ```
 
 3. Editar:
-   - `db_config.php` → host/usuario/clave/nombre de la BD local.
-   - `mail_config.php` → credenciales SMTP (Gmail con App Password u otro).
+   - `db_config.php` → host, usuario, clave y nombre de la BD local (en hosting
+     compartido el host **no** suele ser `127.0.0.1`; cópialo del panel del proveedor).
+   - `mail_config.php` → credenciales SMTP (Gmail con contraseña de aplicación u otro).
    - `admin_bootstrap.php` → correo real y clave inicial del admin.
-   - Opcional: `app_config.example.php` → `app_config.php` y `public_base_url`
-     si en el servidor la URL debe ser fija (proxy, dominio canónico). Si no
-     existe, la base se infiere en cada petición. Tras iniciar sesión, el panel
-     muestra las rutas de landing y admin en el acordeón **Rutas (landing y admin)**.
+   - Opcional: si copiaste `app_config.php`, ajusta `public_base_url` si en el servidor
+     la URL debe ser fija (proxy, dominio canónico). Si no existe el archivo, la base
+     se infiere en cada petición. Tras iniciar sesión, el panel muestra las rutas en
+     el acordeón **Rutas (landing y admin)**.
 
 4. Crear la BD vacía en MySQL (con XAMPP/phpMyAdmin) con el nombre que
    pusiste en `db_config.php`. Por ejemplo:
@@ -132,7 +135,7 @@ Desde PowerShell (recomendado si ya tienes la ventana abierta):
 C:\xampp\htdocs\pag-template\tools\provision.ps1 `
   -Slug "juan" `
   -AdminEmail "juan@correo.com" `
-  -AdminPassword "JuanIngles2026!"
+  -AdminPassword "CambiaEstaClave2026!"
 ```
 
 Si haces **doble clic** o la consola se cierra sola al terminar, usa el
@@ -140,7 +143,7 @@ lanzador que deja el resultado visible y pide **Enter** al final (o `pause`
 tras el script):
 
 ```text
-C:\xampp\htdocs\pag-template\tools\provision.cmd -Slug "juan" -AdminEmail "juan@correo.com" -AdminPassword "JuanIngles2026!"
+C:\xampp\htdocs\pag-template\tools\provision.cmd -Slug "juan" -AdminEmail "juan@correo.com" -AdminPassword "CambiaEstaClave2026!"
 ```
 
 Para **CI o scripts** donde no debe haber pausa al final, añade **`-NoWait`**
@@ -152,8 +155,9 @@ Esto crea de un solo golpe:
   (sin `.git`, `uploads`, configs sensibles del template, etc.). **Sí se copia**
   `.github/workflows/` (p. ej. `deploy.yml`) para que el clon local pueda
   versionarse con el mismo CI/FTP que el template.
-- BD MySQL `pagina_juan` **vacía** (utf8mb4); el esquema lo crea `db.php` al
-  abrir `admin.php`.
+- BD MySQL `pagina_juan` **vacía** (utf8mb4): el nombre de la BD usa el mismo
+  *slug* con guion bajo (`pagina_<slug>`); la carpeta usa guion (`pagina-<slug>`).
+  El esquema lo crea `db.php` al abrir `admin.php`.
 - `db_config.php`, `mail_config.php`, `admin_bootstrap.php` generados dentro de
   la nueva carpeta.
 - Por defecto intenta abrir `http://localhost/pagina-juan/admin.php` para
@@ -179,7 +183,7 @@ Si la copia falla, el script muestra el detalle de **robocopy** en consola.
 
 ### Lo que el script NO hace
 
-- No despliega en producción (eso es manual).
+- No sube archivos al hosting (el deploy lo hace GitHub Actions o FTP manual).
 - No edita una landing existente (solo crea nuevas).
 - No hace backup automático antes de `-Force`.
 
@@ -272,6 +276,7 @@ jobs:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
+          # El valor del secret debe terminar en / (p. ej. htdocs/).
           server-dir: ${{ secrets.FTP_SERVER_DIR }}
           local-dir: ./
           dangerous-clean-slate: false
@@ -294,6 +299,10 @@ jobs:
 Luego configura en GitHub **Settings → Secrets and variables → Actions** los
 secrets `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD` y `FTP_SERVER_DIR` como
 se indica más abajo.
+
+**`FTP_SERVER_DIR`:** debe ser una carpeta remota y **terminar en barra `/`**
+(p. ej. `htdocs/` o `htdocs/mi-landing/`). Si falta la barra final, el action
+`FTP-Deploy-Action` falla con *server-dir should be a folder (must end with /)*.
 
 ### Antes del primer `push` con CI (secrets)
 
@@ -322,10 +331,13 @@ cuatro** valores.
 2. **FTP o CI:** Subir el código (desde `pagina-juan/` o desde la raíz del repo
    que versiones). El `deploy.yml` del template excluye `tools/`, secretos
    locales, `uploads/`, etc.; en el servidor deben existir los configs.
-3. **En el servidor**, crear/editar `db_config.php`, `mail_config.php` y
-   `admin_bootstrap.php` con datos reales del hosting (no van en git si están
-   en `.gitignore`). Opcional: `app_config.php` con `public_base_url` si la URL
-   canónica no se detecta bien.
+3. **En el servidor** (FTP o administrador de archivos del panel), crear o
+   subir `db_config.php`, `mail_config.php` y `admin_bootstrap.php` con datos
+   reales: el workflow **no** los sube desde el repo (están en `.gitignore` y en
+   la lista `exclude` del deploy). Sin `db_config.php` en el servidor, la app
+   intenta conectarse con los valores por defecto de XAMPP y suele responder
+   **500**. Opcional: `app_config.php` con `public_base_url` si la URL canónica
+   no se detecta bien.
 4. Visitar `https://juan.tu-dominio.com/admin.php` una vez → creación de tablas
    y siembra del admin.
 5. Iniciar sesión y borrar `admin_bootstrap.php` del servidor.
@@ -370,7 +382,7 @@ pag-template/
 ├── send.php                   Endpoint del formulario de contacto.
 ├── db.php                     Conexión + auto-init del esquema + bootstrap del admin.
 ├── smtp_mail.php              Cliente SMTP minimalista (sin dependencias).
-├── setup.sql                  Esquema + datos iniciales (placeholders).
+├── setup.sql                  Esquema + seed de referencia (import opcional; ver cabecera del archivo).
 ├── styles.css, script.js      Frontend.
 ├── uploads/                   Imágenes subidas desde el admin (no versionado).
 │

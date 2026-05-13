@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 /**
  * Envío mínimo por SMTP (AUTH LOGIN + STARTTLS o SSL directo).
- * Sin dependencias externas; pensado para XAMPP / hosting con SMTP real.
+ * Sin dependencias externas; pensado para XAMPP y hosting con SMTP real.
+ * Configuración: `mail_config.php` (plantilla `mail_config.example.php`).
  */
 
 function smtp_read_lines($fp): string {

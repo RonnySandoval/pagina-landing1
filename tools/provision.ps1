@@ -13,7 +13,7 @@
 
   Vive dentro del repo en pag-template\tools\provision.ps1 para que se versione
   con el template. Se excluye del FTP deploy (ver .github/workflows/deploy.yml)
-  porque es una herramienta local del desarrollador, no codigo de produccion.
+  porque es una herramienta local del desarrollador, no código de producción.
 
 .PARAMETER Slug
   Identificador del nuevo proyecto. Solo minusculas, numeros, guion y guion bajo.
@@ -55,12 +55,12 @@
   C:\xampp\htdocs\pag-template\tools\provision.ps1 `
     -Slug "juan" `
     -AdminEmail "juan@correo.com" `
-    -AdminPassword "Juan2026Seguro!"
+    -AdminPassword "CambiaEstaClave2026!"
 
 .EXAMPLE
   # Reusando otro template como base (cualquier landing previa puede ser template)
   C:\xampp\htdocs\pag-template\tools\provision.ps1 -Slug "maria" `
-    -AdminEmail "maria@correo.com" -AdminPassword "Maria2026!" `
+    -AdminEmail "maria@correo.com" -AdminPassword "CambiaEstaClave2026!" `
     -Template "pagina-juan"
 #>
 

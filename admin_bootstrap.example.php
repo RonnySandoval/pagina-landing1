@@ -2,16 +2,16 @@
 declare(strict_types=1);
 
 /**
- * Bootstrap inicial de admin (solo servidor).
+ * Credenciales del primer usuario admin (solo para tabla `admins` vacía).
  *
  * Uso:
- * 1. Copia este archivo como `admin_bootstrap.php`.
- * 2. Define credenciales seguras.
- * 3. NO subas `admin_bootstrap.php` al repositorio.
+ * 1. Copia este archivo como `admin_bootstrap.php` en la misma carpeta.
+ * 2. Pon un correo real y una contraseña fuerte (se hashea con bcrypt al insertar).
+ * 3. No subas `admin_bootstrap.php` al repositorio (.gitignore).
+ * 4. Tras el primer login, borra el archivo del disco (local o servidor).
  *
- * Nota:
- * - Se usa solo cuando la tabla `admins` esta vacia.
- * - Luego puedes borrar este archivo del servidor si quieres.
+ * En producción: créalo en el hosting por FTP o administrador de archivos; el
+ * workflow de deploy no sube este archivo desde Git.
  */
 return [
     "email" => "admin@tu-dominio.com",
