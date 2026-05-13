@@ -11,6 +11,9 @@ app_config.php
 contact_send_trace.log
 mail_debug.log
 
+# Salida local de herramientas (p. ej. informe del seed de conversaciones demo)
+var/
+
 # --- Volcados de base de datos ---
 *.sql
 !setup.sql
