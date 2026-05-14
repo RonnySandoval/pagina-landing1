@@ -12,6 +12,10 @@ declare(strict_types=1);
  *   Formulario       → send.php (POST desde la landing)
  *   Login clientes   → index.php#area-cliente (misma página tras sesión)
  *
+ * Módulos opcionales: `app_feature_enabled()` lee `features` en app_config.php
+ * (ver app_config.example.php). Sirve para desactivar WhatsApp o la bandeja
+ * del área cliente en una instalación concreta.
+ *
  * URLS (dependen de dónde cuelgue la carpeta en el servidor web):
  *   Local típico (carpeta htdocs/pag-nombre):
  *     Landing  http://localhost/pag-nombre/
@@ -31,6 +35,7 @@ declare(strict_types=1);
  *      + dirname(SCRIPT_NAME) en cada petición.
  *
  * FUNCIONES: app_public_base_url(), app_landing_url(), app_admin_url(), app_client_portal_url()
+ *             app_feature_enabled() — módulos opcionales (ver app_config.example.php).
  *             app_mail_plain_text_links_footer() — una URL en pie (admin o área cliente).
  * UI para copiar URLs: panel admin → acordeón «Rutas (landing y admin)».
  *
@@ -54,6 +59,41 @@ function app_load_url_config(): array
     $cfg = require $path;
     $cached = is_array($cfg) ? $cfg : [];
     return $cached;
+}
+
+/**
+ * Activa o desactiva módulos por instalación (`app_config.php`, clave `features`).
+ * Si no existe `features` o falta el nombre, el módulo queda activo (comportamiento por defecto).
+ */
+function app_feature_enabled(string $name): bool
+{
+    $cfg = app_load_url_config();
+    $features = $cfg["features"] ?? null;
+    if (!is_array($features)) {
+        return true;
+    }
+    if (!array_key_exists($name, $features)) {
+        return true;
+    }
+
+    $v = $features[$name];
+    if (is_bool($v)) {
+        return $v;
+    }
+    if (is_int($v) || is_float($v)) {
+        return ((float)$v) !== 0.0;
+    }
+    if (is_string($v)) {
+        $b = filter_var($v, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($b !== null) {
+            return $b;
+        }
+        $t = strtolower(trim($v));
+
+        return !in_array($t, ["0", "false", "no", "off", ""], true);
+    }
+
+    return (bool)$v;
 }
 
 function app_log_public_base_url_debug(array $cfg, string $base, string $source): void

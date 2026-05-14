@@ -95,6 +95,16 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     ) {
         $isAjax = isset($_POST["ajax"]) && (string)($_POST["ajax"] ?? "") === "1";
         $messageId = (int)($_POST["message_id"] ?? 0);
+        if (!app_feature_enabled("client_inbox")) {
+            if ($isAjax) {
+                header("Content-Type: application/json; charset=UTF-8");
+                echo json_encode(["ok" => false, "err" => "feature_off"]);
+                exit;
+            }
+            client_set_flash("danger", "Esta función no está activada en esta web.");
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+            exit;
+        }
         if (!client_portal_resume_session($conn)) {
             if ($isAjax) {
                 header("Content-Type: application/json; charset=UTF-8");
@@ -163,6 +173,9 @@ if ($clientTab !== "login" && $clientTab !== "register") {
 
 $clientRegisterPending = $clientUser === null ? client_register_pending_get() : null;
 
+/** La sección usa .reveal (opacity 0 hasta JS); forzar .show si hay sesión o flujos de cliente para no dejar el inbox “invisible”. */
+$areaClienteRevealShow = $clientUser !== null || $clientTab !== "" || $clientRegisterPending !== null;
+
 $clientPrefillNombre = "";
 $clientPrefillEmail = "";
 $clientMyMessages = [];
@@ -173,9 +186,10 @@ if ($clientUser !== null) {
         : (preg_match('/^([^@]+)/u', $clientUser["email"], $m) ? $m[1] : "");
     $clientPrefillEmail = $clientUser["email"];
 
-    $clientIdForQuery = (int)$clientUser["id"];
-    $clientEmailNorm = strtolower(trim($clientUser["email"]));
-    $stmt = $conn->prepare("
+    if (app_feature_enabled("client_inbox")) {
+        $clientIdForQuery = (int)$clientUser["id"];
+        $clientEmailNorm = strtolower(trim($clientUser["email"]));
+        $stmt = $conn->prepare("
         SELECT id, nombre, servicio, subject, mensaje, created_at, in_reply_to, is_read,
                (SELECT COUNT(*) FROM contact_message_replies r WHERE r.contact_message_id = m.id) AS reply_count
         FROM contact_messages m
@@ -183,36 +197,37 @@ if ($clientUser !== null) {
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT 40
     ");
-    if ($stmt !== false) {
-        $stmt->bind_param("is", $clientIdForQuery, $clientEmailNorm);
-        $stmt->execute();
-        $cmRes = $stmt->get_result();
-        if ($cmRes) {
-            while ($cmRow = $cmRes->fetch_assoc()) {
-                $clientMyMessages[] = $cmRow;
+        if ($stmt !== false) {
+            $stmt->bind_param("is", $clientIdForQuery, $clientEmailNorm);
+            $stmt->execute();
+            $cmRes = $stmt->get_result();
+            if ($cmRes) {
+                while ($cmRow = $cmRes->fetch_assoc()) {
+                    $clientMyMessages[] = $cmRow;
+                }
+            }
+            $stmt->close();
+        }
+        $msgIds = [];
+        foreach ($clientMyMessages as $cm) {
+            $mid = (int)($cm["id"] ?? 0);
+            if ($mid > 0) {
+                $msgIds[$mid] = true;
             }
         }
-        $stmt->close();
-    }
-    $msgIds = [];
-    foreach ($clientMyMessages as $cm) {
-        $mid = (int)($cm["id"] ?? 0);
-        if ($mid > 0) {
-            $msgIds[$mid] = true;
-        }
-    }
-    if (count($msgIds) > 0) {
-        $inList = implode(",", array_keys($msgIds));
-        $repQ = $conn->query(
-            "SELECT id, contact_message_id, body, created_at FROM contact_message_replies WHERE contact_message_id IN ($inList) ORDER BY created_at ASC, id ASC"
-        );
-        if ($repQ) {
-            while ($rp = $repQ->fetch_assoc()) {
-                $mid = (int)$rp["contact_message_id"];
-                if (!isset($clientRepliesByMessageId[$mid])) {
-                    $clientRepliesByMessageId[$mid] = [];
+        if (count($msgIds) > 0) {
+            $inList = implode(",", array_keys($msgIds));
+            $repQ = $conn->query(
+                "SELECT id, contact_message_id, body, created_at FROM contact_message_replies WHERE contact_message_id IN ($inList) ORDER BY created_at ASC, id ASC"
+            );
+            if ($repQ) {
+                while ($rp = $repQ->fetch_assoc()) {
+                    $mid = (int)$rp["contact_message_id"];
+                    if (!isset($clientRepliesByMessageId[$mid])) {
+                        $clientRepliesByMessageId[$mid] = [];
+                    }
+                    $clientRepliesByMessageId[$mid][] = $rp;
                 }
-                $clientRepliesByMessageId[$mid][] = $rp;
             }
         }
     }
@@ -240,6 +255,7 @@ $landingContactErrorLabels = [
     "mensaje" => "Escribe el mensaje que quieres enviar.",
     "sesion_seguimiento" => "Para enviar un seguimiento necesitas tener la sesión iniciada en esta página.",
     "seguimiento_invalido" => "Ese mensaje no está en tu historial o ya no está disponible. Actualiza la página e inténtalo de nuevo.",
+    "client_inbox_disabled" => "En esta web el contacto por mensajes desde tu cuenta no está activo. Usa el formulario de contacto al pie de la página.",
 ];
 
 $defaultSettings = [
@@ -374,7 +390,7 @@ if ($servicesQuery) {
 
 $serviceGallery = [];
 $galleryQuery = $conn->query("
-  SELECT sg.id, sg.service_id, sg.image_path, sg.caption
+  SELECT sg.id, sg.service_id, sg.image_path, sg.caption, sg.image_title, sg.image_description
   FROM service_gallery sg
   INNER JOIN services s ON s.id = sg.service_id
   WHERE sg.is_active = 1 AND s.is_active = 1
@@ -475,7 +491,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
       </div>
     </section>
 
-    <section id="area-cliente" class="section section-client reveal">
+    <section id="area-cliente" class="section section-client reveal<?= $areaClienteRevealShow ? " show" : "" ?>">
       <div class="container">
         <h2><i class="fa-solid fa-circle-user"></i> Área de clientes</h2>
         <?php if ($clientFlash["msg"] !== ""): ?>
@@ -489,7 +505,12 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           </p>
         <?php endif; ?>
 
-        <?php if ($clientUser !== null && ($clientContactStatus === "ok" || $clientContactStatus === "saved" || $clientContactStatus === "error")): ?>
+        <?php if ($clientUser !== null && $clientContactStatus !== ""): ?>
+          <?php
+            $showClientContactBanner = $clientContactStatus === "error"
+                || ($clientContactStatus !== "error" && app_feature_enabled("client_inbox"));
+          ?>
+          <?php if ($showClientContactBanner): ?>
           <?php if ($clientContactStatus === "ok"): ?>
             <p class="form-ok client-portal-flash" role="status">Seguimiento enviado. Aparece en tu historial y en el panel del sitio.</p>
           <?php elseif ($clientContactStatus === "saved"): ?>
@@ -499,9 +520,12 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
               <?= htmlspecialchars($landingContactErrorLabels[$clientContactReason] ?? "No se pudo enviar el seguimiento. Revisa los datos e inténtalo de nuevo.") ?>
             </p>
           <?php endif; ?>
+          <?php endif; ?>
         <?php endif; ?>
 
-        <?php if ($clientUser !== null): ?>
+        <?php if ($clientUser !== null && !app_feature_enabled("client_inbox")): ?>
+          <p class="client-auth-guest-hint mb-4">Bandeja de mensajes desactivada en esta web. Para contactar, usa el <a href="#contacto">formulario al pie</a>.</p>
+        <?php elseif ($clientUser !== null): ?>
           <p class="lead mb-4 client-zone-intro">
             Tu historial de contacto con esta web se guarda aquí. El correo sirve sobre todo para el primer aviso o notificaciones; lo que quede registrado en detalle es esta bandeja.
           </p>
@@ -707,7 +731,11 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           </div>
         <?php else: ?>
           <p class="client-auth-guest-hint">
+            <?php if (app_feature_enabled("client_inbox")): ?>
             <a href="#client-login-card">Entrar</a> o <a href="#client-register-card">registrarse</a> con el mismo correo que uses al contactar para ver el historial aquí. Registro: enlace de confirmación al correo (48 h).
+            <?php else: ?>
+            <a href="#client-login-card">Entrar</a> o <a href="#client-register-card">registrarse</a> con el mismo correo (confirmación por enlace). El contacto con el sitio es por el <a href="#contacto">formulario al pie</a>.
+            <?php endif; ?>
           </p>
           <div class="client-auth-grid">
             <?php if ($clientRegisterPending !== null): ?>
@@ -791,22 +819,96 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
     <section id="servicios" class="section section-alt reveal">
       <div class="container">
         <h2><i class="fa-solid fa-star"></i> Servicios</h2>
-        <div class="cards">
+
+        <div id="serviceFocusHost" class="service-focus-host" hidden>
+          <?php foreach ($services as $service): ?>
+            <?php
+              $fid = (int)$service["id"];
+              $galleryItemsF = $serviceGallery[$fid] ?? [];
+              $slidesF = [];
+              foreach ($galleryItemsF as $gi) {
+                  $t = trim((string)($gi["image_title"] ?? ""));
+                  if ($t === "") {
+                      $t = trim((string)($gi["caption"] ?? ""));
+                  }
+                  $slidesF[] = [
+                      "image_path" => (string)$gi["image_path"],
+                      "title" => $t,
+                      "description" => trim((string)($gi["image_description"] ?? "")),
+                  ];
+              }
+              $coverF = !empty($service["image_path"]) ? (string)$service["image_path"] : "";
+            ?>
+            <article id="service_focus_<?= $fid ?>" class="service-focus-article" data-service-id="<?= $fid ?>" hidden>
+              <button type="button" class="btn btn-ghost service-focus-back js-service-focus-close">
+                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Todos los servicios
+              </button>
+              <div class="service-focus-hero">
+                <?php if ($coverF !== ""): ?>
+                  <img src="<?= htmlspecialchars($coverF) ?>" alt="" class="service-focus-cover">
+                <?php else: ?>
+                  <div class="service-focus-cover service-focus-cover--placeholder">
+                    <i class="<?= htmlspecialchars($service["icon_class"] ?: "fa-solid fa-star") ?>" aria-hidden="true"></i>
+                  </div>
+                <?php endif; ?>
+                <div class="service-focus-hero-text">
+                  <h3 class="service-focus-title"><i class="<?= htmlspecialchars($service["icon_class"]) ?>"></i> <?= htmlspecialchars($service["title"]) ?></h3>
+                  <p class="service-focus-desc"><?= htmlspecialchars($service["description"]) ?></p>
+                </div>
+              </div>
+              <?php if (count($slidesF) > 0): ?>
+                <div class="service-focus-gal-list">
+                  <?php foreach ($slidesF as $sf): ?>
+                    <?php
+                      $sumT = $sf["title"] !== "" ? $sf["title"] : "Imagen";
+                      $ctaDetail = $sf["title"];
+                      if ($sf["description"] !== "") {
+                          $ctaDetail .= " — " . mb_substr($sf["description"], 0, 120, "UTF-8") . (mb_strlen($sf["description"], "UTF-8") > 120 ? "…" : "");
+                      }
+                    ?>
+                    <details class="service-gal-item">
+                      <summary class="service-gal-sum">
+                        <img class="service-gal-sum-thumb" src="<?= htmlspecialchars($sf["image_path"]) ?>" alt="">
+                        <span class="service-gal-sum-title"><?= htmlspecialchars($sumT) ?></span>
+                      </summary>
+                      <div class="service-gal-body">
+                        <?php if ($sf["description"] !== ""): ?>
+                          <p class="service-gal-desc"><?= nl2br(htmlspecialchars($sf["description"])) ?></p>
+                        <?php endif; ?>
+                        <img class="service-gal-body-img" src="<?= htmlspecialchars($sf["image_path"]) ?>" alt="<?= htmlspecialchars($sumT) ?>">
+                        <button type="button" class="btn btn-primary js-service-cta" data-service="<?= htmlspecialchars($service["title"]) ?>" data-detail="<?= htmlspecialchars($ctaDetail) ?>">
+                          Solicitar información
+                        </button>
+                      </div>
+                    </details>
+                  <?php endforeach; ?>
+                </div>
+              <?php endif; ?>
+            </article>
+          <?php endforeach; ?>
+        </div>
+
+        <div class="cards" id="serviceCardsGrid">
           <?php foreach ($services as $service): ?>
             <?php
               $serviceId = (int)$service["id"];
               $galleryItems = $serviceGallery[$serviceId] ?? [];
               $slides = [];
               foreach ($galleryItems as $galleryItem) {
+                  $stt = trim((string)($galleryItem["image_title"] ?? ""));
+                  if ($stt === "") {
+                      $stt = trim((string)($galleryItem["caption"] ?? ""));
+                  }
                   $slides[] = [
-                    "image_path" => (string)$galleryItem["image_path"],
-                    "caption" => (string)($galleryItem["caption"] ?? "")
+                      "image_path" => (string)$galleryItem["image_path"],
+                      "title" => $stt,
+                      "description" => trim((string)($galleryItem["image_description"] ?? "")),
                   ];
               }
               $coverImage = !empty($service["image_path"]) ? (string)$service["image_path"] : "";
-              $hasAdditionalContent = count($slides) > 0;
+              $hasGallery = count($slides) > 0;
             ?>
-            <article class="card reveal">
+            <article class="card reveal" data-service-card-id="<?= $serviceId ?>">
               <?php if ($coverImage !== ""): ?>
                 <img
                   class="service-image js-service-cta"
@@ -830,29 +932,42 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
               <?php endif; ?>
               <h3><i class="<?= htmlspecialchars($service["icon_class"]) ?>"></i> <?= htmlspecialchars($service["title"]) ?></h3>
               <p><?= htmlspecialchars($service["description"]) ?></p>
-              <?php if ($hasAdditionalContent): ?>
-                <button type="button" class="btn btn-ghost service-toggle-btn" data-toggle-target="service_more_<?= $serviceId ?>">Mostrar más</button>
-                <div id="service_more_<?= $serviceId ?>" class="service-more" hidden>
-                  <div class="service-carousel" data-carousel>
-                    <button type="button" class="carousel-btn" data-carousel-prev aria-label="Imagen anterior"><i class="fa-solid fa-chevron-left"></i></button>
-                    <div class="carousel-track">
-                      <?php foreach ($slides as $index => $slide): ?>
-                        <div class="carousel-slide <?= $index === 0 ? "is-active" : "" ?>">
-                          <img
-                            class="carousel-image js-service-cta"
-                            src="<?= htmlspecialchars($slide["image_path"]) ?>"
-                            alt="<?= htmlspecialchars($service["title"]) ?>"
-                            role="button"
-                            tabindex="0"
-                            title="Solicitar este servicio"
-                            data-service="<?= htmlspecialchars($service["title"]) ?>"
-                            data-detail="<?= htmlspecialchars($slide["caption"]) ?>">
-                          <small><?= htmlspecialchars($slide["caption"] !== "" ? $slide["caption"] : $service["title"]) ?></small>
-                        </div>
-                      <?php endforeach; ?>
-                    </div>
-                    <button type="button" class="carousel-btn" data-carousel-next aria-label="Imagen siguiente"><i class="fa-solid fa-chevron-right"></i></button>
-                  </div>
+              <div class="service-card-actions">
+                <?php if ($hasGallery): ?>
+                  <button type="button" class="btn btn-ghost service-gallery-chevron-btn js-service-gallery-toggle" aria-expanded="false" aria-controls="service_gallery_inline_<?= $serviceId ?>" id="service_gallery_btn_<?= $serviceId ?>" aria-label="Mostrar u ocultar imágenes del servicio" title="Imágenes del servicio">
+                    <i class="fa-solid fa-chevron-down service-gallery-chevron" aria-hidden="true"></i>
+                  </button>
+                <?php endif; ?>
+                <button type="button" class="btn btn-primary js-service-focus-open" data-focus-target="service_focus_<?= $serviceId ?>">
+                  Ver más
+                </button>
+              </div>
+              <?php if ($hasGallery): ?>
+                <div id="service_gallery_inline_<?= $serviceId ?>" class="service-gallery-inline is-collapsed">
+                  <?php foreach ($slides as $slide): ?>
+                    <?php
+                      $sumT = $slide["title"] !== "" ? $slide["title"] : "Imagen";
+                      $ctaDetail = $slide["title"];
+                      if ($slide["description"] !== "") {
+                          $ctaDetail .= " — " . mb_substr($slide["description"], 0, 100, "UTF-8") . (mb_strlen($slide["description"], "UTF-8") > 100 ? "…" : "");
+                      }
+                    ?>
+                    <details class="service-gal-item">
+                      <summary class="service-gal-sum">
+                        <img class="service-gal-sum-thumb" src="<?= htmlspecialchars($slide["image_path"]) ?>" alt="">
+                        <span class="service-gal-sum-title"><?= htmlspecialchars($sumT) ?></span>
+                      </summary>
+                      <div class="service-gal-body">
+                        <?php if ($slide["description"] !== ""): ?>
+                          <p class="service-gal-desc"><?= nl2br(htmlspecialchars($slide["description"])) ?></p>
+                        <?php endif; ?>
+                        <img class="service-gal-body-img" src="<?= htmlspecialchars($slide["image_path"]) ?>" alt="<?= htmlspecialchars($sumT) ?>">
+                        <button type="button" class="btn btn-ghost js-service-cta" data-service="<?= htmlspecialchars($service["title"]) ?>" data-detail="<?= htmlspecialchars($ctaDetail) ?>">
+                          Solicitar información
+                        </button>
+                      </div>
+                    </details>
+                  <?php endforeach; ?>
                 </div>
               <?php endif; ?>
             </article>
@@ -869,9 +984,17 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           <div class="contact-flow-hint">
             <p><strong>Primera consulta:</strong> este formulario envía un aviso al correo del sitio. Es la forma habitual de empezar.</p>
             <?php if ($clientUser === null): ?>
+              <?php if (app_feature_enabled("client_inbox")): ?>
               <p><strong>Seguimiento:</strong> para que las respuestas y tus envíos queden reunidos en un solo historial (sin depender solo del correo), te conviene <a href="#area-cliente">crear cuenta o iniciar sesión</a> con el mismo correo y seguir escribiendo desde el área de clientes.</p>
+              <?php else: ?>
+              <p><strong>Seguimiento:</strong> el sitio responde por correo; el contacto desde la web es con este formulario.</p>
+              <?php endif; ?>
             <?php else: ?>
+              <?php if (app_feature_enabled("client_inbox")): ?>
               <p><strong>Seguimiento:</strong> en <a href="#area-cliente">Mis mensajes</a> puedes enviar una <strong>nueva consulta</strong> desde el mismo panel o un <strong>seguimiento</strong> dentro de un hilo abierto.</p>
+              <?php else: ?>
+              <p><strong>Seguimiento:</strong> usa de nuevo este formulario o el correo.</p>
+              <?php endif; ?>
             <?php endif; ?>
           </div>
           <?php
@@ -889,13 +1012,16 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           <?php endif; ?>
         </div>
         <?php
+          $waFeatureOn = app_feature_enabled("contact_whatsapp");
           // wa.me solo acepta dígitos. Aunque el admin valida, sanitizamos aquí también
           // para no inyectar HTML/JS en el data-attribute y evitar prefijos como "+57".
           $whatsappLocalDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp"] ?? "")) ?? "";
           $whatsappCcDigits = preg_replace('/\D+/', '', (string)($settings["contact_whatsapp_country_code"] ?? "")) ?? "";
-          $whatsappDigits = $whatsappCcDigits !== ""
-            ? $whatsappCcDigits . $whatsappLocalDigits
-            : $whatsappLocalDigits;
+          $whatsappDigits = $waFeatureOn
+            ? ($whatsappCcDigits !== ""
+              ? $whatsappCcDigits . $whatsappLocalDigits
+              : $whatsappLocalDigits)
+            : "";
         ?>
         <form id="contactForm" class="contact-form reveal" method="post" action="send.php" data-whatsapp="<?= htmlspecialchars($whatsappDigits) ?>">
           <label for="nombre">Nombre</label>
@@ -926,14 +1052,16 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
 
           <div class="contact-actions">
             <button type="submit" class="btn btn-primary"><i class="fa-solid fa-envelope-open-text"></i> <?= $clientUser !== null ? "Enviar consulta" : "Enviar (aviso por correo)" ?></button>
+            <?php if ($waFeatureOn): ?>
             <button
               type="button"
               id="contactWhatsappBtn"
               class="btn btn-whatsapp<?= $whatsappDigits === "" ? " btn-whatsapp-disabled" : "" ?>"
               <?= $whatsappDigits === "" ? 'disabled aria-disabled="true" title="Configura el número en Administración → Configuración general → WhatsApp de contacto"' : "" ?>
             ><i class="fa-brands fa-whatsapp"></i> Escribir por WhatsApp</button>
+            <?php endif; ?>
           </div>
-          <?php if ($whatsappDigits === ""): ?>
+          <?php if ($waFeatureOn && $whatsappDigits === ""): ?>
             <p class="contact-whatsapp-hint">Configúralo en Administración.</p>
           <?php endif; ?>
           <p id="formMessage" class="form-message" role="status" aria-live="polite"></p>
@@ -949,7 +1077,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
   </footer>
 
   <script src="script.js?v=<?= htmlspecialchars($scriptVersion) ?>"></script>
-  <?php if ($clientUser !== null && count($clientMyMessages) > 0): ?>
+  <?php if ($clientUser !== null && app_feature_enabled("client_inbox") && count($clientMyMessages) > 0): ?>
   <script>
     (function () {
       var root = document.getElementById("clientInboxMessagesRoot");

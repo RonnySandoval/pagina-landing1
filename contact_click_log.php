@@ -16,6 +16,12 @@ if (($_SERVER["REQUEST_METHOD"] ?? "") !== "POST") {
 }
 
 require __DIR__ . "/db.php";
+require_once __DIR__ . "/app_urls.php";
+
+if (!app_feature_enabled("contact_whatsapp")) {
+    echo json_encode(["ok" => false, "disabled" => true]);
+    exit;
+}
 
 $nombre = trim((string)($_POST["nombre"] ?? ""));
 $email = trim((string)($_POST["email"] ?? ""));

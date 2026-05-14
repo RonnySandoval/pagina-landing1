@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS service_gallery (
   service_id INT NOT NULL,
   image_path VARCHAR(255) NOT NULL,
   caption VARCHAR(180) DEFAULT NULL,
+  image_title VARCHAR(220) DEFAULT NULL,
+  image_description TEXT NULL,
   sort_order INT NOT NULL DEFAULT 999,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

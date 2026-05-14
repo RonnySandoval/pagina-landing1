@@ -28,4 +28,20 @@ return [
      * Úsalo solo para depurar rutas; vuelve a false cuando termines.
      */
     "log_public_base_url" => false,
+
+    /**
+     * Módulos por instalación (cada landing puede usar su propio app_config.php).
+     * Omitir `features` o una clave concreta = ese módulo activo (true).
+     *
+     * - contact_whatsapp: botón «Escribir por WhatsApp» en el formulario de contacto.
+     * - client_inbox: bandeja «Mis mensajes» y envíos desde el área cliente (send.php con return_anchor=area-cliente).
+     * - admin_inbox: acordeón «Mensajes» en admin (contact_messages + respuestas).
+     * - admin_whatsapp_clicks: acordeón «Clics WhatsApp» en admin.
+     */
+    "features" => [
+        "contact_whatsapp" => true,
+        "client_inbox" => true,
+        "admin_inbox" => true,
+        "admin_whatsapp_clicks" => true,
+    ],
 ];
