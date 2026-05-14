@@ -382,6 +382,30 @@ CREATE TABLE IF NOT EXISTS service_gallery (
     ON DELETE CASCADE
 )");
 
+$sgHasImageTitle = false;
+$sgTitleCol = $conn->query("
+SELECT 1 FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_gallery' AND COLUMN_NAME = 'image_title' LIMIT 1
+");
+if ($sgTitleCol && $sgTitleCol->num_rows === 1) {
+    $sgHasImageTitle = true;
+}
+if (!$sgHasImageTitle) {
+    $conn->query("ALTER TABLE service_gallery ADD COLUMN image_title VARCHAR(220) DEFAULT NULL AFTER caption");
+}
+$sgHasImageDesc = false;
+$sgDescCol = $conn->query("
+SELECT 1 FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_gallery' AND COLUMN_NAME = 'image_description' LIMIT 1
+");
+if ($sgDescCol && $sgDescCol->num_rows === 1) {
+    $sgHasImageDesc = true;
+}
+if (!$sgHasImageDesc) {
+    $conn->query("ALTER TABLE service_gallery ADD COLUMN image_description TEXT NULL AFTER image_title");
+}
+$conn->query("UPDATE service_gallery SET image_title = caption WHERE (image_title IS NULL OR TRIM(image_title) = '') AND caption IS NOT NULL AND TRIM(caption) != ''");
+
 $conn->query("
 INSERT IGNORE INTO site_settings (
   id, person_name, brand_name, hero_title, hero_intro, about_text, contact_intro, contact_email, footer_text

@@ -29,6 +29,9 @@ require __DIR__ . "/db.php";
 require_once __DIR__ . "/app_urls.php";
 require_once __DIR__ . "/smtp_mail.php";
 
+$adminInboxUi = app_feature_enabled("admin_inbox");
+$adminWhatsappClicksUi = app_feature_enabled("admin_whatsapp_clicks");
+
 $adminAssetStylesVer = is_file(__DIR__ . "/styles.css") ? (string) filemtime(__DIR__ . "/styles.css") : "1";
 $adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DIR__ . "/script.js") : "1";
 
@@ -602,7 +605,7 @@ if ($isLogged) {
     }
 }
 
-$adminInboxWide = $isLogged && isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1";
+$adminInboxWide = $isLogged && $adminInboxUi && isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1";
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings") {
     $personName = trim($_POST["person_name"] ?? "");
@@ -806,12 +809,10 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services"
         $deleteGalleryStmt->execute();
     }
 
-    // Captions/detalles por imagen del carrusel: alimentan el mensaje precargado
-    // del formulario cuando alguien hace click sobre la imagen en el sitio público.
-    if (isset($_POST["gallery_captions"]) && is_array($_POST["gallery_captions"])) {
-        $captionStmt = $conn->prepare("UPDATE service_gallery SET caption = ? WHERE id = ?");
-        if ($captionStmt !== false) {
-            foreach ($_POST["gallery_captions"] as $galleryIdRaw => $captionRaw) {
+    if (isset($_POST["gallery_image_titles"]) && is_array($_POST["gallery_image_titles"])) {
+        $galMetaStmt = $conn->prepare("UPDATE service_gallery SET image_title = ?, image_description = ?, caption = ? WHERE id = ?");
+        if ($galMetaStmt !== false) {
+            foreach ($_POST["gallery_image_titles"] as $galleryIdRaw => $titleRaw) {
                 $galleryId = (int)$galleryIdRaw;
                 if ($galleryId <= 0) {
                     continue;
@@ -819,10 +820,18 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services"
                 if (in_array($galleryId, $removeGalleryIds, true)) {
                     continue;
                 }
-                $caption = trim((string)$captionRaw);
-                $captionStmt->bind_param("si", $caption, $galleryId);
-                $captionStmt->execute();
+                $imgTitle = trim((string)$titleRaw);
+                $imgDesc = trim((string)($_POST["gallery_image_descriptions"][$galleryIdRaw] ?? ""));
+                $capSync = $imgTitle;
+                if (function_exists("mb_substr")) {
+                    $capSync = mb_substr($imgTitle, 0, 180, "UTF-8");
+                } elseif (strlen($capSync) > 180) {
+                    $capSync = substr($capSync, 0, 180);
+                }
+                $galMetaStmt->bind_param("sssi", $imgTitle, $imgDesc, $capSync, $galleryId);
+                $galMetaStmt->execute();
             }
+            $galMetaStmt->close();
         }
     }
 
@@ -890,7 +899,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services"
                     break 2;
                 }
                 if (!empty($galleryUpload["path"])) {
-                    $galleryStmt = $conn->prepare("INSERT INTO service_gallery (service_id, image_path, sort_order, is_active) VALUES (?, ?, 999, 1)");
+                    $galleryStmt = $conn->prepare("INSERT INTO service_gallery (service_id, image_path, sort_order, is_active, image_title, image_description) VALUES (?, ?, 999, 1, NULL, NULL)");
                     $galleryStmt->bind_param("is", $serviceId, $galleryUpload["path"]);
                     $galleryStmt->execute();
                 }
@@ -912,7 +921,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_service
     }
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = false;
@@ -953,7 +962,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_message_r
     }
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_read") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_read") {
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = (bool)$conn->query("UPDATE contact_messages SET is_read = 1 WHERE is_read = 0");
     if ($isAjax) {
@@ -965,7 +974,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_messa
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_message_unread") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_message_unread") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = false;
@@ -983,13 +992,13 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_message_u
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_unread") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_unread") {
     $conn->query("UPDATE contact_messages SET is_read = 0 WHERE is_read = 1");
     admin_set_flash("success", "Todos los mensajes marcados como sin leer.");
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_message") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "delete_message") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     if ($messageId > 0) {
         $delReplies = $conn->prepare("DELETE FROM contact_message_replies WHERE contact_message_id = ?");
@@ -1006,7 +1015,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_message
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_whatsapp_click") {
+if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "delete_whatsapp_click") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     if ($whatsappClickId > 0) {
         $waDel = $conn->prepare("DELETE FROM contact_whatsapp_clicks WHERE id = ?");
@@ -1020,7 +1029,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_whatsap
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_read") {
+if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_read") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = false;
@@ -1041,7 +1050,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_unread") {
+if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_unread") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = false;
@@ -1062,7 +1071,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_read") {
+if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_read") {
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = (bool)$conn->query("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE is_read = 0");
     if ($isAjax) {
@@ -1074,7 +1083,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whats
     admin_redirect_after_action();
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_unread") {
+if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_unread") {
     $conn->query("UPDATE contact_whatsapp_clicks SET is_read = 0 WHERE is_read = 1");
     admin_set_flash("success", "Todos los clics de WhatsApp marcados como sin leer.");
     admin_redirect_after_action();
@@ -1093,7 +1102,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_
     }
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
+if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $replyBody = trim((string)($_POST["reply_body"] ?? ""));
     if ($messageId <= 0) {
@@ -1310,7 +1319,7 @@ if ($servicesQuery) {
 }
 
 $galleryByService = [];
-$galleryQuery = $conn->query("SELECT id, service_id, image_path, caption FROM service_gallery WHERE is_active = 1 ORDER BY sort_order ASC, id ASC");
+$galleryQuery = $conn->query("SELECT id, service_id, image_path, caption, image_title, image_description FROM service_gallery WHERE is_active = 1 ORDER BY sort_order ASC, id ASC");
 if ($galleryQuery) {
     while ($galleryRow = $galleryQuery->fetch_assoc()) {
         $serviceId = (int)$galleryRow["service_id"];
@@ -1323,7 +1332,7 @@ if ($galleryQuery) {
 
 $contactMessages = [];
 $contactMessagesUnread = 0;
-if ($isLogged) {
+if ($isLogged && $adminInboxUi) {
     $contactMessagesQuery = $conn->query(
         "SELECT id, nombre, email, servicio, subject, mensaje, sent_to, is_read, created_at, client_id, in_reply_to
          FROM contact_messages
@@ -1341,7 +1350,7 @@ if ($isLogged) {
 }
 
 $contactRepliesByMessageId = [];
-if ($isLogged && count($contactMessages) > 0) {
+if ($isLogged && $adminInboxUi && count($contactMessages) > 0) {
     $msgIds = [];
     foreach ($contactMessages as $row) {
         $mid = (int)($row["id"] ?? 0);
@@ -1369,7 +1378,7 @@ if ($isLogged && count($contactMessages) > 0) {
 
 $whatsappClicks = [];
 $whatsappClicksUnread = 0;
-if ($isLogged) {
+if ($isLogged && $adminWhatsappClicksUi) {
     $whatsappClicksQuery = $conn->query(
         "SELECT id, nombre, email, servicio, mensaje, composed_text, created_at, is_read
          FROM contact_whatsapp_clicks
@@ -1398,7 +1407,7 @@ if ($isLogged) {
 
 /** Agrupa mensajes de contacto: por cuenta de cliente o, si no, por correo. */
 $contactMessageGroups = [];
-if ($isLogged && count($contactMessages) > 0) {
+if ($isLogged && $adminInboxUi && count($contactMessages) > 0) {
     $clientDirectoryById = [];
     foreach ($portalClients as $pcRow) {
         $clientDirectoryById[(int)$pcRow["id"]] = $pcRow;
@@ -2481,6 +2490,17 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-inbox-threads .message-reply-form textarea {
       min-height: 5rem;
     }
+    .gallery-meta-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1;
+      min-width: 0;
+    }
+    .gallery-desc-input {
+      min-height: 4.5rem;
+      resize: vertical;
+    }
   </style>
 </head>
 <body>
@@ -2957,7 +2977,7 @@ $waSideCounterTitle = $waSideUnread > 0
                 <input type="hidden" name="services[<?= (int)$service["id"] ?>][current_image_path]" value="<?= h((string)($service["image_path"] ?? "")) ?>">
               </div>
               <div class="col-md-12">
-                <label class="form-label">Carrusel de imágenes (Mostrar más)</label>
+                <label class="form-label">Carrusel / galería (título y descripción por imagen)</label>
                 <div class="gallery-tools">
                   <button
                     type="button"
@@ -2994,13 +3014,20 @@ $waSideCounterTitle = $waSideUnread > 0
                           <input class="gallery-thumb-check js-gallery-check-<?= (int)$service["id"] ?>" type="checkbox" name="remove_gallery_ids[]" value="<?= (int)$galleryItem["id"] ?>">
                           <span class="gallery-mark-overlay"></span>
                         </label>
-                        <input
-                          class="form-control form-control-sm gallery-caption-input"
-                          type="text"
-                          name="gallery_captions[<?= (int)$galleryItem["id"] ?>]"
-                          value="<?= h((string)($galleryItem["caption"] ?? "")) ?>"
-                          placeholder="Detalle (ej: cálculo diferencial)"
-                          maxlength="180">
+                        <div class="gallery-meta-stack">
+                          <input
+                            class="form-control form-control-sm mb-1"
+                            type="text"
+                            name="gallery_image_titles[<?= (int)$galleryItem["id"] ?>]"
+                            value="<?= h(trim((string)($galleryItem["image_title"] ?? "")) !== "" ? (string)$galleryItem["image_title"] : (string)($galleryItem["caption"] ?? "")) ?>"
+                            placeholder="Título de la imagen"
+                            maxlength="220">
+                          <textarea
+                            class="form-control form-control-sm gallery-desc-input"
+                            name="gallery_image_descriptions[<?= (int)$galleryItem["id"] ?>]"
+                            rows="2"
+                            placeholder="Descripción (opcional)"><?= h((string)($galleryItem["image_description"] ?? "")) ?></textarea>
+                        </div>
                       </div>
                     <?php endforeach; ?>
                   </div>
@@ -3048,16 +3075,20 @@ $waSideCounterTitle = $waSideUnread > 0
       </div>
 
       <aside class="admin-side">
-        <?php
-        $sideInboxTotal = count($contactMessages);
-        $sideInboxUnread = (int)$contactMessagesUnread;
-        $sideInboxCounterClass = $sideInboxUnread > 0 ? "text-bg-warning" : "text-bg-secondary";
-        $sideInboxCounterTitle = $sideInboxUnread > 0
-            ? sprintf("%d sin leer de %d", $sideInboxUnread, $sideInboxTotal)
-            : sprintf("%d en total", $sideInboxTotal);
-        ?>
+        <?php if (!$adminInboxUi && !$adminWhatsappClicksUi): ?>
+        <p class="small text-light-emphasis mb-0 px-1">Módulos de bandeja del panel desactivados en <code class="small">app_config.php</code> (<code>features.admin_inbox</code>, <code>features.admin_whatsapp_clicks</code>). Los datos en la base de datos no se borran.</p>
+        <?php else: ?>
         <div class="card admin-side-inbox-card overflow-hidden">
           <div class="accordion accordion-flush admin-side-inbox-accordion" id="adminSideInboxAccordion">
+            <?php if ($adminInboxUi): ?>
+            <?php
+            $sideInboxTotal = count($contactMessages);
+            $sideInboxUnread = (int)$contactMessagesUnread;
+            $sideInboxCounterClass = $sideInboxUnread > 0 ? "text-bg-warning" : "text-bg-secondary";
+            $sideInboxCounterTitle = $sideInboxUnread > 0
+                ? sprintf("%d sin leer de %d", $sideInboxUnread, $sideInboxTotal)
+                : sprintf("%d en total", $sideInboxTotal);
+            ?>
             <div class="accordion-item border-0 border-bottom">
               <h2 class="accordion-header m-0" id="headingSideMessages">
                 <button
@@ -3361,7 +3392,8 @@ $waSideCounterTitle = $waSideUnread > 0
                 </div>
               </div>
             </div>
-
+            <?php endif; ?>
+            <?php if ($adminWhatsappClicksUi): ?>
             <div class="accordion-item border-0">
               <h2 class="accordion-header m-0" id="headingSideWhatsapp">
                 <button
@@ -3482,8 +3514,10 @@ $waSideCounterTitle = $waSideUnread > 0
                 </div>
               </div>
             </div>
+            <?php endif; ?>
           </div>
         </div>
+        <?php endif; ?>
       </aside>
     </div>
   </div>

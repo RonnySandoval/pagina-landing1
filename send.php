@@ -127,6 +127,10 @@ $returnAnchor = trim((string)($_POST["return_anchor"] ?? ""));
 if ($returnAnchor !== "area-cliente") {
     $returnAnchor = "contacto";
 }
+if ($returnAnchor === "area-cliente" && !app_feature_enabled("client_inbox")) {
+    contact_send_trace("send.php rechazado: client_inbox desactivado (app_config features)");
+    contact_send_redirect_to_landing($returnAnchor, "error", "client_inbox_disabled");
+}
 $inReplyToPost = (int)($_POST["in_reply_to"] ?? 0);
 
 $nombre = trim($_POST["nombre"] ?? "");

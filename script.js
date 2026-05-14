@@ -95,6 +95,11 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  const host = document.getElementById("serviceFocusHost");
+  if (host && !host.hasAttribute("hidden")) {
+    closeServiceFocus();
+    return;
+  }
   setThemeDropdownOpen(false);
 });
 
@@ -116,6 +121,71 @@ paletteButtons.forEach((btn) => {
     applyTheme(mode, nextPalette);
     localStorage.setItem("ui-palette", nextPalette);
   });
+});
+
+function collapseServiceGalleryPanels() {
+  document.querySelectorAll(".service-gallery-inline").forEach((panel) => {
+    panel.classList.add("is-collapsed");
+  });
+  document.querySelectorAll("details.service-gal-item").forEach((d) => {
+    d.removeAttribute("open");
+  });
+  document.querySelectorAll(".js-service-gallery-toggle").forEach((b) => {
+    b.setAttribute("aria-expanded", "false");
+  });
+}
+
+document.querySelectorAll(".js-service-gallery-toggle").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const panelId = btn.getAttribute("aria-controls");
+    if (!panelId) return;
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    const opening = panel.classList.contains("is-collapsed");
+    if (opening) {
+      panel.classList.remove("is-collapsed");
+      btn.setAttribute("aria-expanded", "true");
+    } else {
+      panel.classList.add("is-collapsed");
+      btn.setAttribute("aria-expanded", "false");
+      panel.querySelectorAll("details.service-gal-item").forEach((d) => {
+        d.removeAttribute("open");
+      });
+    }
+  });
+});
+
+function closeServiceFocus() {
+  const host = document.getElementById("serviceFocusHost");
+  const grid = document.getElementById("serviceCardsGrid");
+  if (host) {
+    host.setAttribute("hidden", "");
+    host.querySelectorAll(".service-focus-article").forEach((el) => el.setAttribute("hidden", ""));
+  }
+  if (grid) grid.removeAttribute("hidden");
+  collapseServiceGalleryPanels();
+}
+
+document.querySelectorAll(".js-service-focus-open").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const tid = btn.getAttribute("data-focus-target");
+    if (!tid) return;
+    const article = document.getElementById(tid);
+    const host = document.getElementById("serviceFocusHost");
+    const grid = document.getElementById("serviceCardsGrid");
+    if (!article || !host || !grid) return;
+    collapseServiceGalleryPanels();
+    host.querySelectorAll(".service-focus-article").forEach((el) => el.setAttribute("hidden", ""));
+    article.removeAttribute("hidden");
+    host.removeAttribute("hidden");
+    grid.setAttribute("hidden", "");
+    const sec = document.getElementById("servicios");
+    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+});
+
+document.querySelectorAll(".js-service-focus-close").forEach((btn) => {
+  btn.addEventListener("click", () => closeServiceFocus());
 });
 
 document.querySelectorAll(".service-toggle-btn").forEach((btn) => {
@@ -316,7 +386,17 @@ if (whatsappBtn && contactForm) {
 
 const revealItems = document.querySelectorAll(".reveal");
 
+/** Si la URL apunta a un ancla dentro de una sección .reveal, mostrar ya (el observer puede no disparar a tiempo). */
+function revealSectionForHash() {
+  const raw = (window.location.hash || "").replace(/^#/, "");
+  if (!raw) return;
+  const el = document.getElementById(raw);
+  if (!el || !el.classList.contains("reveal")) return;
+  el.classList.add("show");
+}
+
 if (revealItems.length) {
+  revealSectionForHash();
   const observer = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
@@ -334,4 +414,6 @@ if (revealItems.length) {
     observer.observe(item);
   });
 }
+
+window.addEventListener("hashchange", revealSectionForHash);
 
