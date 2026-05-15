@@ -14,6 +14,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - [Borrar una landing local con `deprovision.ps1`](#borrar-una-landing-local-con-deprovisionps1)
 - [Despliegue a producción](#despliegue-a-producción)
 - [Panel admin (resumen)](#panel-admin-resumen)
+- [Agenda y expertos](#agenda-y-expertos)
 - [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)
 - [Recuperación de clave del admin](#recuperación-de-clave-del-admin)
 - [Estructura de archivos](#estructura-de-archivos)
@@ -33,7 +34,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
   cada una con su BD y su admin propios.
 - Un **portal de clientes** opcional: registro e inicio de sesión en la misma
   landing (`index.php#area-cliente`), sesión aislada del admin (ver [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)).
-- Módulo **Expertos** (agenda en evolución): catálogo de expertos vinculado a servicios; se muestra u oculta con `features.expert_agenda` en `app_config.php` (ver [Configuración `app_config.php` y módulos](#configuración-app_configphp-y-módulos)).
+- Módulo **Agenda / expertos** (`features.expert_agenda`): catálogo de expertos, franjas de disponibilidad, reservas públicas en `agenda.php` (y sección en `index.php`). Ver [Agenda y expertos](#agenda-y-expertos) y [Panel admin](#panel-admin-resumen).
 
 **No es:**
 
@@ -121,7 +122,7 @@ Opcional: copia `app_config.example.php` → `app_config.php` y ajusta. Si **no*
 | `features.client_inbox` | Bandeja **Mis mensajes** en el área cliente y envíos enlazados (`send.php` con `return_anchor=area-cliente`). |
 | `features.admin_inbox` | Acordeón **Mensajes** en el admin (agrupación por cliente o por correo, respuestas, SMTP al visitante según configuración). |
 | `features.admin_whatsapp_clicks` | Acordeón **Clics WhatsApp** en el admin (registro de intenciones de contacto por WhatsApp). |
-| `features.expert_agenda` | Acordeón **Expertos** en el admin (tablas `experts` / `expert_services`; alta/edición y listado). |
+| `features.expert_agenda` | Expertos, disponibilidad, citas: admin (**Expertos**), landing (`#agenda` / `agenda.php`) y POST `agenda_book.php`. Tablas `experts`, `expert_services`, `expert_availability`, `expert_availability_date`, `expert_appointments`. |
 
 Los valores por defecto están en `app_config.example.php`. Cada landing provisionada **no** recibe tu `app_config.php` local (el script no lo copia); si la nueva instalación lo necesita, cópialo a mano desde el ejemplo.
 
@@ -379,12 +380,41 @@ Todo en **`admin.php`**. Los acordeones de **Herramientas** siguen un orden por 
 | **Rutas** | URLs públicas (landing, admin, área cliente), enlaces de prueba. |
 | **Portal de clientes** | Tabla de cuentas: pastilla **Cuenta** (activo/inactivo) y pastilla **Correo SMTP** / **Solo web** son **botones**: muestran el estado y al pulsar alternan (POST con **flash + redirección** a `admin.php#admin-tool-clients` para que el acordeón se vuelva a abrir). **Eliminar** sigue aparte. Columna `email_notify_outbound`: si está desactivada, las respuestas del admin no intentan enviar copia SMTP al cliente (solo bandeja web). |
 | **Servicios** | Catálogo, alta en panel desplegable (misma UI que edición vacía), carrusel/galería por servicio, iconos Font Awesome. |
-| **Expertos** | Si el módulo está activo: listado, ficha, alta con formulario alineado a la ficha, vínculo `expert_services` ↔ `services`. |
+| **Expertos** | Si `expert_agenda`: **tabla de expertos** siempre visible; botones **Horario** (plantilla semanal, tabla tipo cliente, excepciones por fecha, citas) y **Editar** (solo datos y servicios). Acordeones internos: agregar experto, jornada L–V masiva, agenda pública (mostrar nombres en `agenda.php`). |
 | **Mensajes** | Si `admin_inbox`: hilos agrupados por `client_id` o por correo; respuestas; envío SMTP al visitante según `mail_config` y validaciones. |
 | **Clics WhatsApp** | Si `admin_whatsapp_clicks`: registro de clics/intenciones. |
 | **Configuración / Credenciales** | Textos del sitio, logo, admin de panel, etc. |
 
 Vista amplia de bandeja: query `?inbox=1` en el admin (documentado en la propia UI).
+
+URLs de ficha experto (query en `admin.php`): `expert_id`, `expert_view=edit|schedule`, opcional `expert_week` para la tabla semanal.
+
+## Agenda y expertos
+
+Requiere `features.expert_agenda` en `app_config.php` (por defecto desactivado en `app_config.example.php`; actívalo en tu `app_config.php` local).
+
+### Visitante (landing)
+
+| Ruta / archivo | Uso |
+| --- | --- |
+| `index.php#agenda` | Sección **Solicitar cita** embebida (filtro servicio + fecha, tabla de huecos). |
+| `agenda.php` | Página dedicada con la misma UI y formulario de reserva. |
+| `agenda_book.php` | POST: valida huecos contiguos (mismo experto), crea fila en `expert_appointments`, redirige con flash. |
+
+Comportamiento público:
+
+- Por defecto la tabla es **anónima** (solo horarios); en admin puedes activar **Mostrar nombre del experto** (`site_settings.agenda_show_expert_names`) para columnas por profesional.
+- Bloques de **30 minutos**; el visitante puede marcar **varios huecos seguidos** del mismo experto en una sola reserva.
+- Tras elegir huecos, el panel **Detalle de la cita** muestra servicio, día, franja y nombre del experto.
+
+### Admin
+
+- **Plantilla semanal** por experto (franjas L–V u horario personalizado por día).
+- **Excepciones por fecha** (día cerrado o franjas que sustituyen la plantilla ese día).
+- **Agenda semanal** (vista tipo cliente: filas = hora, columnas = días).
+- **Próximas citas** con opción de cancelar desde la ficha de horario.
+
+Lógica compartida en `agenda_lib.php`; UI pública en `partials/agenda_public_section.php` (incluida desde `index.php` y `agenda.php`).
 
 ## Cliente público, portal y mensajes
 
@@ -439,7 +469,11 @@ para no revelar qué correos son admins.
 ```
 pag-template/
 ├── admin.php                  Panel único: config, rutas, servicios, galerías, mensajes, portal clientes, expertos (flag), WhatsApp (flag), reset.
-├── index.php                  Landing pública + #area-cliente (portal), contacto, carruseles.
+├── index.php                  Landing pública + #area-cliente (portal), contacto, carruseles, #agenda (flag).
+├── agenda.php                 Reserva de citas (página dedicada; flag expert_agenda).
+├── agenda_book.php            POST de reserva de cita.
+├── agenda_lib.php             Disponibilidad, huecos, tabla pública, grilla semanal admin.
+├── agenda_public_bootstrap.php  Datos de agenda para index/agenda (require).
 ├── send.php                   POST del formulario de contacto / seguimientos.
 ├── contact_click_log.php      Registro auxiliar de clics (según flujo).
 ├── app_urls.php               Resolución de URLs (respeta app_config opcional).
@@ -454,7 +488,13 @@ pag-template/
 ├── client_logout.php          Cierre de sesión cliente.
 ├── palette_picker.php         Selector de paleta (include desde admin).
 ├── partials/
-│   └── service_carousel.php   Marca parcial carrusel de servicio (si aplica).
+│   ├── service_carousel.php       Carrusel de servicio (si aplica).
+│   ├── agenda_public_section.php  Tabla de huecos + formulario de reserva (cliente).
+│   ├── admin_experts_table.php    Listado de expertos en admin.
+│   ├── admin_experts_accordions.php  Acordeones: alta, L–V masivo, agenda pública.
+│   ├── admin_expert_edit_panel.php   Solo datos del experto.
+│   ├── admin_expert_schedule_panel.php  Horario, plantilla, citas.
+│   └── admin_expert_week_grid.php    Tabla semanal admin (tipo cliente).
 ├── styles.css, script.js      Estilos y JS de la landing (y trozos usados por admin según página).
 ├── index.html                 Estático opcional en raíz (si lo usas en tu hosting).
 ├── tools/
@@ -483,7 +523,7 @@ Creadas o alineadas por **`db.php`** al cargar la app; `setup.sql` refleja el mo
 | `admin_password_resets` | Tokens hash de recuperación de clave admin. |
 | `clients` | Cuentas del portal (`email`, hash, `display_name`, `is_active`, `email_notify_outbound`, …). |
 | `client_registration_tokens` | Tokens de verificación en flujos de registro. |
-| `site_settings` | Textos y datos globales del sitio (fila id=1). |
+| `site_settings` | Textos y datos globales del sitio (fila id=1); incluye `agenda_show_expert_names` (mostrar experto en agenda pública). |
 | `services` | Servicios ofertados (título, descripción, icono, imagen, orden, activo). |
 | `service_gallery` | Imágenes del carrusel por servicio. |
 | `contact_messages` | Mensajes y seguimientos; `client_id`, `in_reply_to`, flags de lectura y «respuesta no vista» cliente. |
@@ -491,6 +531,9 @@ Creadas o alineadas por **`db.php`** al cargar la app; `setup.sql` refleja el mo
 | `contact_whatsapp_clicks` | Registro de interacciones tipo WhatsApp (según módulo). |
 | `experts` | Ficha de experto (nombre, contacto, notas, orden, activo). |
 | `expert_services` | N:M expertos ↔ servicios. |
+| `expert_availability` | Plantilla semanal (día de la semana + franja horaria). |
+| `expert_availability_date` | Excepción por fecha concreta (cerrado o franjas). |
+| `expert_appointments` | Citas reservadas (experto, servicio, invitado, estado). |
 
 ## Decisiones de arquitectura
 
