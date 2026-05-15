@@ -37,11 +37,14 @@ return [
      * - client_inbox: bandeja «Mis mensajes» y envíos desde el área cliente (send.php con return_anchor=area-cliente).
      * - admin_inbox: acordeón «Mensajes» en admin (contact_messages + respuestas).
      * - admin_whatsapp_clicks: acordeón «Clics WhatsApp» en admin.
+     * - expert_agenda: expertos, vínculo con servicios y (más adelante) agenda/reservas.
+     *   Las tablas se crean siempre; con false el código no debe exponer el módulo.
      */
     "features" => [
         "contact_whatsapp" => true,
         "client_inbox" => true,
         "admin_inbox" => true,
         "admin_whatsapp_clicks" => true,
+        "expert_agenda" => false,
     ],
 ];

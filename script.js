@@ -7,6 +7,12 @@ const themeDropdownPanel = document.querySelector("[data-theme-dropdown-panel]")
 const themeModeBtns = Array.from(document.querySelectorAll("[data-theme-mode]"));
 const paletteButtons = Array.from(document.querySelectorAll(".palette-swatch-btn"));
 
+/** Panel admin vs web pública: claves de localStorage distintas para no cruzar temas. */
+const themeContext =
+  document.documentElement.getAttribute("data-theme-context") === "admin" ? "admin" : "site";
+const LS_MODE_KEY = themeContext === "admin" ? "admin-ui-mode" : "ui-mode";
+const LS_PALETTE_KEY = themeContext === "admin" ? "admin-ui-palette" : "ui-palette";
+
 const allowedModes = new Set(["dark", "light"]);
 const allowedPalettes = new Set([
   "blue",
@@ -69,8 +75,10 @@ if (menuToggle && mainNav) {
   });
 }
 
-const initialMode = localStorage.getItem("ui-mode") || document.documentElement.getAttribute("data-theme") || "dark";
-const initialPalette = localStorage.getItem("ui-palette") || document.documentElement.getAttribute("data-palette") || "blue";
+const initialMode =
+  localStorage.getItem(LS_MODE_KEY) || document.documentElement.getAttribute("data-theme") || "dark";
+const initialPalette =
+  localStorage.getItem(LS_PALETTE_KEY) || document.documentElement.getAttribute("data-palette") || "blue";
 applyTheme(initialMode, initialPalette);
 
 if (themeDropdownToggle && themeDropdownPanel) {
@@ -109,7 +117,7 @@ themeModeBtns.forEach((btn) => {
     const nextMode = btn.getAttribute("data-theme-mode") || "dark";
     const palette = document.documentElement.getAttribute("data-palette") || "blue";
     applyTheme(nextMode, palette);
-    localStorage.setItem("ui-mode", nextMode);
+    localStorage.setItem(LS_MODE_KEY, nextMode);
   });
 });
 
@@ -119,17 +127,58 @@ paletteButtons.forEach((btn) => {
     const nextPalette = btn.getAttribute("data-palette") || "blue";
     const mode = document.documentElement.getAttribute("data-theme") || "dark";
     applyTheme(mode, nextPalette);
-    localStorage.setItem("ui-palette", nextPalette);
+    localStorage.setItem(LS_PALETTE_KEY, nextPalette);
   });
 });
+
+function resetServiceGalleryCarousels(root) {
+  const scope = root instanceof Element ? root : document;
+  scope.querySelectorAll(".carousel-track").forEach((track) => {
+    Array.from(track.querySelectorAll(".carousel-slide")).forEach((s, i) => {
+      s.classList.toggle("is-active", i === 0);
+    });
+  });
+}
+
+function initServiceCarousels(root) {
+  const scope = root || document;
+  scope.querySelectorAll("[data-carousel]").forEach((carousel) => {
+    if (carousel.dataset.carouselInited === "1") return;
+    carousel.dataset.carouselInited = "1";
+    const slides = Array.from(carousel.querySelectorAll(".carousel-slide"));
+    if (slides.length <= 1) return;
+
+    const getActiveIndex = () => Math.max(0, slides.findIndex((s) => s.classList.contains("is-active")));
+
+    const go = (delta) => {
+      let index = getActiveIndex();
+      index = (index + delta + slides.length) % slides.length;
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle("is-active", slideIndex === index);
+      });
+    };
+
+    const prevBtn = carousel.querySelector("[data-carousel-prev]");
+    const nextBtn = carousel.querySelector("[data-carousel-next]");
+
+    if (prevBtn) {
+      prevBtn.addEventListener("click", () => {
+        go(-1);
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        go(1);
+      });
+    }
+  });
+}
 
 function collapseServiceGalleryPanels() {
   document.querySelectorAll(".service-gallery-inline").forEach((panel) => {
     panel.classList.add("is-collapsed");
   });
-  document.querySelectorAll("details.service-gal-item").forEach((d) => {
-    d.removeAttribute("open");
-  });
+  resetServiceGalleryCarousels(document);
   document.querySelectorAll(".js-service-gallery-toggle").forEach((b) => {
     b.setAttribute("aria-expanded", "false");
   });
@@ -148,9 +197,7 @@ document.querySelectorAll(".js-service-gallery-toggle").forEach((btn) => {
     } else {
       panel.classList.add("is-collapsed");
       btn.setAttribute("aria-expanded", "false");
-      panel.querySelectorAll("details.service-gal-item").forEach((d) => {
-        d.removeAttribute("open");
-      });
+      resetServiceGalleryCarousels(panel);
     }
   });
 });
@@ -205,33 +252,7 @@ document.querySelectorAll(".service-toggle-btn").forEach((btn) => {
   });
 });
 
-document.querySelectorAll("[data-carousel]").forEach((carousel) => {
-  const slides = Array.from(carousel.querySelectorAll(".carousel-slide"));
-  if (slides.length <= 1) return;
-
-  let index = 0;
-  const render = () => {
-    slides.forEach((slide, slideIndex) => {
-      slide.classList.toggle("is-active", slideIndex === index);
-    });
-  };
-
-  const prevBtn = carousel.querySelector("[data-carousel-prev]");
-  const nextBtn = carousel.querySelector("[data-carousel-next]");
-
-  if (prevBtn) {
-    prevBtn.addEventListener("click", () => {
-      index = (index - 1 + slides.length) % slides.length;
-      render();
-    });
-  }
-  if (nextBtn) {
-    nextBtn.addEventListener("click", () => {
-      index = (index + 1) % slides.length;
-      render();
-    });
-  }
-});
+initServiceCarousels(document);
 
 const ctaImages = document.querySelectorAll(".js-service-cta");
 const serviceSelect = document.getElementById("servicio");

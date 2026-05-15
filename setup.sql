@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   mensaje TEXT NOT NULL,
   sent_to VARCHAR(180) NOT NULL,
   is_read TINYINT(1) NOT NULL DEFAULT 0,
+  client_has_unseen_reply TINYINT(1) NOT NULL DEFAULT 0,
   client_id INT NULL DEFAULT NULL,
   in_reply_to INT NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -107,6 +108,34 @@ CREATE TABLE IF NOT EXISTS service_gallery (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_service_gallery_service (service_id),
   CONSTRAINT fk_service_gallery_service
+    FOREIGN KEY (service_id) REFERENCES services(id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS experts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  display_name VARCHAR(180) NOT NULL,
+  email VARCHAR(180) DEFAULT NULL,
+  phone VARCHAR(48) DEFAULT NULL,
+  notes TEXT NULL,
+  sort_order INT NOT NULL DEFAULT 999,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_experts_active_sort (is_active, sort_order, id)
+);
+
+CREATE TABLE IF NOT EXISTS expert_services (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  expert_id INT NOT NULL,
+  service_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_expert_service (expert_id, service_id),
+  INDEX idx_expert_services_expert (expert_id),
+  INDEX idx_expert_services_service (service_id),
+  CONSTRAINT fk_expert_services_expert
+    FOREIGN KEY (expert_id) REFERENCES experts(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_expert_services_service
     FOREIGN KEY (service_id) REFERENCES services(id)
     ON DELETE CASCADE
 );

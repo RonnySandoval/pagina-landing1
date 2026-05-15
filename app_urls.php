@@ -13,6 +13,7 @@ declare(strict_types=1);
  *   Login clientes   → index.php#area-cliente (misma página tras sesión)
  *
  * Módulos opcionales: `app_feature_enabled()` lee `features` en app_config.php
+ * (p. ej. client_inbox, admin_inbox, expert_agenda).
  * (ver app_config.example.php). Sirve para desactivar WhatsApp o la bandeja
  * del área cliente en una instalación concreta.
  *

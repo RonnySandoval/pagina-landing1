@@ -31,6 +31,7 @@ require_once __DIR__ . "/smtp_mail.php";
 
 $adminInboxUi = app_feature_enabled("admin_inbox");
 $adminWhatsappClicksUi = app_feature_enabled("admin_whatsapp_clicks");
+$adminExpertAgendaUi = app_feature_enabled("expert_agenda");
 
 $adminAssetStylesVer = is_file(__DIR__ . "/styles.css") ? (string) filemtime(__DIR__ . "/styles.css") : "1";
 $adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DIR__ . "/script.js") : "1";
@@ -109,6 +110,56 @@ function admin_group_messages_threads(array $messages, array $repliesByMessageId
     });
 
     return $threads;
+}
+
+/**
+ * Sin leídos y total en la misma ventana que la lista del inbox (últimos 100).
+ *
+ * @return array{unread:int,total:int}
+ */
+function admin_contact_inbox_counts(mysqli $conn): array
+{
+    $unread = 0;
+    $total = 0;
+    $q = $conn->query(
+        "SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS u, COUNT(*) AS t
+         FROM (
+             SELECT is_read FROM contact_messages ORDER BY created_at DESC, id DESC LIMIT 100
+         ) AS inbox_window"
+    );
+    if ($q) {
+        $row = $q->fetch_assoc();
+        if (is_array($row)) {
+            $unread = (int)($row["u"] ?? 0);
+            $total = (int)($row["t"] ?? 0);
+        }
+    }
+
+    return ["unread" => $unread, "total" => $total];
+}
+
+/**
+ * @return array{unread:int,total:int}
+ */
+function admin_whatsapp_inbox_counts(mysqli $conn): array
+{
+    $unread = 0;
+    $total = 0;
+    $q = $conn->query(
+        "SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS u, COUNT(*) AS t
+         FROM (
+             SELECT is_read FROM contact_whatsapp_clicks ORDER BY created_at DESC, id DESC LIMIT 100
+         ) AS wa_window"
+    );
+    if ($q) {
+        $row = $q->fetch_assoc();
+        if (is_array($row)) {
+            $unread = (int)($row["u"] ?? 0);
+            $total = (int)($row["t"] ?? 0);
+        }
+    }
+
+    return ["unread" => $unread, "total" => $total];
 }
 
 /**
@@ -756,43 +807,75 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_delete") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid > 0) {
+    if ($cid <= 0) {
+        admin_set_flash("error", "Cliente no válido.");
+    } else {
         $del = $conn->prepare("DELETE FROM clients WHERE id = ?");
-        if ($del !== false) {
+        if ($del === false) {
+            admin_set_flash("error", "No se pudo eliminar el cliente.");
+        } else {
             $del->bind_param("i", $cid);
-            $del->execute();
+            if ($del->execute()) {
+                admin_set_flash("success", "Cliente eliminado.");
+            } else {
+                admin_set_flash("error", "No se pudo eliminar el cliente.");
+            }
             $del->close();
-            $message = "Cliente eliminado.";
         }
     }
+    header("Location: admin.php#admin-tool-clients");
+    exit;
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_active") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid > 0) {
+    if ($cid <= 0) {
+        admin_set_flash("error", "Cliente no válido.");
+    } else {
         $tog = $conn->prepare("UPDATE clients SET is_active = IF(is_active = 1, 0, 1) WHERE id = ?");
-        if ($tog !== false) {
+        if ($tog === false) {
+            admin_set_flash("error", "No se pudo actualizar la cuenta.");
+        } else {
             $tog->bind_param("i", $cid);
-            $tog->execute();
+            if ($tog->execute()) {
+                admin_set_flash("success", "Estado de la cuenta actualizado.");
+            } else {
+                admin_set_flash("error", "No se pudo guardar el estado de la cuenta.");
+            }
             $tog->close();
-            $message = "Estado del cliente actualizado.";
         }
     }
+    header("Location: admin.php#admin-tool-clients");
+    exit;
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "add_service") {
     $title = trim($_POST["title"] ?? "");
     $description = trim($_POST["description"] ?? "");
     $iconClass = trim($_POST["icon_class"] ?? "fa-solid fa-star");
+    $sortOrder = (int)($_POST["sort_order"] ?? 999);
+    if ($sortOrder < 0) {
+        $sortOrder = 999;
+    }
+    if ($sortOrder > 999999) {
+        $sortOrder = 999999;
+    }
+    $isActive = isset($_POST["is_active"]) ? 1 : 0;
 
     $uploadResult = storeServiceImage($_FILES["image_file"] ?? []);
     if ($uploadResult["error"] !== "") {
         $error = $uploadResult["error"];
     } elseif ($title !== "" && $description !== "") {
         $imagePath = $uploadResult["path"];
-        $stmt = $conn->prepare("INSERT INTO services (title, description, icon_class, image_path, sort_order, is_active) VALUES (?, ?, ?, ?, 999, 1)");
-        $stmt->bind_param("ssss", $title, $description, $iconClass, $imagePath);
+        if ($imagePath === null) {
+            $imagePath = "";
+        }
+        $stmt = $conn->prepare(
+            "INSERT INTO services (title, description, icon_class, image_path, sort_order, is_active) VALUES (?, ?, ?, ?, ?, ?)"
+        );
+        $stmt->bind_param("ssssii", $title, $description, $iconClass, $imagePath, $sortOrder, $isActive);
         $stmt->execute();
+        $stmt->close();
         $message = "Servicio agregado.";
     } else {
         $error = "Título y descripción son obligatorios.";
@@ -921,6 +1004,193 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_service
     }
 }
 
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "add_expert") {
+    $displayName = trim((string)($_POST["display_name"] ?? ""));
+    if ($displayName === "") {
+        $error = "Indica el nombre visible del experto.";
+    } elseif (mb_strlen($displayName, "UTF-8") > 180) {
+        $error = "El nombre es demasiado largo (máx. 180 caracteres).";
+    } else {
+        $email = trim((string)($_POST["email"] ?? ""));
+        if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $error = "El correo del experto no es válido.";
+        }
+        $phone = trim((string)($_POST["phone"] ?? ""));
+        if (mb_strlen($phone, "UTF-8") > 48) {
+            $phone = mb_substr($phone, 0, 48, "UTF-8");
+        }
+        $notes = (string)($_POST["notes"] ?? "");
+        if (strlen($notes) > 12000) {
+            $notes = substr($notes, 0, 12000);
+        }
+        $sortOrder = (int)($_POST["sort_order"] ?? 999);
+        if ($sortOrder < 0) {
+            $sortOrder = 0;
+        }
+        if ($sortOrder > 999999) {
+            $sortOrder = 999999;
+        }
+        $isActive = isset($_POST["is_active"]) ? 1 : 0;
+        if ($error === "") {
+            $emailDb = $email;
+            $phoneDb = $phone;
+            $ins = $conn->prepare("INSERT INTO experts (display_name, email, phone, notes, sort_order, is_active) VALUES (?, ?, ?, ?, ?, ?)");
+            if ($ins === false) {
+                $error = "No se pudo crear el experto.";
+            } else {
+                $ins->bind_param("ssssii", $displayName, $emailDb, $phoneDb, $notes, $sortOrder, $isActive);
+                if (!$ins->execute()) {
+                    $error = "No se pudo crear el experto.";
+                    $ins->close();
+                } else {
+                    $newExpertId = (int)$conn->insert_id;
+                    $ins->close();
+                    $validServiceIds = [];
+                    $vs = $conn->query("SELECT id FROM services");
+                    if ($vs) {
+                        while ($z = $vs->fetch_assoc()) {
+                            $validServiceIds[(int)$z["id"]] = true;
+                        }
+                    }
+                    $list = $_POST["expert_services"] ?? [];
+                    if (!is_array($list)) {
+                        $list = [];
+                    }
+                    $insEs = $conn->prepare("INSERT INTO expert_services (expert_id, service_id) VALUES (?, ?)");
+                    if ($insEs === false) {
+                        $error = "No se pudo vincular servicios al experto.";
+                    } else {
+                        foreach ($list as $sidRaw) {
+                            $sid = (int)$sidRaw;
+                            if ($sid <= 0 || !isset($validServiceIds[$sid])) {
+                                continue;
+                            }
+                            $insEs->bind_param("ii", $newExpertId, $sid);
+                            if (!$insEs->execute()) {
+                                $error = "No se pudo vincular un servicio.";
+                                break;
+                            }
+                        }
+                        $insEs->close();
+                    }
+                    if ($error === "") {
+                        admin_set_flash("success", "Experto creado.");
+                        header("Location: admin.php?expert_id=" . $newExpertId . "#admin-tools-experts");
+                        exit;
+                    }
+                }
+            }
+        }
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "save_expert") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
+    if ($chk === false || $eid <= 0) {
+        $error = "Experto no válido.";
+    } else {
+        $chk->bind_param("i", $eid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $chk->close();
+        if (!$chkRes || $chkRes->num_rows !== 1) {
+            $error = "Ese experto no existe.";
+        } else {
+            $name = trim((string)($_POST["display_name"] ?? ""));
+            if ($name === "") {
+                $name = "Sin nombre";
+            }
+            if (mb_strlen($name, "UTF-8") > 180) {
+                $name = mb_substr($name, 0, 180, "UTF-8");
+            }
+            $email = trim((string)($_POST["email"] ?? ""));
+            if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $error = "El correo del experto no es válido.";
+            }
+            $phone = trim((string)($_POST["phone"] ?? ""));
+            if (mb_strlen($phone, "UTF-8") > 48) {
+                $phone = mb_substr($phone, 0, 48, "UTF-8");
+            }
+            $notes = (string)($_POST["notes"] ?? "");
+            if (strlen($notes) > 12000) {
+                $notes = substr($notes, 0, 12000);
+            }
+            $sort = (int)($_POST["sort_order"] ?? 999);
+            $active = isset($_POST["is_active"]) ? 1 : 0;
+            if ($error === "") {
+                $emailDb = $email;
+                $phoneDb = $phone;
+                $upd = $conn->prepare("UPDATE experts SET display_name = ?, email = ?, phone = ?, notes = ?, sort_order = ?, is_active = ? WHERE id = ?");
+                if ($upd === false) {
+                    $error = "No se pudo guardar el experto.";
+                } else {
+                    $upd->bind_param("ssssiii", $name, $emailDb, $phoneDb, $notes, $sort, $active, $eid);
+                    if (!$upd->execute()) {
+                        $error = "No se pudo guardar el experto.";
+                    }
+                    $upd->close();
+                }
+            }
+            if ($error === "") {
+                $validServiceIds = [];
+                $vs = $conn->query("SELECT id FROM services");
+                if ($vs) {
+                    while ($z = $vs->fetch_assoc()) {
+                        $validServiceIds[(int)$z["id"]] = true;
+                    }
+                }
+                $list = $_POST["expert_services"] ?? [];
+                if (!is_array($list)) {
+                    $list = [];
+                }
+                $delEs = $conn->prepare("DELETE FROM expert_services WHERE expert_id = ?");
+                $insEs = $conn->prepare("INSERT INTO expert_services (expert_id, service_id) VALUES (?, ?)");
+                if ($delEs === false || $insEs === false) {
+                    $error = "No se pudo actualizar los servicios del experto.";
+                } else {
+                    $delEs->bind_param("i", $eid);
+                    if (!$delEs->execute()) {
+                        $error = "No se pudo actualizar los servicios del experto.";
+                    } else {
+                        foreach ($list as $sidRaw) {
+                            $sid = (int)$sidRaw;
+                            if ($sid <= 0 || !isset($validServiceIds[$sid])) {
+                                continue;
+                            }
+                            $insEs->bind_param("ii", $eid, $sid);
+                            if (!$insEs->execute()) {
+                                $error = "No se pudo vincular un servicio.";
+                                break;
+                            }
+                        }
+                    }
+                    $delEs->close();
+                    $insEs->close();
+                }
+            }
+            if ($error === "") {
+                admin_set_flash("success", "Experto actualizado.");
+                header("Location: admin.php?expert_id=" . $eid . "#admin-tools-experts");
+                exit;
+            }
+        }
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "delete_expert") {
+    $expertId = (int)($_POST["expert_id"] ?? 0);
+    if ($expertId > 0) {
+        $stmt = $conn->prepare("DELETE FROM experts WHERE id = ?");
+        $stmt->bind_param("i", $expertId);
+        $stmt->execute();
+        $stmt->close();
+        admin_set_flash("success", "Experto eliminado.");
+        header("Location: admin.php#admin-tools-experts");
+        exit;
+    }
+}
+
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
@@ -946,13 +1216,16 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
         }
     }
     if ($isAjax) {
+        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
             "ok" => (bool)$ok,
             "id" => $messageId,
             "affected" => $affected,
             "err" => $err,
-            "logged" => (bool)$isLogged
+            "logged" => (bool)$isLogged,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
         ]);
         exit;
     }
@@ -966,8 +1239,13 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = (bool)$conn->query("UPDATE contact_messages SET is_read = 1 WHERE is_read = 0");
     if ($isAjax) {
+        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["ok" => $ok]);
+        echo json_encode([
+            "ok" => $ok,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
+        ]);
         exit;
     }
     admin_set_flash("success", "Todos los mensajes marcados como leídos.");
@@ -984,8 +1262,14 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
         $ok = $stmt->execute();
     }
     if ($isAjax) {
+        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["ok" => (bool)$ok, "id" => $messageId]);
+        echo json_encode([
+            "ok" => (bool)$ok,
+            "id" => $messageId,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
+        ]);
         exit;
     }
     admin_set_flash("success", "Mensaje marcado como sin leer.");
@@ -1042,8 +1326,14 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
         }
     }
     if ($isAjax) {
+        $counts = admin_whatsapp_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["ok" => (bool)$ok, "id" => $whatsappClickId]);
+        echo json_encode([
+            "ok" => (bool)$ok,
+            "id" => $whatsappClickId,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
+        ]);
         exit;
     }
     admin_set_flash("success", "Marcado como leído.");
@@ -1063,8 +1353,14 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
         }
     }
     if ($isAjax) {
+        $counts = admin_whatsapp_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["ok" => (bool)$ok, "id" => $whatsappClickId]);
+        echo json_encode([
+            "ok" => (bool)$ok,
+            "id" => $whatsappClickId,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
+        ]);
         exit;
     }
     admin_set_flash("success", "Marcado como sin leer.");
@@ -1075,8 +1371,13 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
     $ok = (bool)$conn->query("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE is_read = 0");
     if ($isAjax) {
+        $counts = admin_whatsapp_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["ok" => $ok]);
+        echo json_encode([
+            "ok" => $ok,
+            "unread_total" => $counts["unread"],
+            "messages_total" => $counts["total"],
+        ]);
         exit;
     }
     admin_set_flash("success", "Todos los clics de WhatsApp marcados como leídos.");
@@ -1091,15 +1392,24 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_email_notify") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid > 0) {
+    if ($cid <= 0) {
+        admin_set_flash("error", "Cliente no válido.");
+    } else {
         $tog = $conn->prepare("UPDATE clients SET email_notify_outbound = IF(email_notify_outbound = 1, 0, 1) WHERE id = ?");
-        if ($tog !== false) {
+        if ($tog === false) {
+            admin_set_flash("error", "No se pudo actualizar la preferencia de correo.");
+        } else {
             $tog->bind_param("i", $cid);
-            $tog->execute();
+            if ($tog->execute()) {
+                admin_set_flash("success", "Preferencia de envío por SMTP al cliente actualizada.");
+            } else {
+                admin_set_flash("error", "No se pudo guardar el cambio de envío por correo.");
+            }
             $tog->close();
-            $message = "Preferencia de correo al cliente actualizada.";
         }
     }
+    header("Location: admin.php#admin-tool-clients");
+    exit;
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
@@ -1156,6 +1466,12 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
         $mark->bind_param("i", $messageId);
         $mark->execute();
         $mark->close();
+    }
+    $clientUnseen = $conn->prepare("UPDATE contact_messages SET client_has_unseen_reply = 1 WHERE id = ?");
+    if ($clientUnseen !== false) {
+        $clientUnseen->bind_param("i", $messageId);
+        $clientUnseen->execute();
+        $clientUnseen->close();
     }
 
     $msgClientId = (int)($msgRow["client_id"] ?? 0);
@@ -1328,6 +1644,76 @@ if ($galleryQuery) {
         }
         $galleryByService[$serviceId][] = $galleryRow;
     }
+}
+
+$experts = [];
+$expertServiceIds = [];
+$expertEditId = 0;
+$expertEdit = null;
+$expertEditNotFound = false;
+$expertsPanelOpen = false;
+if ($isLogged && $adminExpertAgendaUi) {
+    $expertEditId = (int)($_GET["expert_id"] ?? 0);
+    $expertsQuery = $conn->query(
+        "SELECT id, display_name, email, phone, notes, sort_order, is_active, created_at FROM experts ORDER BY sort_order ASC, id ASC"
+    );
+    if ($expertsQuery) {
+        while ($er = $expertsQuery->fetch_assoc()) {
+            $experts[] = $er;
+        }
+    }
+    if ($expertEditId > 0) {
+        foreach ($experts as $er) {
+            if ((int)($er["id"] ?? 0) === $expertEditId) {
+                $expertEdit = $er;
+                break;
+            }
+        }
+        if ($expertEdit === null) {
+            $exf = $conn->prepare(
+                "SELECT id, display_name, email, phone, notes, sort_order, is_active, created_at FROM experts WHERE id = ? LIMIT 1"
+            );
+            if ($exf !== false) {
+                $exf->bind_param("i", $expertEditId);
+                $exf->execute();
+                $exr = $exf->get_result();
+                if ($exr && ($row = $exr->fetch_assoc())) {
+                    $expertEdit = $row;
+                } else {
+                    $expertEditNotFound = true;
+                }
+                $exf->close();
+            } else {
+                $expertEditNotFound = true;
+            }
+        }
+    }
+    $eidList = array_values(array_filter(array_map(static fn(array $e): int => (int)($e["id"] ?? 0), $experts), static fn(int $id): bool => $id > 0));
+    if ($expertEditId > 0 && $expertEdit !== null && !in_array($expertEditId, $eidList, true)) {
+        $eidList[] = $expertEditId;
+    }
+    if (count($eidList) > 0) {
+        $ph = implode(",", array_fill(0, count($eidList), "?"));
+        $types = str_repeat("i", count($eidList));
+        $esStmt = $conn->prepare("SELECT expert_id, service_id FROM expert_services WHERE expert_id IN ($ph)");
+        if ($esStmt !== false) {
+            $esStmt->bind_param($types, ...$eidList);
+            $esStmt->execute();
+            $esRes = $esStmt->get_result();
+            if ($esRes) {
+                while ($pair = $esRes->fetch_assoc()) {
+                    $eid = (int)$pair["expert_id"];
+                    $sid = (int)$pair["service_id"];
+                    if (!isset($expertServiceIds[$eid])) {
+                        $expertServiceIds[$eid] = [];
+                    }
+                    $expertServiceIds[$eid][$sid] = true;
+                }
+            }
+            $esStmt->close();
+        }
+    }
+    $expertsPanelOpen = $expertEditId > 0;
 }
 
 $contactMessages = [];
@@ -1506,15 +1892,15 @@ $waSideCounterTitle = $waSideUnread > 0
 
 ?>
 <!doctype html>
-<html lang="es">
+<html lang="es" data-theme-context="admin">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script>
     (function () {
       try {
-        var mode = localStorage.getItem("ui-mode") || "dark";
-        var palette = localStorage.getItem("ui-palette") || "blue";
+        var mode = localStorage.getItem("admin-ui-mode") || "dark";
+        var palette = localStorage.getItem("admin-ui-palette") || "blue";
         document.documentElement.setAttribute("data-theme", mode);
         document.documentElement.setAttribute("data-palette", palette);
       } catch (e) {}
@@ -1957,6 +2343,155 @@ $waSideCounterTitle = $waSideUnread > 0
       background: color-mix(in srgb, var(--accent) 35%, var(--field-bg));
       box-shadow: 0 0 0 .2rem color-mix(in srgb, var(--ring) 28%, transparent);
     }
+    #adminToolsAccordion.admin-tools-ordered {
+      display: flex;
+      flex-direction: column;
+    }
+    #adminToolsAccordion.admin-tools-ordered > .accordion-item {
+      width: 100%;
+      min-width: 0;
+    }
+    /* Orden por responsabilidad: sistema → contenido → equipo → portal */
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-config { order: 1; }
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-credentials { order: 2; }
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-routes { order: 3; }
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-service-edit { order: 4; }
+    #adminToolsAccordion.admin-tools-ordered > #admin-tools-experts,
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-experts-off { order: 5; }
+    #adminToolsAccordion.admin-tools-ordered > #admin-tool-clients { order: 6; }
+    .admin-portal-clients-body {
+      padding-inline: 0.5rem;
+      max-width: 100%;
+    }
+    .admin-portal-clients-body .table-responsive {
+      margin-inline: -0.25rem;
+      width: calc(100% + 0.5rem);
+      max-width: none;
+    }
+    .admin-portal-clients-body .table td,
+    .admin-portal-clients-body .table th {
+      vertical-align: middle;
+    }
+    .admin-portal-clients-body .table td.font-monospace {
+      word-break: break-word;
+      max-width: 14rem;
+    }
+    .admin-portal-client-actions {
+      gap: 0.35rem !important;
+    }
+    .admin-portal-client-actions form {
+      margin: 0;
+    }
+    .admin-portal-client-actions .btn {
+      min-width: 2.35rem;
+      padding: 0.28rem 0.45rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .admin-portal-client-actions .btn i {
+      font-size: 0.95rem;
+      line-height: 1;
+    }
+    .admin-portal-clients-body .badge.portal-client-pill {
+      font-weight: 600;
+      font-size: 0.78rem;
+      padding: 0.35em 0.65em;
+      gap: 0.35em;
+    }
+    .admin-portal-clients-table .portal-client-toggle-btn {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.78rem;
+      padding: 0.35em 0.65em;
+      gap: 0.35em;
+      line-height: 1.2;
+      text-decoration: none;
+      transition: filter 0.12s ease, box-shadow 0.12s ease;
+    }
+    .admin-portal-clients-table .portal-client-toggle-btn:hover {
+      filter: brightness(1.08);
+    }
+    .admin-portal-clients-table .portal-client-toggle-btn:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--accent, #0d6efd) 85%, #fff);
+      outline-offset: 2px;
+    }
+    .admin-experts-table.table-hover tbody tr {
+      transition: background-color 0.12s ease;
+    }
+    .admin-expert-row-actions {
+      gap: 0.35rem !important;
+    }
+    .admin-expert-row-actions form {
+      margin: 0;
+      display: inline-flex;
+    }
+    .admin-expert-row-actions .btn {
+      min-width: 2.35rem;
+      padding: 0.28rem 0.45rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .admin-expert-row-actions .btn i {
+      font-size: 0.95rem;
+      line-height: 1;
+    }
+    .admin-experts-table .badge.expert-pill {
+      font-weight: 600;
+      font-size: 0.78rem;
+      padding: 0.35em 0.65em;
+      gap: 0.35em;
+    }
+    .admin-experts-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+    .admin-experts-table th.expert-services-col,
+    .admin-experts-table td.expert-services-col {
+      max-width: 14rem;
+      width: 22%;
+      min-width: 0;
+      vertical-align: middle;
+    }
+    .admin-experts-table .expert-row-services {
+      width: 100%;
+      min-width: 0;
+      justify-content: flex-start;
+    }
+    .admin-experts-table .expert-svc-icons-slot {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .admin-experts-table .expert-svc-icons-inner {
+      display: inline-flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 0.25rem;
+      vertical-align: middle;
+    }
+    .admin-experts-table .expert-svc-icon {
+      width: 1.75rem;
+      height: 1.75rem;
+      font-size: 0.82rem;
+      line-height: 1;
+      cursor: help;
+      flex-shrink: 0;
+    }
+    .admin-experts-table .expert-svc-overflow-plus {
+      display: none;
+      cursor: help;
+    }
+    .admin-experts-table .expert-svc-overflow-plus.is-visible {
+      display: inline-flex;
+    }
+    .admin-experts-table .expert-svc-count-badge {
+      flex-shrink: 0;
+    }
+    .admin-experts-table .expert-svc-icon i {
+      line-height: 1;
+    }
     .admin-services-accordion .accordion-item {
       background: transparent;
       border: 1px solid var(--border);
@@ -2248,9 +2783,29 @@ $waSideCounterTitle = $waSideUnread > 0
       padding: 0.65rem 0.7rem 0.85rem;
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 0.75rem;
       border-top: 1px solid var(--border);
       background: var(--surface);
+    }
+    .admin-msg-chat-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .admin-msg-chat-stream .admin-msg-turn + .admin-msg-turn {
+      margin-top: 0.35rem;
+      padding-top: 0.35rem;
+      border-top: none;
+    }
+    .admin-msg-chat-stream .admin-msg-turn--continuation .admin-msg-turn-toolbar {
+      margin-bottom: 0.15rem;
+    }
+    .admin-msg-chat-stream .admin-msg-turn--continuation .admin-msg-bubble--visitor .admin-msg-bubble-label,
+    .admin-msg-chat-stream .admin-msg-turn--continuation .admin-msg-bubble--admin .admin-msg-bubble-label {
+      display: none;
+    }
+    .admin-msg-chat-stream .admin-msg-turn--continuation .message-mark-actions {
+      margin-top: 0.05rem;
     }
     .admin-msg-turn {
       border-left: none;
@@ -2258,6 +2813,13 @@ $waSideCounterTitle = $waSideUnread > 0
       padding-left: 0;
       border-radius: 0;
     }
+    /* Línea guía en todos los pasos (incl. el 1); mayor especificidad que .admin-msg-turn */
+    .admin-msg-chat-stream > .admin-msg-turn {
+      padding-left: 0.45rem;
+      border-left: 2px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+      margin-left: 0.1rem;
+    }
+    .admin-msg-thread-id {
       display: inline-block;
       margin-top: 0.35rem;
       font-size: 0.72rem;
@@ -2291,16 +2853,25 @@ $waSideCounterTitle = $waSideUnread > 0
       gap: 0.55rem;
       align-items: stretch;
     }
+    .admin-side-inbox-card .admin-msg-turn-inner {
+      gap: 0.45rem;
+      min-width: 0;
+    }
+    /* Chat: visitante a la izquierda, respuestas admin a la derecha; ancho según panel */
     .admin-msg-bubble {
       border-radius: 10px;
       padding: 0.65rem 0.75rem;
       margin-bottom: 0;
       border: 1px solid var(--border);
       box-sizing: border-box;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .admin-msg-bubble--visitor {
       align-self: flex-start;
-      max-width: min(92%, 28rem);
+      max-width: min(100%, 32rem);
+      width: fit-content;
+      min-width: 0;
       margin-right: auto;
       background: color-mix(in srgb, var(--accent) 16%, var(--field-bg));
       border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
@@ -2310,14 +2881,72 @@ $waSideCounterTitle = $waSideUnread > 0
     }
     .admin-msg-bubble--admin {
       align-self: flex-end;
-      max-width: min(92%, 28rem);
+      max-width: min(100%, 32rem);
+      width: fit-content;
+      min-width: 0;
       margin-left: auto;
+      margin-right: 0;
       text-align: start;
       background: color-mix(in srgb, var(--muted) 12%, var(--field-bg));
       border-color: color-mix(in srgb, var(--muted) 28%, var(--border));
       border-right-width: 3px;
       border-right-style: solid;
       border-right-color: color-mix(in srgb, var(--accent) 45%, var(--muted));
+    }
+    .admin-side-inbox-card .admin-msg-turn-toolbar {
+      margin-bottom: 0.25rem;
+    }
+    .admin-side-inbox-card .admin-msg-id-chip {
+      font-size: 0.65rem;
+      padding: 0.12rem 0.32rem;
+    }
+    .admin-side-inbox-card .admin-msg-thread {
+      border-radius: 8px;
+    }
+    .admin-side-inbox-card .admin-msg-thread-summary {
+      padding: 0.4rem 0.5rem;
+      gap: 0.2rem;
+    }
+    .admin-side-inbox-card .admin-msg-thread-asunto-label {
+      display: none;
+    }
+    .admin-side-inbox-card .admin-msg-thread-asunto-text {
+      font-size: 0.88rem;
+      line-height: 1.25;
+    }
+    .admin-side-inbox-card .admin-msg-thread-id {
+      display: none;
+    }
+    .admin-side-inbox-card .admin-msg-thread-summary-main {
+      gap: 0.25rem 0.4rem;
+      font-size: 0.78rem;
+    }
+    .admin-side-inbox-card .admin-msg-thread-summary-main .message-meta-service {
+      max-width: 9rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .admin-side-inbox-card .admin-msg-thread-snippet {
+      font-size: 0.76rem;
+    }
+    .admin-side-inbox-card .admin-msg-thread-body {
+      padding: 0.45rem 0.5rem 0.6rem;
+      gap: 0.55rem;
+    }
+    .admin-side-inbox-card .admin-conv-groups-accordion .conv-group-header .accordion-button {
+      font-size: 0.82rem;
+      line-height: 1.25;
+      padding-block: 0.45rem;
+    }
+    .admin-side-inbox-card .admin-inbox-grp-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .admin-side-inbox-card .message-mark-actions {
+      justify-content: flex-end;
+      margin-top: 0.15rem;
     }
     .admin-msg-bubble-label {
       font-size: 0.68rem;
@@ -2334,11 +2963,6 @@ $waSideCounterTitle = $waSideUnread > 0
       margin-top: 0.75rem;
       padding-top: 0.85rem;
       border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-    }
-    .admin-msg-turn + .admin-msg-turn {
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
     }
     .admin-msg-turn-toolbar {
       display: flex;
@@ -2358,16 +2982,21 @@ $waSideCounterTitle = $waSideUnread > 0
     }
 
     .admin-layout--inbox-wide {
-      grid-template-columns: 1fr !important;
+      display: flex !important;
+      flex-direction: column;
+      gap: 1rem;
     }
     .admin-layout--inbox-wide .admin-main {
-      display: none !important;
+      display: block !important;
+      order: 2;
+      width: 100%;
     }
     .admin-layout--inbox-wide .admin-side {
+      order: 1;
       position: static;
       max-height: none;
       overflow: visible;
-      grid-column: 1 / -1;
+      width: 100%;
     }
     .admin-layout--inbox-wide .admin-side-inbox-card {
       max-width: 960px;
@@ -2501,6 +3130,12 @@ $waSideCounterTitle = $waSideUnread > 0
       min-height: 4.5rem;
       resize: vertical;
     }
+    .expert-service-checks {
+      display: grid;
+      gap: 0.35rem;
+      max-height: 240px;
+      overflow: auto;
+    }
   </style>
 </head>
 <body>
@@ -2607,10 +3242,16 @@ $waSideCounterTitle = $waSideUnread > 0
     </div>
 
     <div class="admin-layout<?= $adminInboxWide ? " admin-layout--inbox-wide" : "" ?>">
+      <?php if ($adminInboxWide): ?>
+      <div class="alert alert-info py-2 px-3 mb-0 order-0" style="width:100%;">
+        <strong>Vista amplia de mensajes</strong> (<code>?inbox=1</code>): la bandeja va primero; el panel de herramientas (servicios, expertos, configuración) sigue debajo.
+        <a href="admin.php" class="alert-link ms-1">Quitar vista amplia</a>
+      </div>
+      <?php endif; ?>
       <div class="admin-main">
-        <div class="accordion admin-tools-accordion mb-3" id="adminToolsAccordion">
+        <div class="accordion admin-tools-accordion admin-tools-ordered mb-3" id="adminToolsAccordion">
 
-          <div class="accordion-item">
+          <div class="accordion-item" id="admin-tool-routes">
             <h2 class="accordion-header m-0">
               <button class="accordion-button collapsed" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_routes_panel"
@@ -2647,7 +3288,7 @@ $waSideCounterTitle = $waSideUnread > 0
             </div>
           </div>
 
-          <div class="accordion-item">
+          <div class="accordion-item" id="admin-tool-clients">
             <h2 class="accordion-header m-0">
               <button class="accordion-button collapsed" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_clients_panel"
@@ -2656,24 +3297,25 @@ $waSideCounterTitle = $waSideUnread > 0
               </button>
             </h2>
             <div id="tools_clients_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
-              <div class="accordion-body">
+              <div class="accordion-body admin-portal-clients-body">
                 <p class="small text-light-emphasis mb-3">
                   Los visitantes se registran solos en la landing (sección <strong>Área de clientes</strong>).
                   Desde aquí solo moderas: desactivar o borrar cuentas. La sesión de cliente es independiente del admin.
-                  <strong>Correo al cliente:</strong> si está activo, al responder desde Mensajes se intentará enviar SMTP a su correo; si lo desactivas, la respuesta solo quedará en la web (útil si el correo no recibe o el cliente lo prefirió al registrarse).
+                  En <strong>Cuenta</strong> y <strong>Correo SMTP</strong>, las pastillas muestran el estado actual: <strong>pulsa</strong> una para alternar (icono + texto).
+                  <strong>Correo SMTP:</strong> si está en «Correo», al responder desde Mensajes se intentará enviar por SMTP; en «Solo web» la respuesta queda solo en la bandeja del área de cliente.
                 </p>
                 <?php if (count($portalClients) === 0): ?>
                   <p class="small text-light-emphasis mb-0">Aún no hay cuentas. Comparte la URL del acordeón «Rutas» o el enlace «Clientes» del menú de la web.</p>
                 <?php else: ?>
                   <div class="table-responsive">
-                    <table class="table table-sm table-borderless align-middle mb-0">
+                    <table class="table table-sm table-hover table-borderless align-middle mb-0 admin-portal-clients-table">
                       <thead>
                         <tr class="text-secondary small">
-                          <th>Correo</th>
-                          <th>Nombre</th>
-                          <th>Estado</th>
-                          <th>SMTP al cliente</th>
-                          <th class="text-end">Acciones</th>
+                          <th scope="col">Correo</th>
+                          <th scope="col">Nombre</th>
+                          <th scope="col">Cuenta</th>
+                          <th scope="col">Correo SMTP</th>
+                          <th scope="col" class="text-end">Acciones</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2684,38 +3326,62 @@ $waSideCounterTitle = $waSideUnread > 0
                             $notifyOut = (int)($pc["email_notify_outbound"] ?? 1) === 1;
                           ?>
                           <tr>
-                            <td class="font-monospace small"><?= h((string)($pc["email"] ?? "")) ?></td>
-                            <td><?= h((string)($pc["display_name"] ?? "")) ?></td>
+                            <td class="font-monospace small text-break"><?= h((string)($pc["email"] ?? "")) ?></td>
+                            <td class="small"><?= h((string)($pc["display_name"] ?? "")) ?></td>
                             <td>
-                              <?php if ($active): ?>
-                                <span class="badge text-bg-success">Activo</span>
-                              <?php else: ?>
-                                <span class="badge text-bg-secondary">Desactivado</span>
-                              <?php endif; ?>
-                            </td>
-                            <td>
-                              <?php if ($notifyOut): ?>
-                                <span class="badge text-bg-info" title="Se intentará enviar respuestas del panel por correo">Activo</span>
-                              <?php else: ?>
-                                <span class="badge text-bg-secondary" title="Solo bandeja web; no SMTP al cliente">Solo web</span>
-                              <?php endif; ?>
-                            </td>
-                            <td class="text-end">
-                              <form method="post" class="d-inline">
-                                <input type="hidden" name="action" value="client_toggle_email_notify">
-                                <input type="hidden" name="client_id" value="<?= $pid ?>">
-                                <button type="submit" class="btn btn-outline-info btn-sm" title="Alternar envío de correos al cliente"><?= $notifyOut ? "Desactivar correo" : "Activar correo" ?></button>
-                              </form>
-                              <form method="post" class="d-inline">
+                              <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
                                 <input type="hidden" name="action" value="client_toggle_active">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
-                                <button type="submit" class="btn btn-outline-secondary btn-sm"><?= $active ? "Desactivar" : "Activar" ?></button>
+                                <button
+                                  type="submit"
+                                  class="btn btn-sm rounded-pill portal-client-pill portal-client-toggle-btn border-0 d-inline-flex align-items-center text-nowrap <?= $active ? "text-bg-success" : "text-bg-secondary" ?>"
+                                  title="<?= $active ? "Cuenta activa: puede iniciar sesión. Pulsa para desactivar (no podrá entrar)." : "Cuenta inactiva. Pulsa para reactivar el acceso." ?>"
+                                  aria-label="<?= $active ? "Cuenta activa, pulsar para desactivar" : "Cuenta inactiva, pulsar para activar" ?>"
+                                  onclick="event.stopPropagation();"
+                                >
+                                  <?php if ($active): ?>
+                                    <i class="fa-solid fa-user-check" aria-hidden="true"></i><span class="ms-1">Activo</span>
+                                  <?php else: ?>
+                                    <i class="fa-solid fa-user-slash" aria-hidden="true"></i><span class="ms-1">Inactivo</span>
+                                  <?php endif; ?>
+                                </button>
                               </form>
-                              <form method="post" class="d-inline ms-1" onsubmit="return confirm('¿Eliminar este cliente? No se puede deshacer.');">
-                                <input type="hidden" name="action" value="client_delete">
+                            </td>
+                            <td>
+                              <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
+                                <input type="hidden" name="action" value="client_toggle_email_notify">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
-                                <button type="submit" class="btn btn-outline-danger btn-sm">Eliminar</button>
+                                <button
+                                  type="submit"
+                                  class="btn btn-sm rounded-pill portal-client-pill portal-client-toggle-btn border-0 d-inline-flex align-items-center text-nowrap <?= $notifyOut ? "text-bg-info" : "text-bg-secondary border border-secondary" ?>"
+                                  title="<?= $notifyOut ? "Envío por correo activo (SMTP al responder). Pulsa para solo bandeja web." : "Solo bandeja web. Pulsa para intentar envío SMTP al responder desde Mensajes." ?>"
+                                  aria-label="<?= $notifyOut ? "Correo SMTP activo, pulsar para desactivar" : "Solo web, pulsar para activar envío SMTP" ?>"
+                                  onclick="event.stopPropagation();"
+                                >
+                                  <?php if ($notifyOut): ?>
+                                    <i class="fa-solid fa-paper-plane" aria-hidden="true"></i><span class="ms-1">Correo</span>
+                                  <?php else: ?>
+                                    <i class="fa-solid fa-display" aria-hidden="true"></i><span class="ms-1">Solo web</span>
+                                  <?php endif; ?>
+                                </button>
                               </form>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-inline-flex flex-wrap align-items-center justify-content-end admin-portal-client-actions">
+                                <form method="post" class="m-0" onsubmit="return confirm('¿Eliminar este cliente? No se puede deshacer.');" onclick="event.stopPropagation();">
+                                  <input type="hidden" name="action" value="client_delete">
+                                  <input type="hidden" name="client_id" value="<?= $pid ?>">
+                                  <button
+                                    type="submit"
+                                    class="btn btn-outline-danger btn-sm"
+                                    title="Eliminar cliente de forma permanente"
+                                    aria-label="Eliminar cliente"
+                                    onclick="event.stopPropagation();"
+                                  >
+                                    <i class="fa-solid fa-trash-can" aria-hidden="true"></i><span class="visually-hidden"> Eliminar</span>
+                                  </button>
+                                </form>
+                              </div>
                             </td>
                           </tr>
                         <?php endforeach; ?>
@@ -2727,15 +3393,15 @@ $waSideCounterTitle = $waSideUnread > 0
             </div>
           </div>
 
-          <div class="accordion-item">
+          <div class="accordion-item" id="admin-tool-config">
             <h2 class="accordion-header m-0">
-              <button class="accordion-button" type="button"
+              <button class="accordion-button collapsed" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_config_panel"
-                aria-expanded="true" aria-controls="tools_config_panel">
-                <i class="fa-solid fa-sliders me-2"></i>Configuración General
+                aria-expanded="false" aria-controls="tools_config_panel">
+                <i class="fa-solid fa-sliders me-2"></i>Configuración general
               </button>
             </h2>
-            <div id="tools_config_panel" class="accordion-collapse collapse show" data-bs-parent="#adminToolsAccordion">
+            <div id="tools_config_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
                 <form method="post" enctype="multipart/form-data">
                   <input type="hidden" name="action" value="save_settings">
@@ -2812,50 +3478,7 @@ $waSideCounterTitle = $waSideUnread > 0
             </div>
           </div>
 
-          <div class="accordion-item">
-            <h2 class="accordion-header m-0">
-              <button class="accordion-button collapsed" type="button"
-                data-bs-toggle="collapse" data-bs-target="#tools_add_panel"
-                aria-expanded="false" aria-controls="tools_add_panel">
-                <i class="fa-solid fa-plus me-2"></i>Agregar Servicio
-              </button>
-            </h2>
-            <div id="tools_add_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
-              <div class="accordion-body">
-                <form method="post" enctype="multipart/form-data">
-                  <input type="hidden" name="action" value="add_service">
-        <div class="row g-3">
-          <div class="col-md-6">
-            <label class="form-label">Título</label>
-            <input class="form-control" type="text" name="title" placeholder="Título" required>
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Icono Font Awesome</label>
-            <div class="icon-grid icon-picker" data-target-input="add_icon_class_input">
-              <?php foreach ($iconOptions as $iconClass => $iconLabel): ?>
-                <button type="button" class="icon-option <?= ($iconClass === "fa-solid fa-star") ? "is-active" : "" ?>" data-icon="<?= h($iconClass) ?>">
-                  <i class="<?= h($iconClass) ?>"></i>
-                </button>
-              <?php endforeach; ?>
-            </div>
-            <input id="add_icon_class_input" type="hidden" name="icon_class" value="fa-solid fa-star">
-          </div>
-          <div class="col-12">
-            <label class="form-label">Descripción</label>
-            <textarea class="form-control" name="description" rows="2" placeholder="Descripción" required></textarea>
-          </div>
-          <div class="col-12">
-            <label class="form-label">Imagen del servicio (opcional)</label>
-            <input class="form-control" type="file" name="image_file" accept="image/png,image/jpeg,image/webp,image/gif">
-          </div>
-        </div>
-                  <button class="btn btn-primary mt-3" type="submit"><i class="fa-solid fa-circle-plus me-2"></i>Agregar servicio</button>
-                </form>
-              </div>
-            </div>
-          </div>
-
-          <div class="accordion-item">
+          <div class="accordion-item" id="admin-tool-credentials">
             <h2 class="accordion-header m-0">
               <button class="accordion-button collapsed" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_credentials_panel"
@@ -2900,16 +3523,86 @@ $waSideCounterTitle = $waSideUnread > 0
             </div>
           </div>
 
-          <div class="accordion-item">
+          <div class="accordion-item" id="admin-tool-service-edit">
             <h2 class="accordion-header m-0">
               <button class="accordion-button collapsed" type="button"
                 data-bs-toggle="collapse" data-bs-target="#tools_edit_panel"
                 aria-expanded="false" aria-controls="tools_edit_panel">
-                <i class="fa-solid fa-pen-to-square me-2"></i>Editar Servicios
+                <i class="fa-solid fa-briefcase me-2"></i>Servicios
               </button>
             </h2>
             <div id="tools_edit_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
+                <p class="small text-light-emphasis mb-3">
+                  Pulsa <strong><i class="fa-solid fa-circle-plus me-1" aria-hidden="true"></i>Agregar servicio</strong> para desplegar el mismo esquema que al editar (vacío). Abajo, cada servicio guardado tiene su bloque con carrusel y opción de borrar.
+                </p>
+                <div class="mb-3">
+                  <button
+                    type="button"
+                    class="btn btn-primary"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#collapse_new_service_panel"
+                    aria-expanded="false"
+                    aria-controls="collapse_new_service_panel"
+                    title="Agregar servicio"
+                  >
+                    <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Agregar servicio
+                  </button>
+                </div>
+                <div id="collapse_new_service_panel" class="collapse mb-4 service-add-panel-collapse">
+                  <div class="border border-secondary rounded-3 p-3 bg-body-tertiary bg-opacity-25">
+                    <form method="post" enctype="multipart/form-data" id="form-add-service">
+                      <input type="hidden" name="action" value="add_service">
+                      <div class="row g-3">
+                        <div class="col-md-6">
+                          <label class="form-label" for="new_service_title">Título</label>
+                          <input id="new_service_title" class="form-control" type="text" name="title" placeholder="Título del servicio" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label">Icono</label>
+                          <div id="new_service_icon_picker" class="icon-grid icon-picker" data-target-input="new_service_icon_input">
+                            <?php foreach ($iconOptions as $iconClass => $iconLabel): ?>
+                              <button type="button" class="icon-option <?= ($iconClass === "fa-solid fa-star") ? "is-active" : "" ?>" data-icon="<?= h($iconClass) ?>">
+                                <i class="<?= h($iconClass) ?>"></i>
+                              </button>
+                            <?php endforeach; ?>
+                          </div>
+                          <input id="new_service_icon_input" type="hidden" name="icon_class" value="fa-solid fa-star">
+                        </div>
+                        <div class="col-md-2">
+                          <label class="form-label" for="new_service_sort">Orden</label>
+                          <input id="new_service_sort" class="form-control" type="number" name="sort_order" value="999" min="0" max="999999">
+                        </div>
+                        <div class="col-md-10">
+                          <label class="form-label" for="new_service_description">Descripción</label>
+                          <textarea id="new_service_description" class="form-control" name="description" rows="2" placeholder="Descripción visible en la web" required></textarea>
+                        </div>
+                        <div class="col-md-12">
+                          <label class="form-label" for="new_service_image">Imagen del servicio (opcional)</label>
+                          <input id="new_service_image" class="form-control" type="file" name="image_file" accept="image/png,image/jpeg,image/webp,image/gif">
+                        </div>
+                        <div class="col-md-12">
+                          <label class="form-label">Carrusel / galería</label>
+                          <p class="form-text text-light-emphasis mb-0">Cuando exista el servicio en el listado inferior, podrás subir imágenes, títulos y orden del carrusel desde su bloque.</p>
+                        </div>
+                        <div class="col-md-12">
+                          <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="new_service_is_active" name="is_active" value="1" checked>
+                            <label class="form-check-label" for="new_service_is_active">Activo</label>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="admin-actions mt-3 mb-0 d-flex flex-wrap gap-2">
+                        <button type="submit" class="btn btn-primary">
+                          <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Crear servicio
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" id="cancel_new_service_btn" aria-controls="collapse_new_service_panel">
+                          <i class="fa-solid fa-xmark me-2" aria-hidden="true"></i>Cancelar
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
                 <form method="post" enctype="multipart/form-data">
                   <input type="hidden" name="action" value="save_services">
         <div class="accordion admin-services-accordion" id="adminServicesAccordion">
@@ -3071,6 +3764,335 @@ $waSideCounterTitle = $waSideUnread > 0
             </div>
           </div>
 
+          <?php if ($adminExpertAgendaUi): ?>
+          <div class="accordion-item" id="admin-tools-experts">
+            <h2 class="accordion-header m-0">
+              <button
+                class="accordion-button <?= $expertsPanelOpen ? "" : "collapsed" ?>"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#tools_experts_panel"
+                aria-expanded="<?= $expertsPanelOpen ? "true" : "false" ?>"
+                aria-controls="tools_experts_panel"
+              >
+                <i class="fa-solid fa-users me-2"></i>Expertos
+              </button>
+            </h2>
+            <div id="tools_experts_panel" class="accordion-collapse collapse <?= $expertsPanelOpen ? "show" : "" ?>" data-bs-parent="#adminToolsAccordion">
+              <div class="accordion-body">
+                <p class="small text-light-emphasis mb-3">
+                  Tabla de expertos y ficha por persona. Pulsa <strong><i class="fa-solid fa-circle-plus me-1" aria-hidden="true"></i>Agregar experto</strong> para el mismo esquema que en la ficha (vacío). La <strong>cuenta de acceso</strong> para que cada experto entre al sistema se implementará después.
+                </p>
+                <?php if (is_array($expertEdit) && isset($expertEdit["id"])): ?>
+                  <?php
+                    $eid = (int)$expertEdit["id"];
+                    $svcSet = $expertServiceIds[$eid] ?? [];
+                  ?>
+                  <nav class="mb-3">
+                    <a href="admin.php#admin-tools-experts" class="link-light"><i class="fa-solid fa-arrow-left me-1"></i>Volver al listado</a>
+                  </nav>
+                  <h3 class="h5 mb-3 border-bottom border-secondary pb-2">Ficha: <?= h((string)($expertEdit["display_name"] ?? "")) ?></h3>
+                  <form method="post" class="row g-3">
+                    <input type="hidden" name="action" value="save_expert">
+                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
+                    <div class="col-md-8">
+                      <label class="form-label">Nombre visible</label>
+                      <input class="form-control" type="text" name="display_name" value="<?= h((string)($expertEdit["display_name"] ?? "")) ?>" maxlength="180" required>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Orden</label>
+                      <input class="form-control" type="number" name="sort_order" value="<?= (int)($expertEdit["sort_order"] ?? 999) ?>">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Correo (opcional)</label>
+                      <input class="form-control" type="email" name="email" value="<?= h((string)($expertEdit["email"] ?? "")) ?>" maxlength="180" placeholder="contacto@ejemplo.com" autocomplete="off">
+                      <div class="form-text text-light-emphasis">Útil para contacto o para enlazar luego la cuenta de experto.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Teléfono (opcional)</label>
+                      <input class="form-control" type="text" name="phone" value="<?= h((string)($expertEdit["phone"] ?? "")) ?>" maxlength="48" placeholder="+34 …" autocomplete="off">
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label">Notas / información adicional</label>
+                      <textarea class="form-control" name="notes" rows="4" maxlength="12000" placeholder="Especialidad, disponibilidad general, comentarios internos…"><?= h((string)($expertEdit["notes"] ?? "")) ?></textarea>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label">Servicios que puede ofrecer</label>
+                      <div class="expert-service-checks border rounded px-3 py-2 border-secondary">
+                        <?php if (count($services) === 0): ?>
+                          <span class="text-light-emphasis">No hay servicios en el catálogo.</span>
+                        <?php else: ?>
+                          <?php foreach ($services as $svc): ?>
+                            <?php $sid = (int)$svc["id"]; ?>
+                            <div class="form-check">
+                              <input
+                                class="form-check-input"
+                                type="checkbox"
+                                id="ex_detail_svc_<?= $sid ?>"
+                                name="expert_services[]"
+                                value="<?= $sid ?>"
+                                <?= isset($svcSet[$sid]) ? "checked" : "" ?>
+                              >
+                              <label class="form-check-label" for="ex_detail_svc_<?= $sid ?>">
+                                <i class="<?= h((string)($svc["icon_class"] ?: "fa-solid fa-star")) ?> me-1"></i><?= h((string)($svc["title"] ?? "")) ?>
+                              </label>
+                            </div>
+                          <?php endforeach; ?>
+                        <?php endif; ?>
+                      </div>
+                    </div>
+                    <div class="col-12">
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="expert_detail_active" name="is_active" <?= ((int)($expertEdit["is_active"] ?? 0) === 1) ? "checked" : "" ?>>
+                        <label class="form-check-label" for="expert_detail_active">Activo</label>
+                      </div>
+                    </div>
+                    <div class="col-12 admin-actions">
+                      <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Guardar ficha</button>
+                    </div>
+                  </form>
+                  <form method="post" class="mt-3 pt-3 border-top border-secondary" onsubmit="return confirm('¿Eliminar este experto? Se quitarán sus vínculos con servicios.');">
+                    <input type="hidden" name="action" value="delete_expert">
+                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
+                    <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-2"></i>Eliminar experto</button>
+                  </form>
+                <?php elseif ($expertEditNotFound): ?>
+                  <div class="alert alert-warning mb-3">No hay ningún experto con ese identificador.</div>
+                  <a href="admin.php#admin-tools-experts" class="btn btn-outline-light btn-sm">Volver al listado</a>
+                <?php else: ?>
+                  <div class="mb-3">
+                    <button
+                      type="button"
+                      class="btn btn-primary"
+                      data-bs-toggle="collapse"
+                      data-bs-target="#collapse_new_expert_panel"
+                      aria-expanded="false"
+                      aria-controls="collapse_new_expert_panel"
+                      title="Agregar experto"
+                    >
+                      <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Agregar experto
+                    </button>
+                  </div>
+                  <div id="collapse_new_expert_panel" class="collapse mb-4 service-add-panel-collapse">
+                    <div class="border border-secondary rounded-3 p-3 bg-body-tertiary bg-opacity-25">
+                      <form method="post" class="row g-3" id="form-add-expert">
+                        <input type="hidden" name="action" value="add_expert">
+                        <div class="col-md-8">
+                          <label class="form-label" for="new_expert_display_name">Nombre visible</label>
+                          <input id="new_expert_display_name" class="form-control" type="text" name="display_name" maxlength="180" placeholder="Ej. María López" required>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label" for="new_expert_sort">Orden</label>
+                          <input id="new_expert_sort" class="form-control" type="number" name="sort_order" value="999" min="0" max="999999">
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label" for="new_expert_email">Correo (opcional)</label>
+                          <input id="new_expert_email" class="form-control" type="email" name="email" maxlength="180" placeholder="contacto@ejemplo.com" autocomplete="off">
+                          <div class="form-text text-light-emphasis">Útil para contacto o para enlazar luego la cuenta de experto.</div>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label" for="new_expert_phone">Teléfono (opcional)</label>
+                          <input id="new_expert_phone" class="form-control" type="text" name="phone" maxlength="48" placeholder="+34 …" autocomplete="off">
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label" for="new_expert_notes">Notas / información adicional</label>
+                          <textarea id="new_expert_notes" class="form-control" name="notes" rows="4" maxlength="12000" placeholder="Especialidad, disponibilidad general, comentarios internos…"></textarea>
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label">Servicios que puede ofrecer</label>
+                          <div class="expert-service-checks border rounded px-3 py-2 border-secondary">
+                            <?php if (count($services) === 0): ?>
+                              <span class="text-light-emphasis">No hay servicios en el catálogo.</span>
+                            <?php else: ?>
+                              <?php foreach ($services as $svc): ?>
+                                <?php $sid = (int)$svc["id"]; ?>
+                                <div class="form-check">
+                                  <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    id="ex_add_svc_<?= $sid ?>"
+                                    name="expert_services[]"
+                                    value="<?= $sid ?>"
+                                  >
+                                  <label class="form-check-label" for="ex_add_svc_<?= $sid ?>">
+                                    <i class="<?= h((string)($svc["icon_class"] ?: "fa-solid fa-star")) ?> me-1"></i><?= h((string)($svc["title"] ?? "")) ?>
+                                  </label>
+                                </div>
+                              <?php endforeach; ?>
+                            <?php endif; ?>
+                          </div>
+                        </div>
+                        <div class="col-12">
+                          <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="new_expert_active" name="is_active" value="1" checked>
+                            <label class="form-check-label" for="new_expert_active">Activo</label>
+                          </div>
+                        </div>
+                        <div class="col-12 admin-actions d-flex flex-wrap gap-2 mb-0">
+                          <button class="btn btn-primary" type="submit">
+                            <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Crear experto
+                          </button>
+                          <button type="button" class="btn btn-outline-secondary" id="cancel_new_expert_btn" aria-controls="collapse_new_expert_panel">
+                            <i class="fa-solid fa-xmark me-2" aria-hidden="true"></i>Cancelar
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                  <?php if (count($experts) === 0): ?>
+                    <p class="text-light-emphasis mb-0">Aún no hay expertos. Usa <strong>Agregar experto</strong> para crear el primero.</p>
+                  <?php else: ?>
+                    <div class="table-responsive">
+                      <table class="table table-sm table-hover table-borderless align-middle mb-0 admin-experts-table">
+                        <thead>
+                          <tr class="text-secondary small">
+                            <th scope="col">Nombre</th>
+                            <th scope="col" class="text-center">Orden</th>
+                            <th scope="col" class="text-center">Estado</th>
+                            <th scope="col" class="text-start expert-services-col">Servicios</th>
+                            <th scope="col" class="text-end">Acciones</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <?php foreach ($experts as $ex): ?>
+                            <?php
+                              $rowId = (int)($ex["id"] ?? 0);
+                              $svcSet = $expertServiceIds[$rowId] ?? [];
+                              $nSvc = count($svcSet);
+                              $linkedTitlesStr = "";
+                              if ($nSvc > 0) {
+                                  $t = [];
+                                  foreach ($services as $svc) {
+                                      $sid = (int)($svc["id"] ?? 0);
+                                      if ($sid > 0 && !empty($svcSet[$sid])) {
+                                          $t[] = (string)($svc["title"] ?? "");
+                                      }
+                                  }
+                                  $linkedTitlesStr = implode(", ", $t);
+                              }
+                              $em = trim((string)($ex["email"] ?? ""));
+                              $ph = trim((string)($ex["phone"] ?? ""));
+                              $hasExtra = ($em !== "" || $ph !== "" || trim((string)($ex["notes"] ?? "")) !== "");
+                              $exActive = (int)($ex["is_active"] ?? 0) === 1;
+                            ?>
+                            <tr>
+                              <td>
+                                <strong><?= h((string)($ex["display_name"] ?? "")) ?></strong>
+                                <?php if ($hasExtra): ?>
+                                  <span class="badge rounded-pill text-bg-info expert-pill d-inline-flex align-items-center ms-1" title="Correo, teléfono o notas en la ficha">
+                                    <i class="fa-solid fa-id-card" aria-hidden="true"></i><span class="visually-hidden"> </span>Info
+                                  </span>
+                                <?php endif; ?>
+                              </td>
+                              <td class="text-center font-monospace small"><?= (int)($ex["sort_order"] ?? 999) ?></td>
+                              <td class="text-center">
+                                <?php if ($exActive): ?>
+                                  <span class="badge rounded-pill text-bg-success expert-pill d-inline-flex align-items-center" title="Visible en la web según configuración">
+                                    <i class="fa-solid fa-circle-check" aria-hidden="true"></i> Activo
+                                  </span>
+                                <?php else: ?>
+                                  <span class="badge rounded-pill text-bg-secondary expert-pill d-inline-flex align-items-center" title="No se muestra en la agenda pública">
+                                    <i class="fa-solid fa-circle-xmark" aria-hidden="true"></i> Inactivo
+                                  </span>
+                                <?php endif; ?>
+                              </td>
+                              <td class="text-start expert-services-col">
+                                <?php if ($nSvc === 0): ?>
+                                  <span class="text-light-emphasis small font-monospace" title="Sin servicios vinculados">0</span>
+                                <?php else: ?>
+                                  <div class="d-flex align-items-center gap-1 expert-row-services js-expert-svc-fit">
+                                    <div class="expert-svc-icons-slot">
+                                      <div class="expert-svc-icons-inner">
+                                        <?php foreach ($services as $svc): ?>
+                                          <?php
+                                            $sid = (int)($svc["id"] ?? 0);
+                                            if ($sid <= 0 || empty($svcSet[$sid])) {
+                                                continue;
+                                            }
+                                            $svcTitle = (string)($svc["title"] ?? "");
+                                            $svcIcon = (string)($svc["icon_class"] ?: "fa-solid fa-star");
+                                          ?>
+                                          <span
+                                            class="expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary bg-body-tertiary text-body"
+                                            title="<?= h($svcTitle) ?>"
+                                            data-service-title="<?= h($svcTitle) ?>"
+                                          >
+                                            <i class="<?= h($svcIcon) ?>" aria-hidden="true"></i>
+                                            <span class="visually-hidden"><?= h($svcTitle) ?></span>
+                                          </span>
+                                        <?php endforeach; ?>
+                                      </div>
+                                    </div>
+                                    <span
+                                      class="expert-svc-icon expert-svc-overflow-plus align-items-center justify-content-center rounded-2 border border-secondary bg-body-tertiary text-body"
+                                      role="img"
+                                      aria-hidden="true"
+                                    >
+                                      <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                                    </span>
+                                    <span
+                                      class="badge rounded-pill text-bg-secondary border expert-pill d-inline-flex align-items-center expert-svc-count-badge"
+                                      title="<?= h($linkedTitlesStr !== "" ? $linkedTitlesStr : "Servicios vinculados") ?>"
+                                    >
+                                      <?= (int)$nSvc ?>
+                                    </span>
+                                  </div>
+                                <?php endif; ?>
+                              </td>
+                              <td class="text-end">
+                                <div class="d-inline-flex flex-wrap align-items-center justify-content-end admin-expert-row-actions">
+                                  <a
+                                    class="btn btn-outline-light btn-sm"
+                                    href="admin.php?expert_id=<?= $rowId ?>#admin-tools-experts"
+                                    title="Abrir ficha y editar datos"
+                                    aria-label="Ficha o editar <?= h((string)($ex["display_name"] ?? "experto")) ?>"
+                                  >
+                                    <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i><span class="visually-hidden"> Ficha o editar</span>
+                                  </a>
+                                  <form method="post" onsubmit="return confirm('¿Eliminar este experto?');">
+                                    <input type="hidden" name="action" value="delete_expert">
+                                    <input type="hidden" name="expert_id" value="<?= $rowId ?>">
+                                    <button
+                                      type="submit"
+                                      class="btn btn-outline-danger btn-sm"
+                                      title="Eliminar experto y quitar vínculos con servicios"
+                                      aria-label="Eliminar <?= h((string)($ex["display_name"] ?? "experto")) ?>"
+                                    >
+                                      <i class="fa-solid fa-trash-can" aria-hidden="true"></i><span class="visually-hidden"> Eliminar</span>
+                                    </button>
+                                  </form>
+                                </div>
+                              </td>
+                            </tr>
+                          <?php endforeach; ?>
+                        </tbody>
+                      </table>
+                    </div>
+                  <?php endif; ?>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <?php else: ?>
+          <div class="accordion-item" id="admin-tool-experts-off">
+            <h2 class="accordion-header m-0">
+              <button class="accordion-button collapsed" type="button"
+                data-bs-toggle="collapse" data-bs-target="#tools_expert_agenda_off_panel"
+                aria-expanded="false" aria-controls="tools_expert_agenda_off_panel">
+                <i class="fa-solid fa-users me-2"></i>Expertos
+              </button>
+            </h2>
+            <div id="tools_expert_agenda_off_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
+              <div class="accordion-body">
+                <p class="small text-light-emphasis mb-0">
+                  Módulo desactivado (<code class="small">features.expert_agenda</code> en <code class="small">app_config.php</code>).
+                  Las tablas <code class="small">experts</code> y <code class="small">expert_services</code> existen; actívalo en <code class="small">true</code> para gestionarlos aquí.
+                </p>
+              </div>
+            </div>
+          </div>
+          <?php endif; ?>
+
         </div>
       </div>
 
@@ -3092,11 +4114,11 @@ $waSideCounterTitle = $waSideUnread > 0
             <div class="accordion-item border-0 border-bottom">
               <h2 class="accordion-header m-0" id="headingSideMessages">
                 <button
-                  class="accordion-button py-3 px-3"
+                  class="accordion-button collapsed py-3 px-3"
                   type="button"
                   data-bs-toggle="collapse"
                   data-bs-target="#collapseSideMessages"
-                  aria-expanded="true"
+                  aria-expanded="false"
                   aria-controls="collapseSideMessages"
                 >
                   <span class="d-flex flex-wrap align-items-center gap-2 me-auto">
@@ -3111,7 +4133,7 @@ $waSideCounterTitle = $waSideUnread > 0
               </h2>
               <div
                 id="collapseSideMessages"
-                class="accordion-collapse collapse show"
+                class="accordion-collapse collapse"
                 aria-labelledby="headingSideMessages"
               >
                 <div class="accordion-body pt-0 px-3 pb-3">
@@ -3168,15 +4190,15 @@ $waSideCounterTitle = $waSideUnread > 0
                             >
                               <span class="badge text-bg-primary"><?= h((string)($grp["head_badge"] ?? "")) ?></span>
                               <?php if ($gHasUnread): ?>
-                                <span class="badge text-bg-warning"><?= (int)($grp["unread"]) ?> sin leer</span>
+                                <span class="badge text-bg-warning js-group-unread-badge" title="Mensajes sin leer en este grupo"><?= (int)($grp["unread"]) ?></span>
                               <?php endif; ?>
-                              <span class="text-truncate" style="max-width: 14rem;"><strong><?= h((string)($grp["head_title"] ?? "")) ?></strong></span>
+                              <span class="text-truncate flex-grow-1" style="min-width: 0;"><strong><?= h((string)($grp["head_title"] ?? "")) ?></strong></span>
                               <?php if (($grp["head_sub"] ?? "") !== ""): ?>
-                                <span class="text-light-emphasis small text-truncate" style="max-width: 10rem;"><?= h((string)$grp["head_sub"]) ?></span>
+                                <span class="text-light-emphasis small text-truncate d-none d-md-inline" style="max-width: 8rem;"><?= h((string)$grp["head_sub"]) ?></span>
                               <?php endif; ?>
-                              <span class="text-light-emphasis small ms-auto"><?= (int)($grp["conv_count"] ?? 0) ?> conv. · <?= (int)($grp["msg_count"] ?? 0) ?> msg</span>
+                              <span class="text-light-emphasis small text-nowrap ms-auto" title="Conversaciones / mensajes totales en este grupo"><?= (int)($grp["conv_count"] ?? 0) ?> · <?= (int)($grp["msg_count"] ?? 0) ?></span>
                               <?php if (($grp["latest_label"] ?? "") !== ""): ?>
-                                <span class="text-secondary small">· Últ. act. <?= h((string)$grp["latest_label"]) ?></span>
+                                <span class="text-secondary small text-nowrap d-none d-lg-inline"><?= h((string)$grp["latest_label"]) ?></span>
                               <?php endif; ?>
                             </button>
                           </h3>
@@ -3186,18 +4208,14 @@ $waSideCounterTitle = $waSideUnread > 0
                             data-bs-parent="#adminConvGroupsAccordion"
                           >
                             <div class="accordion-body p-2 pt-1">
-                              <p class="small text-light-emphasis mb-2">
-                                <i class="fa-solid fa-envelope me-1"></i>
+                              <p class="admin-inbox-grp-meta mb-2">
                                 <?php if ((string)($grp["head_email"] ?? "") !== ""): ?>
                                   <a href="mailto:<?= h((string)$grp["head_email"]) ?>"><?= h((string)$grp["head_email"]) ?></a>
-                                <?php else: ?>
-                                  (sin correo en el grupo)
+                                  <span class="text-muted"> · </span>
                                 <?php endif; ?>
+                                <span title="Hilos ordenados por fecha; responde al final de cada hilo"><?= (int)($grp["conv_count"] ?? 0) ?> hilos</span>
                               </p>
-                              <p class="small text-light-emphasis mb-2">
-                                <?= (int)($grp["conv_count"] ?? 0) ?> conversación(es), <?= (int)($grp["msg_count"] ?? 0) ?> envío(s). En cada hilo, los pasos van en orden de tiempo; al final del hilo hay un solo formulario para contestar por correo (enlazado al último paso).
-                              </p>
-                              <div class="admin-inbox-threads mt-2">
+                              <div class="admin-inbox-threads mt-1">
                                 <?php foreach (($grp["threads"] ?? []) as $ti => $thread): ?>
                                   <?php
                                     $tMsgs = $thread["messages"] ?? [];
@@ -3227,29 +4245,23 @@ $waSideCounterTitle = $waSideUnread > 0
                                     }
                                     $threadConvIdAdmin = (int)($thread["root_id"] ?? 0);
                                   ?>
-                                  <details class="admin-msg-thread admin-msg-conv-root"<?= $ti === 0 ? " open" : "" ?> data-thread-id="<?= $threadConvIdAdmin ?>">
-                                    <summary class="admin-msg-thread-summary">
+                                  <details class="admin-msg-thread admin-msg-conv-root" data-thread-id="<?= $threadConvIdAdmin ?>">
+                                    <summary class="admin-msg-thread-summary" title="Referencia interna del hilo (mensaje raíz ID <?= (int)$threadConvIdAdmin ?>)<?= $rootServ !== "" ? " · " . htmlspecialchars($rootServ, ENT_QUOTES, "UTF-8") : "" ?>">
                                       <div class="admin-msg-thread-asunto-block">
                                         <span class="admin-msg-thread-asunto-label">Asunto</span>
-                                        <span class="admin-msg-thread-asunto-text<?= $rootSubject === "" ? " text-secondary" : "" ?>" title="Asunto (título); el servicio aparece en la fila de abajo"><?= h($threadAsunto) ?></span>
-                                        <?php if ($threadConvIdAdmin > 0): ?>
-                                          <span class="admin-msg-thread-id" title="Identificador del hilo (asunto); servirá para buscar o filtrar">Conv. <?= $threadConvIdAdmin ?></span>
-                                        <?php endif; ?>
+                                        <span class="admin-msg-thread-asunto-text<?= $rootSubject === "" ? " text-secondary" : "" ?>"><?= h($threadAsunto) ?></span>
                                       </div>
                                       <span class="admin-msg-thread-summary-main">
                                         <span class="message-meta-date"><?= h($rootCreatedLabel) ?></span>
                                         <span class="message-meta-service"><i class="fa-solid fa-briefcase me-1"></i><?= h($rootServ !== "" ? $rootServ : "—") ?></span>
                                         <?php if ($tCount > 1): ?>
-                                          <span class="admin-msg-conv-meta"><?= (int)$tCount ?> envíos</span>
-                                        <?php endif; ?>
-                                        <?php if ($tLatestLabel !== "" && $tCount > 1): ?>
-                                          <span class="admin-msg-conv-meta">Últ. act.: <?= h($tLatestLabel) ?></span>
+                                          <span class="admin-msg-conv-meta"><?= (int)$tCount ?> pasos</span>
                                         <?php endif; ?>
                                         <?php if ($tUnread > 0): ?>
-                                          <span class="badge text-bg-warning"><?= (int)$tUnread ?> sin leer</span>
+                                          <span class="badge text-bg-warning js-thread-unread-badge" title="Pasos sin leer en este hilo"><?= (int)$tUnread ?></span>
                                         <?php endif; ?>
                                         <?php if (!empty($thread["has_admin_reply"])): ?>
-                                          <span class="badge text-bg-success">Respuesta</span>
+                                          <span class="badge text-bg-success">Resp.</span>
                                         <?php endif; ?>
                                       </span>
                                       <?php if ($snippet !== ""): ?>
@@ -3257,6 +4269,7 @@ $waSideCounterTitle = $waSideUnread > 0
                                       <?php endif; ?>
                                     </summary>
                                     <div class="admin-msg-thread-body">
+                                      <div class="admin-msg-chat-stream">
                                       <?php foreach ($tMsgs as $tmi => $contactMsg): ?>
                                         <?php
                                           $msgId = (int)$contactMsg["id"];
@@ -3272,22 +4285,36 @@ $waSideCounterTitle = $waSideUnread > 0
                                           } catch (Exception $e) {
                                           }
                                           $repliesForMsg = $contactRepliesByMessageId[$msgId] ?? [];
+                                          $isContinuation = $tmi > 0;
+                                          $prevRow = $isContinuation ? ($tMsgs[$tmi - 1] ?? []) : [];
+                                          $prevEmail = strtolower(trim((string)($prevRow["email"] ?? "")));
+                                          $curEmail = strtolower(trim((string)($contactMsg["email"] ?? "")));
+                                          $hideContactFooter = $isContinuation && $prevEmail !== "" && $prevEmail === $curEmail;
+                                          $rootServStr = trim((string)$rootServ);
+                                          $turnServStr = trim((string)($contactMsg["servicio"] ?? ""));
+                                          $hideTurnService = $isContinuation && $rootServStr !== "" && $turnServStr === $rootServStr;
                                         ?>
-                                        <div class="message-row admin-msg-turn<?= $isUnread ? " is-unread" : "" ?>" data-message-id="<?= $msgId ?>">
+                                        <div class="message-row admin-msg-turn<?= $isUnread ? " is-unread" : "" ?><?= $isContinuation ? " admin-msg-turn--continuation" : "" ?>" data-message-id="<?= $msgId ?>">
                                           <div class="admin-msg-turn-toolbar">
                                             <div class="admin-msg-turn-head">
                                               <?php if ($msgId > 0): ?>
-                                                <span class="admin-msg-id-chip" title="ID del mensaje; servirá para buscar o filtrar">Msg. <?= $msgId ?></span>
+                                                <?php
+                                                  $turnStepLabel = ($tmi + 1) . "/" . $tCount;
+                                                  $turnChipTitle = "Referencia interna: mensaje ID " . $msgId . " · " . $createdLabel;
+                                                ?>
+                                                <span class="admin-msg-id-chip" title="<?= h($turnChipTitle) ?>"><?= h($turnStepLabel) ?></span>
                                               <?php endif; ?>
                                               <span class="badge text-bg-warning js-msg-new-badge">Nuevo</span>
-                                              <?php if ($fromClientId > 0): ?>
+                                              <?php if ($fromClientId > 0 && !$isContinuation): ?>
                                                 <span class="badge text-bg-info">Cliente</span>
                                               <?php endif; ?>
-                                              <?php if ($msgInReplyTo > 0): ?>
+                                              <?php if ($msgInReplyTo > 0 && !$isContinuation): ?>
                                                 <span class="badge text-bg-secondary" title="Seguimiento">Seg.</span>
                                               <?php endif; ?>
                                               <span class="message-meta-date"><?= h($createdLabel) ?></span>
+                                              <?php if (!$hideTurnService): ?>
                                               <span class="message-meta-service"><i class="fa-solid fa-tag me-1"></i><?= h((string)$contactMsg["servicio"]) ?></span>
+                                              <?php endif; ?>
                                             </div>
                                             <form method="post" class="message-delete-form" onsubmit="return confirm('¿Eliminar este mensaje del historial?');">
                                               <input type="hidden" name="action" value="delete_message">
@@ -3299,25 +4326,27 @@ $waSideCounterTitle = $waSideUnread > 0
                                           </div>
                                           <div class="admin-msg-turn-main">
                                             <div class="admin-msg-turn-inner">
-                                            <?php if ($tmi === 0 && $turnSubject !== ""): ?>
+                                            <?php if ($tmi > 0 || ($turnSubject !== "" && $turnSubject !== $rootSubject)): ?>
                                               <p class="admin-msg-asunto-line mb-2"><span class="text-secondary small text-uppercase fw-semibold">Asunto</span><br><?= h($turnSubject) ?></p>
                                             <?php endif; ?>
-                                            <?php if ($msgInReplyTo > 0): ?>
-                                              <p class="small text-light-emphasis mb-2">
-                                                <i class="fa-solid fa-link me-1"></i>Seguimiento enlazado al mensaje n.º <?= (int)$msgInReplyTo ?>.
+                                            <?php if ($msgInReplyTo > 0 && !$isContinuation): ?>
+                                              <p class="small text-light-emphasis mb-2" title="Referencia interna del mensaje enlazado: ID <?= (int)$msgInReplyTo ?>">
+                                                <i class="fa-solid fa-link me-1"></i>Seguimiento enlazado a otra entrada de este mismo hilo.
                                               </p>
                                             <?php endif; ?>
                                             <div class="admin-msg-bubble admin-msg-bubble--visitor">
                                               <div class="admin-msg-bubble-label text-secondary"><i class="fa-solid fa-user me-1"></i>Mensaje del visitante</div>
                                             <div class="message-body-text mb-2 mb-md-3"><?= nl2br(h((string)$contactMsg["mensaje"])) ?></div>
+                                            <?php if (!$hideContactFooter): ?>
                                             <div class="d-flex flex-wrap gap-2 align-items-center text-light-emphasis small mb-0">
                                               <span><strong><?= h((string)$contactMsg["nombre"]) ?></strong></span>
                                               <span><i class="fa-solid fa-envelope me-1"></i><a href="mailto:<?= h((string)$contactMsg["email"]) ?>"><?= h((string)$contactMsg["email"]) ?></a></span>
                                             </div>
+                                            <?php endif; ?>
                                             </div>
+                                            <?php if (count($repliesForMsg) > 0): ?>
                                             <div class="admin-msg-bubble admin-msg-bubble--admin">
                                               <div class="admin-msg-bubble-label text-secondary"><i class="fa-solid fa-reply me-1"></i>Tus respuestas por correo (desde el panel)</div>
-                                            <?php if (count($repliesForMsg) > 0): ?>
                                               <div class="message-replies-sent border-0 ps-0 pt-0 mt-0 mb-0">
                                                 <?php foreach ($repliesForMsg as $repRow): ?>
                                                   <?php
@@ -3335,10 +4364,8 @@ $waSideCounterTitle = $waSideUnread > 0
                                                   </div>
                                                 <?php endforeach; ?>
                                               </div>
-                                            <?php else: ?>
-                                              <p class="small text-light-emphasis mb-0">Sin respuesta registrada para este envío.</p>
-                                            <?php endif; ?>
                                             </div>
+                                            <?php endif; ?>
                                             <div class="d-flex flex-wrap gap-2 message-mark-actions">
                                               <form method="post" class="m-0 js-mark-read-form">
                                                 <input type="hidden" name="action" value="mark_message_read">
@@ -3359,6 +4386,7 @@ $waSideCounterTitle = $waSideUnread > 0
                                           </div>
                                         </div>
                                       <?php endforeach; ?>
+                                      </div>
                                       <?php
                                         $threadRootIdAdmin = (int)($thread["root_id"] ?? 0);
                                         $nAdminTm = count($tMsgs);
@@ -3370,7 +4398,7 @@ $waSideCounterTitle = $waSideUnread > 0
                                         <form method="post" class="message-reply-form mb-0 mt-3 admin-msg-reply-thread-end">
                                           <input type="hidden" name="action" value="reply_contact_message">
                                           <input type="hidden" name="message_id" value="<?= $lastAdminMsgId ?>">
-                                          <p class="small text-light-emphasis mb-2">Un solo envío al final del hilo: la respuesta queda asociada al <strong>último mensaje</strong> (Msg. <?= (int)$lastAdminMsgId ?>).</p>
+                                          <p class="small text-light-emphasis mb-2" title="Referencia interna del mensaje destino: ID <?= (int)$lastAdminMsgId ?>">Un solo envío al final del hilo: la respuesta queda asociada al <strong>último mensaje</strong> del hilo (el más reciente en esta conversación).</p>
                                           <label class="form-label small mb-1" for="reply_body_root_<?= $threadRootIdAdmin ?>">Responder por correo</label>
                                           <textarea id="reply_body_root_<?= $threadRootIdAdmin ?>" class="form-control form-control-sm" name="reply_body" rows="4" placeholder="Texto que recibirá <?= h($lastVisitorName !== "" ? $lastVisitorName : "el visitante") ?> en su correo…" required></textarea>
                                           <button class="btn btn-primary btn-sm mt-2" type="submit">
@@ -3569,6 +4597,25 @@ $waSideCounterTitle = $waSideUnread > 0
           }
         });
       });
+
+      document.addEventListener("DOMContentLoaded", function () {
+        var hash = (window.location.hash || "").trim();
+        if (hash !== "#admin-tool-clients" && hash !== "#tools_clients_panel") {
+          return;
+        }
+        var panel = document.getElementById("tools_clients_panel");
+        if (panel && window.bootstrap && bootstrap.Collapse) {
+          try {
+            bootstrap.Collapse.getOrCreateInstance(panel).show();
+          } catch (e) {}
+        }
+        var item = document.getElementById("admin-tool-clients");
+        if (item) {
+          setTimeout(function () {
+            item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }, 120);
+        }
+      });
     })();
   </script>
   <script>
@@ -3605,6 +4652,133 @@ $waSideCounterTitle = $waSideUnread > 0
 
         syncActiveButton(containerEl, inputEl.value);
       });
+
+      (function () {
+        var cancelBtn = document.getElementById("cancel_new_service_btn");
+        var collapseEl = document.getElementById("collapse_new_service_panel");
+        var formEl = document.getElementById("form-add-service");
+        var pickerEl = document.getElementById("new_service_icon_picker");
+        var iconInput = document.getElementById("new_service_icon_input");
+        if (!cancelBtn || !collapseEl || !formEl) return;
+
+        function syncNewServiceIconPicker() {
+          if (!pickerEl || !iconInput) return;
+          var v = (iconInput.value || "").trim();
+          pickerEl.querySelectorAll(".icon-option").forEach(function (btn) {
+            btn.classList.toggle("is-active", btn.getAttribute("data-icon") === v);
+          });
+        }
+
+        cancelBtn.addEventListener("click", function () {
+          formEl.reset();
+          syncNewServiceIconPicker();
+          if (window.bootstrap && bootstrap.Collapse) {
+            var inst = bootstrap.Collapse.getOrCreateInstance(collapseEl);
+            inst.hide();
+          }
+        });
+      })();
+
+      (function () {
+        var cancelBtn = document.getElementById("cancel_new_expert_btn");
+        var collapseEl = document.getElementById("collapse_new_expert_panel");
+        var formEl = document.getElementById("form-add-expert");
+        if (!cancelBtn || !collapseEl || !formEl) return;
+
+        cancelBtn.addEventListener("click", function () {
+          formEl.reset();
+          if (window.bootstrap && bootstrap.Collapse) {
+            bootstrap.Collapse.getOrCreateInstance(collapseEl).hide();
+          }
+        });
+      })();
+
+      (function () {
+        if (typeof ResizeObserver === "undefined") {
+          return;
+        }
+        function fitExpertServiceRow(container) {
+          var slot = container.querySelector(".expert-svc-icons-slot");
+          var inner = container.querySelector(".expert-svc-icons-inner");
+          var plus = container.querySelector(".expert-svc-overflow-plus");
+          if (!slot || !inner || !plus) {
+            return;
+          }
+          var icons = Array.prototype.slice.call(inner.querySelectorAll(".expert-svc-icon"));
+          icons.forEach(function (el) {
+            el.style.display = "";
+          });
+          plus.classList.remove("is-visible");
+          plus.removeAttribute("title");
+          plus.removeAttribute("aria-label");
+          plus.setAttribute("aria-hidden", "true");
+          if (icons.length === 0) {
+            return;
+          }
+          if (slot.clientWidth < 40) {
+            return;
+          }
+          var maxIter = icons.length + 10;
+          var iter = 0;
+          while (inner.scrollWidth > slot.clientWidth + 1 && iter < maxIter) {
+            var visible = icons.filter(function (i) {
+              return i.style.display !== "none";
+            });
+            if (visible.length === 0) {
+              break;
+            }
+            visible[visible.length - 1].style.display = "none";
+            iter += 1;
+          }
+          var hidden = icons.filter(function (i) {
+            return i.style.display === "none";
+          });
+          if (hidden.length === 0) {
+            return;
+          }
+          plus.classList.add("is-visible");
+          iter = 0;
+          while (inner.scrollWidth > slot.clientWidth + 1 && iter < maxIter) {
+            var visible2 = icons.filter(function (i) {
+              return i.style.display !== "none";
+            });
+            if (visible2.length === 0) {
+              break;
+            }
+            visible2[visible2.length - 1].style.display = "none";
+            iter += 1;
+          }
+          var hidden2 = icons.filter(function (i) {
+            return i.style.display === "none";
+          });
+          var titles = hidden2.map(function (i) {
+            return i.getAttribute("data-service-title") || "";
+          }).filter(Boolean);
+          var t = titles.join(", ");
+          if (t) {
+            plus.setAttribute("title", t);
+            plus.setAttribute("aria-label", "Servicios no mostrados en la fila: " + t);
+            plus.removeAttribute("aria-hidden");
+          } else {
+            plus.setAttribute("aria-label", "Hay más servicios vinculados");
+            plus.removeAttribute("aria-hidden");
+          }
+        }
+        function fitAllExpertServiceRows() {
+          document.querySelectorAll(".expert-row-services.js-expert-svc-fit").forEach(fitExpertServiceRow);
+        }
+        var ro = new ResizeObserver(function () {
+          window.requestAnimationFrame(fitAllExpertServiceRows);
+        });
+        document.querySelectorAll(".expert-row-services.js-expert-svc-fit").forEach(function (el) {
+          ro.observe(el);
+        });
+        window.addEventListener("load", fitAllExpertServiceRows);
+        var expertsPanel = document.getElementById("tools_experts_panel");
+        if (expertsPanel) {
+          expertsPanel.addEventListener("shown.bs.collapse", fitAllExpertServiceRows);
+        }
+      })();
 
       document.querySelectorAll(".js-gallery-remove-btn").forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -3722,42 +4896,81 @@ $waSideCounterTitle = $waSideUnread > 0
     (function () {
       const inboxRoot = document.getElementById("adminInboxMessagesRoot");
 
-      function updateUnreadCounter(delta) {
-        const counter = document.querySelector(".admin-messages-counter");
-        if (!counter) return;
-        const txt = (counter.textContent || "").trim();
-        const parts = txt.split("/");
-        if (parts.length !== 2) return;
-        let unread = parseInt(parts[0], 10);
-        const total = parseInt(parts[1], 10);
-        if (Number.isNaN(unread) || Number.isNaN(total)) return;
-        unread = Math.max(0, unread + delta);
-        counter.textContent = unread + "/" + total;
-        if (unread === 0) {
-          counter.classList.remove("text-bg-warning");
-          counter.classList.add("text-bg-secondary");
-          counter.title = total + " en total";
+      function setInboxCounterFromServer(unread, total) {
+        var list = document.querySelectorAll(".admin-messages-counter");
+        if (!list.length) return;
+        var u = Math.max(0, parseInt(String(unread), 10) || 0);
+        var t = Math.max(0, parseInt(String(total), 10) || 0);
+        var title = u > 0 ? u + " sin leer de " + t : t + " en total";
+        var warn = u > 0;
+        list.forEach(function (counter) {
+          counter.textContent = u + "/" + t;
+          counter.title = title;
+          counter.classList.toggle("text-bg-warning", warn);
+          counter.classList.toggle("text-bg-secondary", !warn);
+        });
+      }
+
+      function syncThreadUnreadBadgeFromDom(row) {
+        var det = row.closest("details.admin-msg-thread");
+        if (!det) return;
+        var n = det.querySelectorAll(".message-row.is-unread").length;
+        var summaryMain = det.querySelector(".admin-msg-thread-summary-main");
+        var badge = det.querySelector(".js-thread-unread-badge");
+        if (n <= 0) {
+          if (badge && badge.parentElement) badge.parentElement.removeChild(badge);
+          return;
+        }
+        if (!badge && summaryMain) {
+          badge = document.createElement("span");
+          badge.className = "badge text-bg-warning js-thread-unread-badge";
+          badge.title = "Pasos sin leer en este hilo";
+          summaryMain.appendChild(badge);
+        }
+        if (badge) badge.textContent = String(n);
+      }
+
+      function syncGroupUnreadFromDom(row) {
+        var item = row.closest(".accordion-item.conv-group-row");
+        if (!item) return;
+        var n = item.querySelectorAll(".admin-inbox-threads .message-row.is-unread").length;
+        var badge = item.querySelector(".js-group-unread-badge");
+        if (n <= 0) {
+          item.classList.remove("is-unread");
+          if (badge && badge.parentElement) badge.parentElement.removeChild(badge);
+          return;
+        }
+        item.classList.add("is-unread");
+        if (badge) {
+          badge.textContent = String(n);
+          return;
+        }
+        var btn = item.querySelector(".conv-group-header .accordion-button");
+        if (!btn) return;
+        badge = document.createElement("span");
+        badge.className = "badge text-bg-warning js-group-unread-badge";
+        badge.title = "Mensajes sin leer en este grupo";
+        badge.textContent = String(n);
+        var primary = btn.querySelector(".badge.text-bg-primary");
+        if (primary) {
+          primary.insertAdjacentElement("afterend", badge);
         } else {
-          counter.classList.add("text-bg-warning");
-          counter.classList.remove("text-bg-secondary");
-          counter.title = unread + " sin leer de " + total;
+          btn.insertBefore(badge, btn.firstChild);
         }
       }
 
       function applyReadStateToRow(row) {
         if (!row || !row.classList.contains("is-unread")) return;
         row.classList.remove("is-unread");
-        // El badge "Nuevo" y el form "Marcar como leído" se ocultan por CSS al
-        // perder la clase .is-unread; el form "Marcar como sin leer" aparece
-        // automáticamente. No removemos nodos del DOM para permitir el toggle
-        // inverso sin recargar la página.
-        updateUnreadCounter(-1);
+        syncThreadUnreadBadgeFromDom(row);
+        syncGroupUnreadFromDom(row);
       }
 
       function applyUnreadStateToRow(row) {
         if (!row || row.classList.contains("is-unread")) return;
         row.classList.add("is-unread");
-        updateUnreadCounter(+1);
+        syncThreadUnreadBadgeFromDom(row);
+        syncGroupUnreadFromDom(row);
       }
 
       function postReadToggle(row, action) {
@@ -3783,6 +4996,9 @@ $waSideCounterTitle = $waSideUnread > 0
           }
           return r.json();
         }).then(function (data) {
+          if (data && typeof data.unread_total === "number" && typeof data.messages_total === "number") {
+            setInboxCounterFromServer(data.unread_total, data.messages_total);
+          }
           return !!(data && data.ok);
         }).catch(function (err) {
           console.error("Error en " + action + ":", err);
@@ -3856,6 +5072,9 @@ $waSideCounterTitle = $waSideUnread > 0
               console.error("mark_all_messages_read no actualizó la BD", data);
               return;
             }
+            if (typeof data.unread_total === "number" && typeof data.messages_total === "number") {
+              setInboxCounterFromServer(data.unread_total, data.messages_total);
+            }
             inboxRoot.querySelectorAll(".message-row.is-unread").forEach(applyReadStateToRow);
             if (markAllForm.form.parentElement) markAllForm.form.parentElement.removeChild(markAllForm.form);
           }).catch(function (err) {
@@ -3870,38 +5089,29 @@ $waSideCounterTitle = $waSideUnread > 0
       const waAccordion = document.getElementById("adminWhatsappAccordion");
       if (!waAccordion) return;
 
-      function updateWaUnreadCounter(delta) {
-        const counter = document.querySelector(".admin-whatsapp-counter");
-        if (!counter) return;
-        const txt = (counter.textContent || "").trim();
-        const parts = txt.split("/");
-        if (parts.length !== 2) return;
-        let unread = parseInt(parts[0], 10);
-        const total = parseInt(parts[1], 10);
-        if (Number.isNaN(unread) || Number.isNaN(total)) return;
-        unread = Math.max(0, unread + delta);
-        counter.textContent = unread + "/" + total;
-        if (unread === 0) {
-          counter.classList.remove("text-bg-warning");
-          counter.classList.add("text-bg-secondary");
-          counter.title = total + " en total";
-        } else {
-          counter.classList.add("text-bg-warning");
-          counter.classList.remove("text-bg-secondary");
-          counter.title = unread + " sin leer de " + total;
-        }
+      function setWaCounterFromServer(unread, total) {
+        var list = document.querySelectorAll(".admin-whatsapp-counter");
+        if (!list.length) return;
+        var u = Math.max(0, parseInt(String(unread), 10) || 0);
+        var t = Math.max(0, parseInt(String(total), 10) || 0);
+        var title = u > 0 ? u + " sin leer de " + t : t + " en total";
+        var warn = u > 0;
+        list.forEach(function (counter) {
+          counter.textContent = u + "/" + t;
+          counter.title = title;
+          counter.classList.toggle("text-bg-warning", warn);
+          counter.classList.toggle("text-bg-secondary", !warn);
+        });
       }
 
       function applyWaReadStateToRow(row) {
         if (!row || !row.classList.contains("is-unread")) return;
         row.classList.remove("is-unread");
-        updateWaUnreadCounter(-1);
       }
 
       function applyWaUnreadStateToRow(row) {
         if (!row || row.classList.contains("is-unread")) return;
         row.classList.add("is-unread");
-        updateWaUnreadCounter(+1);
       }
 
       function postWaReadToggle(row, action) {
@@ -3927,6 +5137,9 @@ $waSideCounterTitle = $waSideUnread > 0
           }
           return r.json();
         }).then(function (data) {
+          if (data && typeof data.unread_total === "number" && typeof data.messages_total === "number") {
+            setWaCounterFromServer(data.unread_total, data.messages_total);
+          }
           return !!(data && data.ok);
         }).catch(function (err) {
           console.error("Error en " + action + ":", err);
@@ -3992,6 +5205,9 @@ $waSideCounterTitle = $waSideUnread > 0
             return r.json();
           }).then(function (data) {
             if (!data || !data.ok) return;
+            if (typeof data.unread_total === "number" && typeof data.messages_total === "number") {
+              setWaCounterFromServer(data.unread_total, data.messages_total);
+            }
             waAccordion.querySelectorAll(".message-row.is-unread").forEach(function (row) {
               if (row.getAttribute("data-whatsapp-click-id")) {
                 applyWaReadStateToRow(row);
