@@ -9,12 +9,15 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - [Qué es y qué no es](#qué-es-y-qué-no-es)
 - [Requisitos](#requisitos)
 - [Instalación local (primera vez)](#instalación-local-primera-vez)
+- [Configuración `app_config.php` y módulos](#configuración-app_configphp-y-módulos)
 - [Crear una landing nueva con `provision.ps1`](#crear-una-landing-nueva-con-provisionps1)
 - [Borrar una landing local con `deprovision.ps1`](#borrar-una-landing-local-con-deprovisionps1)
 - [Despliegue a producción](#despliegue-a-producción)
-- [Portal de clientes](#portal-de-clientes)
+- [Panel admin (resumen)](#panel-admin-resumen)
+- [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)
 - [Recuperación de clave del admin](#recuperación-de-clave-del-admin)
 - [Estructura de archivos](#estructura-de-archivos)
+- [Base de datos (tablas)](#base-de-datos-tablas)
 - [Decisiones de arquitectura](#decisiones-de-arquitectura)
 - [Rol dual de este repo (template + instancia)](#rol-dual-de-este-repo-template--instancia)
 
@@ -29,7 +32,8 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - Un esqueleto que puedes clonar para crear varias landings independientes,
   cada una con su BD y su admin propios.
 - Un **portal de clientes** opcional: registro e inicio de sesión en la misma
-  landing (`index.php#area-cliente`), sesión aislada del admin (ver [Portal de clientes](#portal-de-clientes)).
+  landing (`index.php#area-cliente`), sesión aislada del admin (ver [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)).
+- Módulo **Expertos** (agenda en evolución): catálogo de expertos vinculado a servicios; se muestra u oculta con `features.expert_agenda` en `app_config.php` (ver [Configuración `app_config.php` y módulos](#configuración-app_configphp-y-módulos)).
 
 **No es:**
 
@@ -74,10 +78,9 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
      compartido el host **no** suele ser `127.0.0.1`; cópialo del panel del proveedor).
    - `mail_config.php` → credenciales SMTP (Gmail con contraseña de aplicación u otro).
    - `admin_bootstrap.php` → correo real y clave inicial del admin.
-   - Opcional: si copiaste `app_config.php`, ajusta `public_base_url` si en el servidor
-     la URL debe ser fija (proxy, dominio canónico). Si no existe el archivo, la base
-     se infiere en cada petición. Tras iniciar sesión, el panel muestra las rutas en
-     el acordeón **Rutas (landing y admin)**.
+   - Opcional: copia `app_config.example.php` → `app_config.php` para fijar `public_base_url`
+     y los flags `features` (WhatsApp, bandejas, expertos, etc.). Si no existe el archivo, la base
+     se infiere en cada petición y los módulos omitidos cuentan como activos. Tras iniciar sesión, el panel muestra las rutas en el acordeón **Rutas (landing y admin)**.
 
 4. Crear la BD vacía en MySQL (con XAMPP/phpMyAdmin) con el nombre que
    pusiste en `db_config.php`. Por ejemplo:
@@ -105,6 +108,22 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 > Las **siguientes** landings en el mismo PC se crean con `provision.ps1` en
 > `C:\xampp\htdocs\pagina-<slug>\` (esa carpeta **no** está dentro del git de
 > `pag-template` salvo que tú inicialices allí otro repo; ver [Rol dual](#rol-dual-de-este-repo-template--instancia)).
+
+## Configuración `app_config.php` y módulos
+
+Opcional: copia `app_config.example.php` → `app_config.php` y ajusta. Si **no** existe `app_config.php`, la URL pública se **calcula en cada petición** y los módulos listados en `features` se consideran **activos** (comportamiento por defecto).
+
+| Clave | Uso |
+| --- | --- |
+| `public_base_url` | URL base fija (sin `/` final). Útil en producción con proxy, subcarpeta o SSL terminado delante. Vacío = autodetección. |
+| `log_public_base_url` | Si es `true`, escribe trazas de depuración de la URL resuelta en el log de PHP. Solo para diagnosticar; desactivar en producción. |
+| `features.contact_whatsapp` | Muestra el botón «Escribir por WhatsApp» en el formulario de contacto y el flujo asociado. |
+| `features.client_inbox` | Bandeja **Mis mensajes** en el área cliente y envíos enlazados (`send.php` con `return_anchor=area-cliente`). |
+| `features.admin_inbox` | Acordeón **Mensajes** en el admin (agrupación por cliente o por correo, respuestas, SMTP al visitante según configuración). |
+| `features.admin_whatsapp_clicks` | Acordeón **Clics WhatsApp** en el admin (registro de intenciones de contacto por WhatsApp). |
+| `features.expert_agenda` | Acordeón **Expertos** en el admin (tablas `experts` / `expert_services`; alta/edición y listado). |
+
+Los valores por defecto están en `app_config.example.php`. Cada landing provisionada **no** recibe tu `app_config.php` local (el script no lo copia); si la nueva instalación lo necesita, cópialo a mano desde el ejemplo.
 
 ## Crear una landing nueva con `provision.ps1`
 
@@ -153,18 +172,19 @@ al `.ps1`.
 
 Esto crea de un solo golpe:
 
-- Carpeta `C:\xampp\htdocs\pagina-juan\` con el código copiado desde el template
-  (sin `.git`, `uploads`, configs sensibles del template, etc.). **Sí se copia**
-  `.github/workflows/` (p. ej. `deploy.yml`) para que el clon local pueda
-  versionarse con el mismo CI/FTP que el template.
+- Carpeta `C:\xampp\htdocs\pagina-juan\` con **la misma aplicación** que el template: todo el código PHP, `partials/`, `tools/` (incl. provisioning y scripts como `seed_demo_conversations.php`), `styles.css`, `script.js`, `.github/workflows/`, `setup.sql`, `*.example.php`, etc.
+- **No** se copian (se regeneran o son locales): `db_config.php`, `mail_config.php`, `admin_bootstrap.php`, `app_config.php` del template, carpetas `uploads/`, `.git/`, `var/` (logs locales), ni basura `*.log`, `*.bak`, `*.tmp`.
+- Tras la copia se eliminan del destino los `*.sql` sueltos que hubiera en el template, **dejando solo** `setup.sql` (esquema de referencia).
 - BD MySQL `pagina_juan` **vacía** (utf8mb4): el nombre de la BD usa el mismo
   *slug* con guion bajo (`pagina_<slug>`); la carpeta usa guion (`pagina-<slug>`).
   El esquema lo crea `db.php` al abrir `admin.php`.
 - `db_config.php`, `mail_config.php`, `admin_bootstrap.php` generados dentro de
-  la nueva carpeta.
+  la nueva carpeta (SMTP interactivo salvo `-NoSmtp`).
 - Por defecto intenta abrir `http://localhost/pagina-juan/admin.php` para
   sembrar tablas y admin; con **`-SkipAutoSeed`** ese paso lo haces tú en el
   navegador.
+
+Si la nueva landing necesita `app_config.php` (URL fija o flags de módulos), cópialo desde `app_config.example.php` en la carpeta creada y edítalo allí.
 
 Luego abres `http://localhost/pagina-juan/admin.php` (si no lo hizo el script),
 inicias sesión y borras `admin_bootstrap.php` igual que en la instalación
@@ -350,31 +370,45 @@ Si el repo tiene auto-deploy por FTP (`.github/workflows/deploy.yml`), cada
 solo distinto `FTP_SERVER_DIR` si compartes el mismo FTP). Para un monorepo,
 haría falta un workflow con matrix u otros jobs (no incluido por defecto).
 
-## Portal de clientes
+## Panel admin (resumen)
+
+Todo en **`admin.php`**. Los acordeones de **Herramientas** siguen un orden por responsabilidad (CSS `order`): **Configuración general** → **Credenciales** → **Rutas** → **Servicios** → **Expertos** (si `expert_agenda`) → **Portal de clientes**.
+
+| Bloque | Contenido principal |
+| --- | --- |
+| **Rutas** | URLs públicas (landing, admin, área cliente), enlaces de prueba. |
+| **Portal de clientes** | Tabla de cuentas: pastilla **Cuenta** (activo/inactivo) y pastilla **Correo SMTP** / **Solo web** son **botones**: muestran el estado y al pulsar alternan (POST con **flash + redirección** a `admin.php#admin-tool-clients` para que el acordeón se vuelva a abrir). **Eliminar** sigue aparte. Columna `email_notify_outbound`: si está desactivada, las respuestas del admin no intentan enviar copia SMTP al cliente (solo bandeja web). |
+| **Servicios** | Catálogo, alta en panel desplegable (misma UI que edición vacía), carrusel/galería por servicio, iconos Font Awesome. |
+| **Expertos** | Si el módulo está activo: listado, ficha, alta con formulario alineado a la ficha, vínculo `expert_services` ↔ `services`. |
+| **Mensajes** | Si `admin_inbox`: hilos agrupados por `client_id` o por correo; respuestas; envío SMTP al visitante según `mail_config` y validaciones. |
+| **Clics WhatsApp** | Si `admin_whatsapp_clicks`: registro de clics/intenciones. |
+| **Configuración / Credenciales** | Textos del sitio, logo, admin de panel, etc. |
+
+Vista amplia de bandeja: query `?inbox=1` en el admin (documentado en la propia UI).
+
+## Cliente público, portal y mensajes
 
 Cada landing puede tener **cuentas de cliente** (tabla `clients`). El visitante se **registra
 e inicia sesión en la propia landing**, sección **Área de clientes** (`#area-cliente` en
-`index.php`): es la misma web pública, con bloques extra cuando hay sesión (por ejemplo
-datos pre-rellenados en el formulario de contacto y el panel **Mis mensajes** con el historial
-de contacto, **seguimientos** enlazados (`in_reply_to` en `contact_messages`) y las respuestas que deje el admin). La sesión usa otra cookie y nombre
-(`client_session_*` en `client_portal_lib.php`), con el mismo aislamiento por carpeta que el admin.
+`index.php`): misma página pública, con bloques extra cuando hay sesión (datos pre-rellenados en contacto, **Mis mensajes** si `client_inbox`, **seguimientos** con `in_reply_to` en `contact_messages`, respuestas del admin). Cookie y prefijo de sesión propios (`client_session_*` en `client_portal_lib.php`).
 
 | Archivo / ruta | Uso |
 | --- | --- |
-| `index.php` + `#area-cliente` | Registro, login, mensajes (nueva consulta y seguimientos) y vista “modo cliente” en la misma página. |
-
-En el panel (**admin.php** → bandeja lateral **Mensajes**), las entradas se **agrupan por cliente** (`client_id`) o, si el mensaje no llevaba sesión de portal, **por correo** del visitante; dentro de cada grupo se muestran los envíos en orden de tiempo.
+| `index.php` + `#area-cliente` | Registro, login, mensajes (nueva consulta y seguimientos) y vista «modo cliente». |
+| `client_inbox_helpers.php` | Incluido desde `index.php`: helpers de hilo / bandeja cliente (no endpoint directo). |
+| `send.php` | Envío del formulario de contacto y seguimientos; puede volver con `return_anchor=area-cliente`. |
 | `client_login.php` / `client_dashboard.php` | Redirigen a la landing (compatibilidad con enlaces antiguos). |
-| `client_logout.php` | Cierra la sesión de cliente y vuelve a la landing. |
+| `client_logout.php` | Cierra sesión de cliente y vuelve a la landing. |
+| `client_portal_lib.php` | Sesión, registro, login, validaciones de clave. |
 
-El **administrador** no crea usuarios manualmente: solo **modera** (activar/desactivar o
-eliminar) en el panel → acordeón **Portal de clientes**. La URL del portal también aparece
-en **Rutas** (`app_client_portal_url()` en `app_urls.php`).
+En el admin (**Mensajes**), las entradas se **agrupan por cliente** (`client_id`) o, si el mensaje no llevaba sesión de portal, **por correo** del visitante; dentro de cada grupo, envíos en orden temporal. Respuestas en `contact_message_replies`.
+
+El administrador **no** crea usuarios a mano: modera en **Portal de clientes**. La URL del portal se obtiene con `app_client_portal_url()` (`app_urls.php`) y también aparece en **Rutas**.
 
 Política de clave al registrarse: al menos **10 caracteres**, **mayúscula**, **minúscula** y **número**
-(igual que la recuperación de clave del admin). Los clientes **no** tienen “olvidé mi clave” en esta versión.
+(igual que la recuperación de clave del admin). Los clientes **no** tienen «olvidé mi clave» en esta versión.
 
-La tabla `clients` se crea con `db.php`; también figura en `setup.sql` para import manual.
+Esquema `setup.sql` y demás: `db.php` en la primera carga; referencia SQL en `setup.sql` (núcleo de contenido y tablas principales; algunas tablas solo las garantiza `db.php`, p. ej. `admin_password_resets`).
 
 ## Recuperación de clave del admin
 
@@ -404,49 +438,59 @@ para no revelar qué correos son admins.
 
 ```
 pag-template/
-├── admin.php                  Panel de admin (configuración, servicios, mensajes, portal de clientes, reset).
-├── index.php                  Landing pública + registro/login clientes (#area-cliente) y contacto.
-├── app_urls.php               URLs públicas (landing, admin, portal clientes); respeta app_config opcional.
-├── send.php                   Endpoint del formulario de contacto.
-├── client_portal_lib.php      Sesión, registro, login y helpers del portal de clientes.
-├── client_login.php           Redirección a la landing (#area-cliente); compatibilidad.
-├── client_dashboard.php       Redirección a la landing (#area-cliente); compatibilidad.
-├── client_logout.php          Cierre de sesión de cliente.
-├── db.php                     Conexión + auto-init del esquema + bootstrap del admin.
-├── smtp_mail.php              Cliente SMTP minimalista (sin dependencias).
-├── setup.sql                  Esquema + seed de referencia (import opcional; ver cabecera del archivo).
-├── styles.css, script.js      Frontend.
-├── uploads/                   Imágenes subidas desde el admin (no versionado).
-│
+├── admin.php                  Panel único: config, rutas, servicios, galerías, mensajes, portal clientes, expertos (flag), WhatsApp (flag), reset.
+├── index.php                  Landing pública + #area-cliente (portal), contacto, carruseles.
+├── send.php                   POST del formulario de contacto / seguimientos.
+├── contact_click_log.php      Registro auxiliar de clics (según flujo).
+├── app_urls.php               Resolución de URLs (respeta app_config opcional).
+├── app_config.example.php     Plantilla de app_config (features, public_base_url).
+├── db.php                     Conexión MySQL, migraciones ligeras y creación de tablas.
+├── setup.sql                  Esquema de referencia + seed; import opcional (phpMyAdmin).
+├── smtp_mail.php              Envío SMTP sin dependencias externas.
+├── client_portal_lib.php      Sesión y registro del portal de clientes.
+├── client_inbox_helpers.php   Helpers de bandeja/hilo cliente (require desde index).
+├── client_login.php           Redirección a #area-cliente (compatibilidad).
+├── client_dashboard.php       Redirección a #area-cliente (compatibilidad).
+├── client_logout.php          Cierre de sesión cliente.
+├── palette_picker.php         Selector de paleta (include desde admin).
+├── partials/
+│   └── service_carousel.php   Marca parcial carrusel de servicio (si aplica).
+├── styles.css, script.js      Estilos y JS de la landing (y trozos usados por admin según página).
+├── index.html                 Estático opcional en raíz (si lo usas en tu hosting).
 ├── tools/
-│   ├── provision.ps1          Script para crear nuevas landings en local
-│   ├── provision.cmd          Lanzador: PowerShell + pause (doble clic / ventana que no desaparece)
-│   └── deprovision.ps1        Script para borrar landings de prueba
-│                              (versionado pero excluido del FTP deploy).
-│
-├── .github/
-│   └── workflows/
-│       └── deploy.yml         CI: auto-deploy por FTP de la instancia activa.
-│
+│   ├── provision.ps1          Clona la misma app a pagina-<slug> + BD + configs.
+│   ├── provision.cmd          Lanzador con pause.
+│   ├── deprovision.ps1        Borra carpeta + BD local.
+│   └── seed_demo_conversations.php  Utilidad local para datos demo (no producción).
+├── .github/workflows/deploy.yml   CI FTP (excluye tools/, secretos, etc.).
 ├── *.example.php              Plantillas públicas de configuración.
-├── db_config.php              [GITIGNORED] Credenciales MySQL del entorno.
-├── mail_config.php            [GITIGNORED] Credenciales SMTP del entorno.
-├── admin_bootstrap.php        [GITIGNORED] Credenciales iniciales del primer admin.
-├── app_config.php             [GITIGNORED] Opcional: public_base_url para producción/proxy.
+├── db_config.php              [GITIGNORED] MySQL.
+├── mail_config.php            [GITIGNORED] SMTP.
+├── admin_bootstrap.php        [GITIGNORED] Primer admin (borrar tras login).
+├── app_config.php             [GITIGNORED] Opcional: URL y features.
+├── uploads/                   [GITIGNORED] Medios subidos desde admin.
+├── var/                       [GITIGNORED] Logs locales (no se copia al provisionar).
 └── README.md                  Este archivo.
 ```
 
-Tablas en MySQL:
+## Base de datos (tablas)
 
-| Tabla                    | Para qué                                    |
-| ------------------------ | ------------------------------------------- |
-| `admins`                 | Cuentas del panel admin (1 por landing).    |
-| `clients`                | Cuentas del portal de clientes (varias por landing). |
-| `admin_password_resets`  | Tokens de recuperación de clave (sha256).   |
-| `site_settings`          | Textos del sitio (1 fila, id=1).            |
-| `services`               | Cards de servicios mostrados en la landing. |
-| `service_gallery`        | Imágenes adicionales por servicio.          |
-| `contact_messages`       | Mensajes del formulario y seguimientos del cliente; `client_id` si hay sesión; `in_reply_to` enlaza un seguimiento a un mensaje anterior. |
+Creadas o alineadas por **`db.php`** al cargar la app; `setup.sql` refleja el modelo para import manual. Relaciones importantes: `service_gallery.service_id` → `services.id`; `expert_services` → `experts` y `services`; respuestas → `contact_messages`.
+
+| Tabla | Para qué |
+| --- | --- |
+| `admins` | Cuentas del panel (login admin). |
+| `admin_password_resets` | Tokens hash de recuperación de clave admin. |
+| `clients` | Cuentas del portal (`email`, hash, `display_name`, `is_active`, `email_notify_outbound`, …). |
+| `client_registration_tokens` | Tokens de verificación en flujos de registro. |
+| `site_settings` | Textos y datos globales del sitio (fila id=1). |
+| `services` | Servicios ofertados (título, descripción, icono, imagen, orden, activo). |
+| `service_gallery` | Imágenes del carrusel por servicio. |
+| `contact_messages` | Mensajes y seguimientos; `client_id`, `in_reply_to`, flags de lectura y «respuesta no vista» cliente. |
+| `contact_message_replies` | Cuerpo de respuestas del admin vinculadas a un mensaje. |
+| `contact_whatsapp_clicks` | Registro de interacciones tipo WhatsApp (según módulo). |
+| `experts` | Ficha de experto (nombre, contacto, notas, orden, activo). |
+| `expert_services` | N:M expertos ↔ servicios. |
 
 ## Decisiones de arquitectura
 

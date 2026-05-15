@@ -4,7 +4,10 @@
 
 .DESCRIPTION
   Automatiza los pasos manuales de "Alternativa 1" (single-tenant por carpeta + BD propia):
-    1. Copia la carpeta template -> pagina-<Slug>\ (sin uploads, logs ni configs).
+    1. Copia la carpeta template -> pagina-<Slug>\ con robocopy (/E): misma aplicacion
+       (PHP, partials, tools, .github, CSS, JS, setup.sql, etc.), excluyendo solo
+       secretos (db_config, mail_config, admin_bootstrap, app_config), uploads, .git,
+       var (logs locales) y basura *.log/*.bak/*.tmp.
     2. Crea la BD MySQL con CHARACTER SET utf8mb4.
     3. Pide credenciales SMTP de forma interactiva y genera mail_config.php.
     4. Genera db_config.php apuntando a la nueva BD.
@@ -245,11 +248,12 @@ Write-Host ""
 
 # --- Paso 1: copiar template ----------------------------------------
 
-Write-Step 1 6 "Copiando template -> $projectName\"
+Write-Step 1 6 "Copiando template -> $projectName\ (misma aplicacion: PHP, JS, CSS, partials, tools, .github, etc.)"
 # Capturar stdout y stderr (robocopy suele escribir errores en stderr). ">" solo captura stdout.
+# Excluir solo secretos / entorno local / artefactos; el resto es copia fiel del template.
 $robocopyOutput = @(& robocopy $templatePath $newPath /E `
-    /XD "uploads" ".git" `
-    /XF "db_config.php" "mail_config.php" "admin_bootstrap.php" "*.log" "*.bak" "*.tmp" `
+    /XD "uploads" ".git" "var" `
+    /XF "db_config.php" "mail_config.php" "admin_bootstrap.php" "app_config.php" "*.log" "*.bak" "*.tmp" `
     /NFL /NDL /NJH /NJS /NP 2>&1)
 $rcExit = $LASTEXITCODE
 # Robocopy considera 0-7 como exito; >=8 son errores reales.

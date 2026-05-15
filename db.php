@@ -225,6 +225,7 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   mensaje TEXT NOT NULL,
   sent_to VARCHAR(180) NOT NULL,
   is_read TINYINT(1) NOT NULL DEFAULT 0,
+  client_has_unseen_reply TINYINT(1) NOT NULL DEFAULT 0,
   client_id INT NULL DEFAULT NULL,
   in_reply_to INT NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -296,6 +297,22 @@ if ($messagesSubjectColumnResult && $messagesSubjectColumnResult->num_rows === 1
 }
 if (!$messagesHasSubject) {
     $conn->query("ALTER TABLE contact_messages ADD COLUMN subject VARCHAR(200) NOT NULL DEFAULT '' AFTER servicio");
+}
+
+$messagesHasClientUnseenReply = false;
+$messagesClientUnseenReplyColumnResult = $conn->query("
+SELECT 1
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'contact_messages'
+  AND COLUMN_NAME = 'client_has_unseen_reply'
+LIMIT 1
+");
+if ($messagesClientUnseenReplyColumnResult && $messagesClientUnseenReplyColumnResult->num_rows === 1) {
+    $messagesHasClientUnseenReply = true;
+}
+if (!$messagesHasClientUnseenReply) {
+    $conn->query("ALTER TABLE contact_messages ADD COLUMN client_has_unseen_reply TINYINT(1) NOT NULL DEFAULT 0 AFTER is_read");
 }
 
 $clientsHasEmailNotifyOutbound = false;
@@ -405,6 +422,70 @@ if (!$sgHasImageDesc) {
     $conn->query("ALTER TABLE service_gallery ADD COLUMN image_description TEXT NULL AFTER image_title");
 }
 $conn->query("UPDATE service_gallery SET image_title = caption WHERE (image_title IS NULL OR TRIM(image_title) = '') AND caption IS NOT NULL AND TRIM(caption) != ''");
+
+$conn->query("
+CREATE TABLE IF NOT EXISTS experts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  display_name VARCHAR(180) NOT NULL,
+  email VARCHAR(180) DEFAULT NULL,
+  phone VARCHAR(48) DEFAULT NULL,
+  notes TEXT NULL,
+  sort_order INT NOT NULL DEFAULT 999,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_experts_active_sort (is_active, sort_order, id)
+)");
+
+$exHasEmail = false;
+$exEmailCol = $conn->query("
+SELECT 1 FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'experts' AND COLUMN_NAME = 'email' LIMIT 1
+");
+if ($exEmailCol && $exEmailCol->num_rows === 1) {
+    $exHasEmail = true;
+}
+if (!$exHasEmail) {
+    $conn->query("ALTER TABLE experts ADD COLUMN email VARCHAR(180) DEFAULT NULL AFTER display_name");
+}
+$exHasPhone = false;
+$exPhoneCol = $conn->query("
+SELECT 1 FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'experts' AND COLUMN_NAME = 'phone' LIMIT 1
+");
+if ($exPhoneCol && $exPhoneCol->num_rows === 1) {
+    $exHasPhone = true;
+}
+if (!$exHasPhone) {
+    $conn->query("ALTER TABLE experts ADD COLUMN phone VARCHAR(48) DEFAULT NULL AFTER email");
+}
+$exHasNotes = false;
+$exNotesCol = $conn->query("
+SELECT 1 FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'experts' AND COLUMN_NAME = 'notes' LIMIT 1
+");
+if ($exNotesCol && $exNotesCol->num_rows === 1) {
+    $exHasNotes = true;
+}
+if (!$exHasNotes) {
+    $conn->query("ALTER TABLE experts ADD COLUMN notes TEXT NULL AFTER phone");
+}
+
+$conn->query("
+CREATE TABLE IF NOT EXISTS expert_services (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  expert_id INT NOT NULL,
+  service_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_expert_service (expert_id, service_id),
+  INDEX idx_expert_services_expert (expert_id),
+  INDEX idx_expert_services_service (service_id),
+  CONSTRAINT fk_expert_services_expert
+    FOREIGN KEY (expert_id) REFERENCES experts(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_expert_services_service
+    FOREIGN KEY (service_id) REFERENCES services(id)
+    ON DELETE CASCADE
+)");
 
 $conn->query("
 INSERT IGNORE INTO site_settings (
