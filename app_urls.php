@@ -10,6 +10,8 @@ declare(strict_types=1);
  *   Landing pública  → index.php
  *   Panel admin      → admin.php
  *   Formulario       → send.php (POST desde la landing)
+ *   Agenda / citas   → agenda.php (tabla de huecos; requiere features.expert_agenda)
+ *   Reserva agenda   → agenda_book.php (POST desde agenda.php o landing)
  *   Login clientes   → index.php#area-cliente (misma página tras sesión)
  *
  * Módulos opcionales: `app_feature_enabled()` lee `features` en app_config.php

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS site_settings (
   contact_whatsapp VARCHAR(32) DEFAULT NULL,
   contact_whatsapp_country_code VARCHAR(8) DEFAULT NULL,
   footer_text VARCHAR(180) NOT NULL,
-  logo_image_path VARCHAR(255) DEFAULT NULL
+  logo_image_path VARCHAR(255) DEFAULT NULL,
+  agenda_show_expert_names TINYINT(1) NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS services (
@@ -138,6 +139,60 @@ CREATE TABLE IF NOT EXISTS expert_services (
   CONSTRAINT fk_expert_services_service
     FOREIGN KEY (service_id) REFERENCES services(id)
     ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expert_availability (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  expert_id INT NOT NULL,
+  weekday TINYINT NOT NULL COMMENT '0=Dom..6=Sab (PHP date w)',
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_expert_availability_expert (expert_id),
+  INDEX idx_expert_availability_lookup (expert_id, weekday, start_time),
+  CONSTRAINT fk_expert_availability_expert
+    FOREIGN KEY (expert_id) REFERENCES experts(id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expert_availability_date (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  expert_id INT NOT NULL,
+  calendar_date DATE NOT NULL,
+  is_closed TINYINT(1) NOT NULL DEFAULT 0,
+  start_time TIME NULL,
+  end_time TIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_expert_av_date_lookup (expert_id, calendar_date),
+  CONSTRAINT fk_expert_av_date_expert
+    FOREIGN KEY (expert_id) REFERENCES experts(id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS expert_appointments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  expert_id INT NOT NULL,
+  service_id INT NOT NULL,
+  starts_at DATETIME NOT NULL,
+  ends_at DATETIME NOT NULL,
+  guest_name VARCHAR(180) NOT NULL,
+  guest_email VARCHAR(180) NOT NULL,
+  guest_phone VARCHAR(48) NOT NULL DEFAULT '',
+  notes TEXT NULL,
+  client_id INT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'confirmed',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_expert_appt_start (expert_id, starts_at),
+  INDEX idx_expert_appt_window (expert_id, status, starts_at, ends_at),
+  CONSTRAINT fk_expert_appt_expert
+    FOREIGN KEY (expert_id) REFERENCES experts(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_expert_appt_service
+    FOREIGN KEY (service_id) REFERENCES services(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_expert_appt_client
+    FOREIGN KEY (client_id) REFERENCES clients(id)
+    ON DELETE SET NULL
 );
 
 INSERT INTO site_settings (id, person_name, brand_name, hero_title, hero_intro, about_text, contact_intro, contact_email, footer_text)

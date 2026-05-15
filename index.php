@@ -325,6 +325,19 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 }
 
 $clientFlash = client_take_flash();
+$agendaFlash = null;
+if (isset($_SESSION["agenda_flash"]) && is_array($_SESSION["agenda_flash"])) {
+    $rawAgendaFlash = $_SESSION["agenda_flash"];
+    unset($_SESSION["agenda_flash"]);
+    $agm = trim((string)($rawAgendaFlash["msg"] ?? ""));
+    if ($agm !== "") {
+        $agt = (string)($rawAgendaFlash["type"] ?? "info");
+        if (!in_array($agt, ["success", "danger", "warning", "info"], true)) {
+            $agt = "info";
+        }
+        $agendaFlash = ["type" => $agt, "msg" => $agm];
+    }
+}
 $clientContactStatus = (string)($_GET["client_contact"] ?? "");
 $clientContactReason = (string)($_GET["reason"] ?? "");
 $clientUser = null;
@@ -627,6 +640,31 @@ if (isset($_GET["client_inbox_poll"]) && (string)$_GET["client_inbox_poll"] === 
     exit;
 }
 
+$publicExpertAgenda = app_feature_enabled("expert_agenda");
+$agendaBookableServices = [];
+$agendaSlots = [];
+$agendaSlotTable = ["experts" => [], "expert_order" => [], "rows" => []];
+$agendaSelectedServiceId = 0;
+$agendaSelectedDate = "";
+$agendaMinDate = "";
+$agendaMaxDate = "";
+$agendaWeekdayLabels = [];
+if ($publicExpertAgenda) {
+    require_once __DIR__ . "/agenda_public_bootstrap.php";
+    $agendaState = agenda_public_load_state($conn, null, false);
+    $publicExpertAgenda = $agendaState["publicExpertAgenda"];
+    $agendaBookableServices = $agendaState["agendaBookableServices"];
+    $agendaSlots = $agendaState["agendaSlots"];
+    $agendaSlotTable = $agendaState["agendaSlotTable"];
+    $agendaSelectedServiceId = $agendaState["agendaSelectedServiceId"];
+    $agendaSelectedDate = $agendaState["agendaSelectedDate"];
+    $agendaMinDate = $agendaState["agendaMinDate"];
+    $agendaMaxDate = $agendaState["agendaMaxDate"];
+    $agendaWeekdayLabels = $agendaState["agendaWeekdayLabels"];
+    $agendaShowExpertNames = $agendaState["agendaShowExpertNames"];
+    $agendaSelectedServiceTitle = $agendaState["agendaSelectedServiceTitle"];
+}
+
 $stylesVersion = (string)(@filemtime(__DIR__ . "/styles.css") ?: time());
 $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
 ?>
@@ -672,6 +710,9 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <a href="#inicio"><i class="fa-solid fa-house"></i> Inicio</a>
         <a href="#sobre-mi"><i class="fa-solid fa-user"></i> Sobre mí</a>
         <a href="#servicios"><i class="fa-solid fa-briefcase"></i> Servicios</a>
+        <?php if ($publicExpertAgenda): ?>
+          <a href="agenda.php"><i class="fa-solid fa-calendar-check"></i> Citas</a>
+        <?php endif; ?>
         <a href="#contacto"><i class="fa-solid fa-envelope"></i> Contacto</a>
         <?php if ($clientUser !== null): ?>
           <a href="#area-cliente" class="nav-client-active"><i class="fa-solid fa-user-check"></i> Mi cuenta</a>
@@ -1211,6 +1252,11 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         </div>
       </div>
     </section>
+
+    <?php if ($publicExpertAgenda): ?>
+      <?php $agendaSectionCompact = true; require __DIR__ . "/partials/agenda_public_section.php"; ?>
+    <?php endif; ?>
+
 
     <section id="contacto" class="section reveal">
       <div class="container contact-grid">
