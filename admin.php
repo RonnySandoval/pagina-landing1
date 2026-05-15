@@ -32,12 +32,28 @@ require_once __DIR__ . "/smtp_mail.php";
 $adminInboxUi = app_feature_enabled("admin_inbox");
 $adminWhatsappClicksUi = app_feature_enabled("admin_whatsapp_clicks");
 $adminExpertAgendaUi = app_feature_enabled("expert_agenda");
+if ($adminExpertAgendaUi) {
+    require_once __DIR__ . "/agenda_lib.php";
+}
 
 $adminAssetStylesVer = is_file(__DIR__ . "/styles.css") ? (string) filemtime(__DIR__ . "/styles.css") : "1";
 $adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DIR__ . "/script.js") : "1";
 
 function h(string $value): string {
     return htmlspecialchars($value, ENT_QUOTES, "UTF-8");
+}
+
+/** URL de ficha experto: edit = datos; schedule = horario y disponibilidad. */
+function admin_expert_page_url(int $expertId, string $view = "edit", string $weekStart = ""): string
+{
+    $view = $view === "schedule" ? "schedule" : "edit";
+    $q = "expert_id=" . $expertId . "&expert_view=" . rawurlencode($view);
+    if ($weekStart !== "") {
+        $q .= "&expert_week=" . rawurlencode($weekStart);
+    }
+    $hash = $view === "schedule" ? "admin-expert-schedule" : "admin-expert-edit";
+
+    return "admin.php?" . $q . "#" . $hash;
 }
 
 /**
@@ -1074,8 +1090,14 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
                         $insEs->close();
                     }
                     if ($error === "") {
-                        admin_set_flash("success", "Experto creado.");
-                        header("Location: admin.php?expert_id=" . $newExpertId . "#admin-tools-experts");
+                        agenda_replace_mon_fri_single_window(
+                            $conn,
+                            $newExpertId,
+                            AGENDA_DEFAULT_MON_FRI_START,
+                            AGENDA_DEFAULT_MON_FRI_END
+                        );
+                        admin_set_flash("success", "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.");
+                        header("Location: " . admin_expert_page_url($newExpertId, "edit"));
                         exit;
                     }
                 }
@@ -1171,7 +1193,7 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
             }
             if ($error === "") {
                 admin_set_flash("success", "Experto actualizado.");
-                header("Location: admin.php?expert_id=" . $eid . "#admin-tools-experts");
+                header("Location: " . admin_expert_page_url($eid, "edit"));
                 exit;
             }
         }
@@ -1187,6 +1209,336 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
         $stmt->close();
         admin_set_flash("success", "Experto eliminado.");
         header("Location: admin.php#admin-tools-experts");
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_add_availability") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $wd = (int)($_POST["weekday"] ?? -1);
+    $startRaw = trim((string)($_POST["start_time"] ?? ""));
+    $endRaw = trim((string)($_POST["end_time"] ?? ""));
+    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
+    if ($chk === false || $eid <= 0) {
+        $error = "Experto no válido.";
+    } else {
+        $chk->bind_param("i", $eid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $chk->close();
+        if (!$chkRes || $chkRes->num_rows !== 1) {
+            $error = "Ese experto no existe.";
+        } elseif ($wd < 0 || $wd > 6) {
+            $error = "El día de la semana no es válido.";
+        } else {
+            $tStart = DateTimeImmutable::createFromFormat("H:i", $startRaw);
+            if ($tStart === false) {
+                $tStart = DateTimeImmutable::createFromFormat("H:i:s", $startRaw);
+            }
+            $tEnd = DateTimeImmutable::createFromFormat("H:i", $endRaw);
+            if ($tEnd === false) {
+                $tEnd = DateTimeImmutable::createFromFormat("H:i:s", $endRaw);
+            }
+            if ($tStart === false || $tEnd === false) {
+                $error = "Indica hora de inicio y fin con formato HH:MM.";
+            } elseif ($tEnd <= $tStart) {
+                $error = "La hora de fin debe ser posterior a la de inicio.";
+            } else {
+                $startSql = $tStart->format("H:i:s");
+                $endSql = $tEnd->format("H:i:s");
+                $ins = $conn->prepare(
+                    "INSERT INTO expert_availability (expert_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)"
+                );
+                if ($ins === false) {
+                    $error = "No se pudo guardar la franja.";
+                } else {
+                    $ins->bind_param("iiss", $eid, $wd, $startSql, $endSql);
+                    if (!$ins->execute()) {
+                        $error = "No se pudo guardar la franja.";
+                    }
+                    $ins->close();
+                }
+                if ($error === "") {
+                    admin_set_flash("success", "Franja de disponibilidad añadida.");
+                    header("Location: " . admin_expert_page_url($eid, "schedule"));
+                    exit;
+                }
+            }
+        }
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_add_availability_date") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $cal = trim((string)($_POST["calendar_date"] ?? ""));
+    $mode = trim((string)($_POST["date_av_mode"] ?? ""));
+    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
+    if ($chk === false || $eid <= 0) {
+        $error = "Experto no válido.";
+    } else {
+        $chk->bind_param("i", $eid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $chk->close();
+        if (!$chkRes || $chkRes->num_rows !== 1) {
+            $error = "Ese experto no existe.";
+        }
+    }
+    $dtCal = null;
+    if ($error === "") {
+        $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+        $dtCal = DateTimeImmutable::createFromFormat("Y-m-d", $cal, $tz);
+        if ($dtCal === false) {
+            $error = "Fecha no válida.";
+        } else {
+            $today0 = (new DateTimeImmutable("now", $tz))->setTime(0, 0, 0);
+            $maxD = $today0->modify("+" . AGENDA_DATE_EXCEPTION_MAX_DAYS . " days");
+            if ($dtCal < $today0 || $dtCal > $maxD) {
+                $error = "La fecha debe estar entre hoy y " . (string)AGENDA_DATE_EXCEPTION_MAX_DAYS . " días a futuro.";
+            }
+        }
+    }
+    if ($error === "" && ($mode !== "closed" && $mode !== "window")) {
+        $error = "Indica si el día queda cerrado o con franjas horarias concretas.";
+    }
+    if ($error === "" && $dtCal !== null && $mode === "closed") {
+        $calSql = $dtCal->format("Y-m-d");
+        $delAll = $conn->prepare("DELETE FROM expert_availability_date WHERE expert_id = ? AND calendar_date = ?");
+        if ($delAll === false) {
+            $error = "No se pudo actualizar la agenda por fecha.";
+        } else {
+            $delAll->bind_param("is", $eid, $calSql);
+            if (!$delAll->execute()) {
+                $error = "No se pudo actualizar la agenda por fecha.";
+            }
+            $delAll->close();
+        }
+        if ($error === "") {
+            $insC = $conn->prepare(
+                "INSERT INTO expert_availability_date (expert_id, calendar_date, is_closed, start_time, end_time)
+                 VALUES (?, ?, 1, NULL, NULL)"
+            );
+            if ($insC === false) {
+                $error = "No se pudo guardar el cierre.";
+            } else {
+                $insC->bind_param("is", $eid, $calSql);
+                if (!$insC->execute()) {
+                    $error = "No se pudo guardar el cierre.";
+                }
+                $insC->close();
+            }
+        }
+    } elseif ($error === "" && $dtCal !== null && $mode === "window") {
+        $startRaw = trim((string)($_POST["date_start_time"] ?? ""));
+        $endRaw = trim((string)($_POST["date_end_time"] ?? ""));
+        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+        $tStart = DateTimeImmutable::createFromFormat("H:i", $startRaw, $tzW);
+        if ($tStart === false) {
+            $tStart = DateTimeImmutable::createFromFormat("H:i:s", $startRaw, $tzW);
+        }
+        $tEnd = DateTimeImmutable::createFromFormat("H:i", $endRaw, $tzW);
+        if ($tEnd === false) {
+            $tEnd = DateTimeImmutable::createFromFormat("H:i:s", $endRaw, $tzW);
+        }
+        if ($tStart === false || $tEnd === false) {
+            $error = "Indica hora de inicio y fin (HH:MM).";
+        } elseif ($tEnd <= $tStart) {
+            $error = "La hora de fin debe ser posterior a la de inicio.";
+        } else {
+            $calSql = $dtCal->format("Y-m-d");
+            $startSql = $tStart->format("H:i:s");
+            $endSql = $tEnd->format("H:i:s");
+            $delClosed = $conn->prepare(
+                "DELETE FROM expert_availability_date WHERE expert_id = ? AND calendar_date = ? AND is_closed = 1"
+            );
+            if ($delClosed !== false) {
+                $delClosed->bind_param("is", $eid, $calSql);
+                $delClosed->execute();
+                $delClosed->close();
+            }
+            $insW = $conn->prepare(
+                "INSERT INTO expert_availability_date (expert_id, calendar_date, is_closed, start_time, end_time)
+                 VALUES (?, ?, 0, ?, ?)"
+            );
+            if ($insW === false) {
+                $error = "No se pudo guardar la franja.";
+            } else {
+                $insW->bind_param("isss", $eid, $calSql, $startSql, $endSql);
+                if (!$insW->execute()) {
+                    $error = "No se pudo guardar la franja.";
+                }
+                $insW->close();
+            }
+        }
+    }
+    if ($error === "") {
+        admin_set_flash("success", $mode === "closed" ? "Día marcado como cerrado en la agenda." : "Franja por fecha añadida.");
+        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_delete_availability_date") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $did = (int)($_POST["av_date_id"] ?? 0);
+    if ($eid > 0 && $did > 0) {
+        $delD = $conn->prepare("DELETE FROM expert_availability_date WHERE id = ? AND expert_id = ? LIMIT 1");
+        if ($delD !== false) {
+            $delD->bind_param("ii", $did, $eid);
+            $delD->execute();
+            $delD->close();
+        }
+        admin_set_flash("success", "Cambio por fecha eliminado.");
+        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_set_mon_fri_window") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $useDef = isset($_POST["use_defaults"]) && (string)($_POST["use_defaults"] ?? "") === "1";
+    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
+    if ($chk === false || $eid <= 0) {
+        $error = "Experto no válido.";
+    } else {
+        $chk->bind_param("i", $eid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $chk->close();
+        if (!$chkRes || $chkRes->num_rows !== 1) {
+            $error = "Ese experto no existe.";
+        }
+    }
+    $startSql = AGENDA_DEFAULT_MON_FRI_START;
+    $endSql = AGENDA_DEFAULT_MON_FRI_END;
+    if ($error === "" && !$useDef) {
+        $sr = trim((string)($_POST["mon_fri_start"] ?? ""));
+        $er = trim((string)($_POST["mon_fri_end"] ?? ""));
+        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+        $tS = DateTimeImmutable::createFromFormat("H:i", $sr, $tzW);
+        if ($tS === false) {
+            $tS = DateTimeImmutable::createFromFormat("H:i:s", $sr, $tzW);
+        }
+        $tE = DateTimeImmutable::createFromFormat("H:i", $er, $tzW);
+        if ($tE === false) {
+            $tE = DateTimeImmutable::createFromFormat("H:i:s", $er, $tzW);
+        }
+        if ($tS === false || $tE === false) {
+            $error = "Indica hora inicio y fin en formato HH:MM.";
+        } elseif ($tE <= $tS) {
+            $error = "La hora de fin debe ser posterior a la de inicio.";
+        } else {
+            $startSql = $tS->format("H:i:s");
+            $endSql = $tE->format("H:i:s");
+        }
+    }
+    if ($error === "") {
+        if (!agenda_replace_mon_fri_single_window($conn, $eid, $startSql, $endSql)) {
+            $error = "No se pudo actualizar la jornada L–V.";
+        } else {
+            admin_set_flash("success", "Lunes a viernes actualizados (una sola franja; sábado y domingo no cambian).");
+            header("Location: " . admin_expert_page_url($eid, "schedule"));
+            exit;
+        }
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "save_agenda_display") {
+    $showNames = isset($_POST["agenda_show_expert_names"]) ? 1 : 0;
+    $updAg = $conn->prepare("UPDATE site_settings SET agenda_show_expert_names = ? WHERE id = 1");
+    if ($updAg === false) {
+        $error = "No se pudo guardar la opción de agenda pública.";
+    } else {
+        $updAg->bind_param("i", $showNames);
+        if (!$updAg->execute()) {
+            $error = "No se pudo guardar la opción de agenda pública.";
+        }
+        $updAg->close();
+    }
+    if ($error === "") {
+        admin_set_flash(
+            "success",
+            $showNames === 1
+                ? "La agenda pública mostrará el nombre de cada experto."
+                : "La agenda pública será anónima (solo servicio y horario)."
+        );
+        header("Location: admin.php#admin-tools-experts");
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "bulk_mon_fri_all_experts") {
+    $useDef = isset($_POST["use_defaults"]) && (string)($_POST["use_defaults"] ?? "") === "1";
+    $startSql = AGENDA_DEFAULT_MON_FRI_START;
+    $endSql = AGENDA_DEFAULT_MON_FRI_END;
+    if (!$useDef) {
+        $sr = trim((string)($_POST["mon_fri_start"] ?? ""));
+        $er = trim((string)($_POST["mon_fri_end"] ?? ""));
+        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+        $tS = DateTimeImmutable::createFromFormat("H:i", $sr, $tzW);
+        if ($tS === false) {
+            $tS = DateTimeImmutable::createFromFormat("H:i:s", $sr, $tzW);
+        }
+        $tE = DateTimeImmutable::createFromFormat("H:i", $er, $tzW);
+        if ($tE === false) {
+            $tE = DateTimeImmutable::createFromFormat("H:i:s", $er, $tzW);
+        }
+        if ($tS === false || $tE === false) {
+            $error = "Indica hora inicio y fin (HH:MM).";
+        } elseif ($tE <= $tS) {
+            $error = "La hora de fin debe ser posterior a la de inicio.";
+        } else {
+            $startSql = $tS->format("H:i:s");
+            $endSql = $tE->format("H:i:s");
+        }
+    }
+    if ($error === "") {
+        $allQ = $conn->query("SELECT id FROM experts");
+        if ($allQ) {
+            while ($erow = $allQ->fetch_assoc()) {
+                $xid = (int)($erow["id"] ?? 0);
+                if ($xid > 0) {
+                    agenda_replace_mon_fri_single_window($conn, $xid, $startSql, $endSql);
+                }
+            }
+        }
+        admin_set_flash("success", "Jornada L–V aplicada a todos los expertos.");
+        header("Location: admin.php#admin-tools-experts");
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_delete_availability") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $avid = (int)($_POST["availability_id"] ?? 0);
+    if ($eid > 0 && $avid > 0) {
+        $del = $conn->prepare("DELETE FROM expert_availability WHERE id = ? AND expert_id = ? LIMIT 1");
+        if ($del !== false) {
+            $del->bind_param("ii", $avid, $eid);
+            $del->execute();
+            $del->close();
+        }
+        admin_set_flash("success", "Franja eliminada.");
+        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        exit;
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_cancel_appointment") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $apid = (int)($_POST["appointment_id"] ?? 0);
+    if ($eid > 0 && $apid > 0) {
+        $upd = $conn->prepare(
+            "UPDATE expert_appointments SET status = 'cancelled' WHERE id = ? AND expert_id = ? AND status = 'confirmed' LIMIT 1"
+        );
+        if ($upd !== false) {
+            $upd->bind_param("ii", $apid, $eid);
+            $upd->execute();
+            $upd->close();
+        }
+        admin_set_flash("success", "Cita cancelada.");
+        $weekBack = trim((string)($_POST["expert_week"] ?? ""));
+        header("Location: " . admin_expert_page_url($eid, "schedule", $weekBack));
         exit;
     }
 }
@@ -1652,8 +2004,23 @@ $expertEditId = 0;
 $expertEdit = null;
 $expertEditNotFound = false;
 $expertsPanelOpen = false;
+$expertAvailabilityRows = [];
+$expertAvailabilityDateRows = [];
+$expertAppointmentsUpcoming = [];
+$expertWeekGrid = [
+    "week_start" => "",
+    "week_end" => "",
+    "week_label" => "",
+    "days" => [],
+    "rows" => [],
+];
+$expertView = "";
 if ($isLogged && $adminExpertAgendaUi) {
     $expertEditId = (int)($_GET["expert_id"] ?? 0);
+    $expertView = trim((string)($_GET["expert_view"] ?? ""));
+    if (!in_array($expertView, ["edit", "schedule"], true)) {
+        $expertView = "";
+    }
     $expertsQuery = $conn->query(
         "SELECT id, display_name, email, phone, notes, sort_order, is_active, created_at FROM experts ORDER BY sort_order ASC, id ASC"
     );
@@ -1713,7 +2080,62 @@ if ($isLogged && $adminExpertAgendaUi) {
             $esStmt->close();
         }
     }
-    $expertsPanelOpen = $expertEditId > 0;
+    if ($expertEditId > 0 && $expertEdit !== null && $expertView === "schedule") {
+        $eaStmt = $conn->prepare(
+            "SELECT id, weekday, start_time, end_time FROM expert_availability WHERE expert_id = ? ORDER BY weekday ASC, start_time ASC"
+        );
+        if ($eaStmt !== false) {
+            $eaStmt->bind_param("i", $expertEditId);
+            $eaStmt->execute();
+            $eaRes = $eaStmt->get_result();
+            if ($eaRes) {
+                while ($ar = $eaRes->fetch_assoc()) {
+                    $expertAvailabilityRows[] = $ar;
+                }
+            }
+            $eaStmt->close();
+        }
+        $adStmt = $conn->prepare(
+            "SELECT id, calendar_date, is_closed, start_time, end_time
+             FROM expert_availability_date
+             WHERE expert_id = ? AND calendar_date >= (CURDATE() - INTERVAL 14 DAY)
+             ORDER BY calendar_date ASC, is_closed DESC, start_time ASC
+             LIMIT 300"
+        );
+        if ($adStmt !== false) {
+            $adStmt->bind_param("i", $expertEditId);
+            $adStmt->execute();
+            $adRes = $adStmt->get_result();
+            if ($adRes) {
+                while ($dr = $adRes->fetch_assoc()) {
+                    $expertAvailabilityDateRows[] = $dr;
+                }
+            }
+            $adStmt->close();
+        }
+        $apStmt = $conn->prepare(
+            "SELECT a.id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone, s.title AS service_title
+             FROM expert_appointments a
+             INNER JOIN services s ON s.id = a.service_id
+             WHERE a.expert_id = ? AND a.status = 'confirmed' AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
+             ORDER BY a.starts_at ASC
+             LIMIT 80"
+        );
+        if ($apStmt !== false) {
+            $apStmt->bind_param("i", $expertEditId);
+            $apStmt->execute();
+            $apRes = $apStmt->get_result();
+            if ($apRes) {
+                while ($ar = $apRes->fetch_assoc()) {
+                    $expertAppointmentsUpcoming[] = $ar;
+                }
+            }
+            $apStmt->close();
+        }
+        $expertWeekParam = trim((string)($_GET["expert_week"] ?? ""));
+        $expertWeekGrid = agenda_expert_admin_week_grid($conn, $expertEditId, $expertWeekParam);
+    }
+    $expertsPanelOpen = $expertEditId > 0 || $expertView !== "";
 }
 
 $contactMessages = [];
@@ -2517,6 +2939,37 @@ $waSideCounterTitle = $waSideUnread > 0
     }
     .admin-services-accordion .accordion-body {
       background: color-mix(in srgb, var(--surface) 94%, transparent);
+    }
+    .admin-experts-inner-accordion .accordion-item {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 0.65rem;
+    }
+    .admin-experts-inner-accordion .accordion-button {
+      background: var(--surface-2);
+      color: var(--text);
+      font-weight: 700;
+      font-size: 0.92rem;
+      box-shadow: none;
+    }
+    .admin-experts-inner-accordion .accordion-button:not(.collapsed) {
+      background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
+      color: var(--text);
+    }
+    .admin-experts-inner-accordion .accordion-button::after {
+      filter: invert(0.85);
+    }
+    html[data-theme="light"] .admin-experts-inner-accordion .accordion-button::after {
+      filter: none;
+    }
+    .admin-experts-inner-accordion .accordion-body {
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+    }
+    .admin-experts-inner-accordion .accordion-body.p-0 .admin-expert-subpanel {
+      border: none;
+      margin: 0;
     }
     .admin-services-accordion .accordion-header-service-title {
       flex: 1;
@@ -3780,299 +4233,24 @@ $waSideCounterTitle = $waSideUnread > 0
             </h2>
             <div id="tools_experts_panel" class="accordion-collapse collapse <?= $expertsPanelOpen ? "show" : "" ?>" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
-                <p class="small text-light-emphasis mb-3">
-                  Tabla de expertos y ficha por persona. Pulsa <strong><i class="fa-solid fa-circle-plus me-1" aria-hidden="true"></i>Agregar experto</strong> para el mismo esquema que en la ficha (vacío). La <strong>cuenta de acceso</strong> para que cada experto entre al sistema se implementará después.
-                </p>
-                <?php if (is_array($expertEdit) && isset($expertEdit["id"])): ?>
-                  <?php
-                    $eid = (int)$expertEdit["id"];
-                    $svcSet = $expertServiceIds[$eid] ?? [];
-                  ?>
-                  <nav class="mb-3">
-                    <a href="admin.php#admin-tools-experts" class="link-light"><i class="fa-solid fa-arrow-left me-1"></i>Volver al listado</a>
-                  </nav>
-                  <h3 class="h5 mb-3 border-bottom border-secondary pb-2">Ficha: <?= h((string)($expertEdit["display_name"] ?? "")) ?></h3>
-                  <form method="post" class="row g-3">
-                    <input type="hidden" name="action" value="save_expert">
-                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
-                    <div class="col-md-8">
-                      <label class="form-label">Nombre visible</label>
-                      <input class="form-control" type="text" name="display_name" value="<?= h((string)($expertEdit["display_name"] ?? "")) ?>" maxlength="180" required>
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Orden</label>
-                      <input class="form-control" type="number" name="sort_order" value="<?= (int)($expertEdit["sort_order"] ?? 999) ?>">
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label">Correo (opcional)</label>
-                      <input class="form-control" type="email" name="email" value="<?= h((string)($expertEdit["email"] ?? "")) ?>" maxlength="180" placeholder="contacto@ejemplo.com" autocomplete="off">
-                      <div class="form-text text-light-emphasis">Útil para contacto o para enlazar luego la cuenta de experto.</div>
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label">Teléfono (opcional)</label>
-                      <input class="form-control" type="text" name="phone" value="<?= h((string)($expertEdit["phone"] ?? "")) ?>" maxlength="48" placeholder="+34 …" autocomplete="off">
-                    </div>
-                    <div class="col-12">
-                      <label class="form-label">Notas / información adicional</label>
-                      <textarea class="form-control" name="notes" rows="4" maxlength="12000" placeholder="Especialidad, disponibilidad general, comentarios internos…"><?= h((string)($expertEdit["notes"] ?? "")) ?></textarea>
-                    </div>
-                    <div class="col-12">
-                      <label class="form-label">Servicios que puede ofrecer</label>
-                      <div class="expert-service-checks border rounded px-3 py-2 border-secondary">
-                        <?php if (count($services) === 0): ?>
-                          <span class="text-light-emphasis">No hay servicios en el catálogo.</span>
-                        <?php else: ?>
-                          <?php foreach ($services as $svc): ?>
-                            <?php $sid = (int)$svc["id"]; ?>
-                            <div class="form-check">
-                              <input
-                                class="form-check-input"
-                                type="checkbox"
-                                id="ex_detail_svc_<?= $sid ?>"
-                                name="expert_services[]"
-                                value="<?= $sid ?>"
-                                <?= isset($svcSet[$sid]) ? "checked" : "" ?>
-                              >
-                              <label class="form-check-label" for="ex_detail_svc_<?= $sid ?>">
-                                <i class="<?= h((string)($svc["icon_class"] ?: "fa-solid fa-star")) ?> me-1"></i><?= h((string)($svc["title"] ?? "")) ?>
-                              </label>
-                            </div>
-                          <?php endforeach; ?>
-                        <?php endif; ?>
-                      </div>
-                    </div>
-                    <div class="col-12">
-                      <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="expert_detail_active" name="is_active" <?= ((int)($expertEdit["is_active"] ?? 0) === 1) ? "checked" : "" ?>>
-                        <label class="form-check-label" for="expert_detail_active">Activo</label>
-                      </div>
-                    </div>
-                    <div class="col-12 admin-actions">
-                      <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Guardar ficha</button>
-                    </div>
-                  </form>
-                  <form method="post" class="mt-3 pt-3 border-top border-secondary" onsubmit="return confirm('¿Eliminar este experto? Se quitarán sus vínculos con servicios.');">
-                    <input type="hidden" name="action" value="delete_expert">
-                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
-                    <button type="submit" class="btn btn-outline-danger btn-sm"><i class="fa-solid fa-trash me-2"></i>Eliminar experto</button>
-                  </form>
-                <?php elseif ($expertEditNotFound): ?>
+                <?php
+                  $agendaShowExpertNamesAdmin = (int)($settings["agenda_show_expert_names"] ?? 0) === 1;
+                ?>
+                <?php if ($expertEditNotFound): ?>
                   <div class="alert alert-warning mb-3">No hay ningún experto con ese identificador.</div>
-                  <a href="admin.php#admin-tools-experts" class="btn btn-outline-light btn-sm">Volver al listado</a>
-                <?php else: ?>
-                  <div class="mb-3">
-                    <button
-                      type="button"
-                      class="btn btn-primary"
-                      data-bs-toggle="collapse"
-                      data-bs-target="#collapse_new_expert_panel"
-                      aria-expanded="false"
-                      aria-controls="collapse_new_expert_panel"
-                      title="Agregar experto"
-                    >
-                      <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Agregar experto
-                    </button>
-                  </div>
-                  <div id="collapse_new_expert_panel" class="collapse mb-4 service-add-panel-collapse">
-                    <div class="border border-secondary rounded-3 p-3 bg-body-tertiary bg-opacity-25">
-                      <form method="post" class="row g-3" id="form-add-expert">
-                        <input type="hidden" name="action" value="add_expert">
-                        <div class="col-md-8">
-                          <label class="form-label" for="new_expert_display_name">Nombre visible</label>
-                          <input id="new_expert_display_name" class="form-control" type="text" name="display_name" maxlength="180" placeholder="Ej. María López" required>
-                        </div>
-                        <div class="col-md-4">
-                          <label class="form-label" for="new_expert_sort">Orden</label>
-                          <input id="new_expert_sort" class="form-control" type="number" name="sort_order" value="999" min="0" max="999999">
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label" for="new_expert_email">Correo (opcional)</label>
-                          <input id="new_expert_email" class="form-control" type="email" name="email" maxlength="180" placeholder="contacto@ejemplo.com" autocomplete="off">
-                          <div class="form-text text-light-emphasis">Útil para contacto o para enlazar luego la cuenta de experto.</div>
-                        </div>
-                        <div class="col-md-6">
-                          <label class="form-label" for="new_expert_phone">Teléfono (opcional)</label>
-                          <input id="new_expert_phone" class="form-control" type="text" name="phone" maxlength="48" placeholder="+34 …" autocomplete="off">
-                        </div>
-                        <div class="col-12">
-                          <label class="form-label" for="new_expert_notes">Notas / información adicional</label>
-                          <textarea id="new_expert_notes" class="form-control" name="notes" rows="4" maxlength="12000" placeholder="Especialidad, disponibilidad general, comentarios internos…"></textarea>
-                        </div>
-                        <div class="col-12">
-                          <label class="form-label">Servicios que puede ofrecer</label>
-                          <div class="expert-service-checks border rounded px-3 py-2 border-secondary">
-                            <?php if (count($services) === 0): ?>
-                              <span class="text-light-emphasis">No hay servicios en el catálogo.</span>
-                            <?php else: ?>
-                              <?php foreach ($services as $svc): ?>
-                                <?php $sid = (int)$svc["id"]; ?>
-                                <div class="form-check">
-                                  <input
-                                    class="form-check-input"
-                                    type="checkbox"
-                                    id="ex_add_svc_<?= $sid ?>"
-                                    name="expert_services[]"
-                                    value="<?= $sid ?>"
-                                  >
-                                  <label class="form-check-label" for="ex_add_svc_<?= $sid ?>">
-                                    <i class="<?= h((string)($svc["icon_class"] ?: "fa-solid fa-star")) ?> me-1"></i><?= h((string)($svc["title"] ?? "")) ?>
-                                  </label>
-                                </div>
-                              <?php endforeach; ?>
-                            <?php endif; ?>
-                          </div>
-                        </div>
-                        <div class="col-12">
-                          <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="new_expert_active" name="is_active" value="1" checked>
-                            <label class="form-check-label" for="new_expert_active">Activo</label>
-                          </div>
-                        </div>
-                        <div class="col-12 admin-actions d-flex flex-wrap gap-2 mb-0">
-                          <button class="btn btn-primary" type="submit">
-                            <i class="fa-solid fa-circle-plus me-2" aria-hidden="true"></i>Crear experto
-                          </button>
-                          <button type="button" class="btn btn-outline-secondary" id="cancel_new_expert_btn" aria-controls="collapse_new_expert_panel">
-                            <i class="fa-solid fa-xmark me-2" aria-hidden="true"></i>Cancelar
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  </div>
-                  <?php if (count($experts) === 0): ?>
-                    <p class="text-light-emphasis mb-0">Aún no hay expertos. Usa <strong>Agregar experto</strong> para crear el primero.</p>
-                  <?php else: ?>
-                    <div class="table-responsive">
-                      <table class="table table-sm table-hover table-borderless align-middle mb-0 admin-experts-table">
-                        <thead>
-                          <tr class="text-secondary small">
-                            <th scope="col">Nombre</th>
-                            <th scope="col" class="text-center">Orden</th>
-                            <th scope="col" class="text-center">Estado</th>
-                            <th scope="col" class="text-start expert-services-col">Servicios</th>
-                            <th scope="col" class="text-end">Acciones</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <?php foreach ($experts as $ex): ?>
-                            <?php
-                              $rowId = (int)($ex["id"] ?? 0);
-                              $svcSet = $expertServiceIds[$rowId] ?? [];
-                              $nSvc = count($svcSet);
-                              $linkedTitlesStr = "";
-                              if ($nSvc > 0) {
-                                  $t = [];
-                                  foreach ($services as $svc) {
-                                      $sid = (int)($svc["id"] ?? 0);
-                                      if ($sid > 0 && !empty($svcSet[$sid])) {
-                                          $t[] = (string)($svc["title"] ?? "");
-                                      }
-                                  }
-                                  $linkedTitlesStr = implode(", ", $t);
-                              }
-                              $em = trim((string)($ex["email"] ?? ""));
-                              $ph = trim((string)($ex["phone"] ?? ""));
-                              $hasExtra = ($em !== "" || $ph !== "" || trim((string)($ex["notes"] ?? "")) !== "");
-                              $exActive = (int)($ex["is_active"] ?? 0) === 1;
-                            ?>
-                            <tr>
-                              <td>
-                                <strong><?= h((string)($ex["display_name"] ?? "")) ?></strong>
-                                <?php if ($hasExtra): ?>
-                                  <span class="badge rounded-pill text-bg-info expert-pill d-inline-flex align-items-center ms-1" title="Correo, teléfono o notas en la ficha">
-                                    <i class="fa-solid fa-id-card" aria-hidden="true"></i><span class="visually-hidden"> </span>Info
-                                  </span>
-                                <?php endif; ?>
-                              </td>
-                              <td class="text-center font-monospace small"><?= (int)($ex["sort_order"] ?? 999) ?></td>
-                              <td class="text-center">
-                                <?php if ($exActive): ?>
-                                  <span class="badge rounded-pill text-bg-success expert-pill d-inline-flex align-items-center" title="Visible en la web según configuración">
-                                    <i class="fa-solid fa-circle-check" aria-hidden="true"></i> Activo
-                                  </span>
-                                <?php else: ?>
-                                  <span class="badge rounded-pill text-bg-secondary expert-pill d-inline-flex align-items-center" title="No se muestra en la agenda pública">
-                                    <i class="fa-solid fa-circle-xmark" aria-hidden="true"></i> Inactivo
-                                  </span>
-                                <?php endif; ?>
-                              </td>
-                              <td class="text-start expert-services-col">
-                                <?php if ($nSvc === 0): ?>
-                                  <span class="text-light-emphasis small font-monospace" title="Sin servicios vinculados">0</span>
-                                <?php else: ?>
-                                  <div class="d-flex align-items-center gap-1 expert-row-services js-expert-svc-fit">
-                                    <div class="expert-svc-icons-slot">
-                                      <div class="expert-svc-icons-inner">
-                                        <?php foreach ($services as $svc): ?>
-                                          <?php
-                                            $sid = (int)($svc["id"] ?? 0);
-                                            if ($sid <= 0 || empty($svcSet[$sid])) {
-                                                continue;
-                                            }
-                                            $svcTitle = (string)($svc["title"] ?? "");
-                                            $svcIcon = (string)($svc["icon_class"] ?: "fa-solid fa-star");
-                                          ?>
-                                          <span
-                                            class="expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary bg-body-tertiary text-body"
-                                            title="<?= h($svcTitle) ?>"
-                                            data-service-title="<?= h($svcTitle) ?>"
-                                          >
-                                            <i class="<?= h($svcIcon) ?>" aria-hidden="true"></i>
-                                            <span class="visually-hidden"><?= h($svcTitle) ?></span>
-                                          </span>
-                                        <?php endforeach; ?>
-                                      </div>
-                                    </div>
-                                    <span
-                                      class="expert-svc-icon expert-svc-overflow-plus align-items-center justify-content-center rounded-2 border border-secondary bg-body-tertiary text-body"
-                                      role="img"
-                                      aria-hidden="true"
-                                    >
-                                      <i class="fa-solid fa-plus" aria-hidden="true"></i>
-                                    </span>
-                                    <span
-                                      class="badge rounded-pill text-bg-secondary border expert-pill d-inline-flex align-items-center expert-svc-count-badge"
-                                      title="<?= h($linkedTitlesStr !== "" ? $linkedTitlesStr : "Servicios vinculados") ?>"
-                                    >
-                                      <?= (int)$nSvc ?>
-                                    </span>
-                                  </div>
-                                <?php endif; ?>
-                              </td>
-                              <td class="text-end">
-                                <div class="d-inline-flex flex-wrap align-items-center justify-content-end admin-expert-row-actions">
-                                  <a
-                                    class="btn btn-outline-light btn-sm"
-                                    href="admin.php?expert_id=<?= $rowId ?>#admin-tools-experts"
-                                    title="Abrir ficha y editar datos"
-                                    aria-label="Ficha o editar <?= h((string)($ex["display_name"] ?? "experto")) ?>"
-                                  >
-                                    <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i><span class="visually-hidden"> Ficha o editar</span>
-                                  </a>
-                                  <form method="post" onsubmit="return confirm('¿Eliminar este experto?');">
-                                    <input type="hidden" name="action" value="delete_expert">
-                                    <input type="hidden" name="expert_id" value="<?= $rowId ?>">
-                                    <button
-                                      type="submit"
-                                      class="btn btn-outline-danger btn-sm"
-                                      title="Eliminar experto y quitar vínculos con servicios"
-                                      aria-label="Eliminar <?= h((string)($ex["display_name"] ?? "experto")) ?>"
-                                    >
-                                      <i class="fa-solid fa-trash-can" aria-hidden="true"></i><span class="visually-hidden"> Eliminar</span>
-                                    </button>
-                                  </form>
-                                </div>
-                              </td>
-                            </tr>
-                          <?php endforeach; ?>
-                        </tbody>
-                      </table>
-                    </div>
-                  <?php endif; ?>
+                  <a href="admin.php#admin-experts-list" class="btn btn-outline-light btn-sm mb-3">Volver al listado</a>
                 <?php endif; ?>
+
+                <?php if (count($experts) > 0): ?>
+                  <?php require __DIR__ . "/partials/admin_experts_table.php"; ?>
+                <?php else: ?>
+                  <p class="text-light-emphasis mb-4" id="admin-experts-list">Aún no hay expertos. Usa <strong>Agregar experto</strong> para crear el primero.</p>
+                <?php endif; ?>
+
+                <?php require __DIR__ . "/partials/admin_experts_accordions.php"; ?>
+                </div>
               </div>
             </div>
-          </div>
           <?php else: ?>
           <div class="accordion-item" id="admin-tool-experts-off">
             <h2 class="accordion-header m-0">
@@ -4681,7 +4859,7 @@ $waSideCounterTitle = $waSideUnread > 0
 
       (function () {
         var cancelBtn = document.getElementById("cancel_new_expert_btn");
-        var collapseEl = document.getElementById("collapse_new_expert_panel");
+        var collapseEl = document.getElementById("expert_acc_add");
         var formEl = document.getElementById("form-add-expert");
         if (!cancelBtn || !collapseEl || !formEl) return;
 
