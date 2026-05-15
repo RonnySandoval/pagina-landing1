@@ -5,7 +5,10 @@ declare(strict_types=1);
 /** @var string $expertView */
 /** @var array<string, mixed>|null $expertEdit */
 /** @var bool $agendaShowExpertNamesAdmin */
+/** @var list<array<string, mixed>> $allExpertsAppointmentsUpcoming */
 $expertAccAddOpen = count($experts) === 0;
+$expertAccAppointmentsOpen = count($allExpertsAppointmentsUpcoming ?? []) > 0;
+$nAllAppointments = count($allExpertsAppointmentsUpcoming ?? []);
 $expertAccEditOpen = $expertView === "edit" && is_array($expertEdit) && isset($expertEdit["id"]);
 $expertAccScheduleOpen = $expertView === "schedule" && is_array($expertEdit) && isset($expertEdit["id"]);
 $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_name"] ?? "") : "";
@@ -95,6 +98,43 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
     </div>
   </div>
 
+  <?php if ($nAllAppointments > 0): ?>
+    <div class="accordion-item" id="expert_acc_appointments_item">
+      <h3 class="accordion-header m-0">
+        <button
+          class="accordion-button<?= $expertAccAppointmentsOpen && !$expertAccEditOpen && !$expertAccScheduleOpen ? "" : " collapsed" ?>"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#expert_acc_appointments"
+          aria-expanded="<?= $expertAccAppointmentsOpen && !$expertAccEditOpen && !$expertAccScheduleOpen ? "true" : "false" ?>"
+          aria-controls="expert_acc_appointments"
+        >
+          <i class="fa-solid fa-calendar-check me-2" aria-hidden="true"></i>Citas programadas
+          <span class="badge rounded-pill text-bg-primary ms-2"><?= (int)$nAllAppointments ?></span>
+        </button>
+      </h3>
+      <div
+        id="expert_acc_appointments"
+        class="accordion-collapse collapse<?= $expertAccAppointmentsOpen && !$expertAccEditOpen && !$expertAccScheduleOpen ? " show" : "" ?>"
+      >
+        <div class="accordion-body">
+          <p class="small text-muted mb-3">
+            Todas las citas confirmadas próximas, ordenadas por fecha y hora. Para gestionar la disponibilidad de un experto, abre su horario desde el listado.
+          </p>
+          <?php
+            $appointments = $allExpertsAppointmentsUpcoming;
+            $showExpertColumn = true;
+            $cancelExpertId = null;
+            $expertWeekHidden = "";
+            $appointmentReturnView = "list";
+            $emptyMessage = "No hay citas confirmadas próximas.";
+            require __DIR__ . "/admin_expert_appointments_table.php";
+          ?>
+        </div>
+      </div>
+    </div>
+  <?php endif; ?>
+
   <?php if (count($experts) > 0): ?>
     <div class="accordion-item">
       <h3 class="accordion-header m-0">
@@ -106,25 +146,45 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
           aria-expanded="false"
           aria-controls="expert_acc_bulk"
         >
-          <i class="fa-solid fa-users-gear me-2" aria-hidden="true"></i>Jornada L–V para todos
+          <i class="fa-solid fa-users-gear me-2" aria-hidden="true"></i>Horario para todos (lun–vie)
         </button>
       </h3>
       <div id="expert_acc_bulk" class="accordion-collapse collapse">
         <div class="accordion-body">
-          <p class="small text-light-emphasis mb-3">Sustituye la plantilla de lunes a viernes de <strong>cada experto</strong> por la misma franja (no cambia sábado ni domingo).</p>
-          <div class="d-flex flex-wrap gap-2 align-items-center">
-            <form method="post" class="d-inline" onsubmit="return confirm('¿Aplicar 9:00–18:00 a todos los expertos?');">
-              <input type="hidden" name="action" value="bulk_mon_fri_all_experts">
-              <input type="hidden" name="use_defaults" value="1">
-              <button type="submit" class="btn btn-sm btn-outline-light">Todos: 9:00–18:00</button>
-            </form>
-            <form method="post" class="d-flex flex-wrap gap-1 align-items-center" onsubmit="return confirm('¿Aplicar esta franja L–V a todos los expertos?');">
-              <input type="hidden" name="action" value="bulk_mon_fri_all_experts">
-              <input type="time" name="mon_fri_start" class="form-control form-control-sm" style="width:7rem" value="09:00" required>
-              <span class="small text-secondary">a</span>
-              <input type="time" name="mon_fri_end" class="form-control form-control-sm" style="width:7rem" value="18:00" required>
-              <button type="submit" class="btn btn-sm btn-primary">Todos: mismo horario</button>
-            </form>
+          <p class="small text-light-emphasis mb-3">
+            Sustituye la plantilla de <strong>lunes a viernes</strong> de cada experto por una sola franja.
+            Sábado y domingo no cambian. Los expertos nuevos ya reciben 9:00–18:00 al crearse.
+          </p>
+          <div class="card border-secondary expert-lvf-card">
+            <div class="card-body py-3">
+              <div class="row g-2 g-md-3">
+                <div class="col-md-6">
+                  <form method="post" class="expert-lvf-option h-100" onsubmit="return confirm('¿Aplicar 9:00–18:00 de lunes a viernes a TODOS los expertos?');">
+                    <input type="hidden" name="action" value="bulk_mon_fri_all_experts">
+                    <input type="hidden" name="use_defaults" value="1">
+                    <button type="submit" class="btn btn-outline-light w-100 expert-lvf-option__btn">
+                      <span class="expert-lvf-option__label">Horario estándar para todos</span>
+                      <span class="expert-lvf-option__time">9:00 – 18:00</span>
+                      <span class="expert-lvf-option__hint small">Lun · Mar · Mié · Jue · Vie</span>
+                    </button>
+                  </form>
+                </div>
+                <div class="col-md-6">
+                  <form method="post" class="expert-lvf-option expert-lvf-option--custom h-100" onsubmit="return confirm('¿Aplicar este horario de lunes a viernes a TODOS los expertos?');">
+                    <input type="hidden" name="action" value="bulk_mon_fri_all_experts">
+                    <div class="expert-lvf-option__custom-inner">
+                      <span class="expert-lvf-option__label">Otro horario para todos</span>
+                      <div class="d-flex align-items-center gap-2 flex-wrap justify-content-center my-2">
+                        <input type="time" name="mon_fri_start" class="form-control form-control-sm expert-lvf-time" value="09:00" required aria-label="Hora inicio">
+                        <span class="small text-secondary">a</span>
+                        <input type="time" name="mon_fri_end" class="form-control form-control-sm expert-lvf-time" value="18:00" required aria-label="Hora fin">
+                      </div>
+                      <button type="submit" class="btn btn-primary btn-sm w-100">Aplicar a todos (lun–vie)</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

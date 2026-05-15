@@ -16,6 +16,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - [Panel admin (resumen)](#panel-admin-resumen)
 - [Agenda y expertos](#agenda-y-expertos)
 - [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)
+- [API REST (v1)](#api-rest-v1)
 - [Recuperación de clave del admin](#recuperación-de-clave-del-admin)
 - [Estructura de archivos](#estructura-de-archivos)
 - [Base de datos (tablas)](#base-de-datos-tablas)
@@ -426,7 +427,11 @@ e inicia sesión en la propia landing**, sección **Área de clientes** (`#area-
 | --- | --- |
 | `index.php` + `#area-cliente` | Registro, login, mensajes (nueva consulta y seguimientos) y vista «modo cliente». |
 | `client_inbox_helpers.php` | Incluido desde `index.php`: helpers de hilo / bandeja cliente (no endpoint directo). |
-| `send.php` | Envío del formulario de contacto y seguimientos; puede volver con `return_anchor=area-cliente`. |
+| `send.php` | Adaptador HTTP (POST → redirect); delega en `contact_service.php`. |
+| `contact_lib.php` / `contact_service.php` | Dominio y caso de uso del formulario de contacto. |
+| `client_service.php` | Auth y bandeja del portal (API + reutilizable desde la landing). |
+| `api/v1/contact/messages.php` | Mismo envío que `send.php`, respuesta JSON (`app_contact_messages_api_url()`). |
+| `api/v1/auth/*`, `api/v1/client/*` | Sesión, login, registro y mensajes del cliente. |
 | `client_login.php` / `client_dashboard.php` | Redirigen a la landing (compatibilidad con enlaces antiguos). |
 | `client_logout.php` | Cierra sesión de cliente y vuelve a la landing. |
 | `client_portal_lib.php` | Sesión, registro, login, validaciones de clave. |
@@ -439,6 +444,346 @@ Política de clave al registrarse: al menos **10 caracteres**, **mayúscula**, *
 (igual que la recuperación de clave del admin). Los clientes **no** tienen «olvidé mi clave» en esta versión.
 
 Esquema `setup.sql` y demás: `db.php` en la primera carga; referencia SQL en `setup.sql` (núcleo de contenido y tablas principales; algunas tablas solo las garantiza `db.php`, p. ej. `admin_password_resets`).
+
+## API REST (v1)
+
+Capa API JSON compartida (`api/bootstrap.php`). Cada módulo tiene `*_service.php` y endpoints bajo `api/v1/`.
+
+| Recurso | Método | URL (relativa a la carpeta de la landing) |
+| --- | --- | --- |
+| Mensajes de contacto | `POST` | `api/v1/contact/messages.php` |
+| Huecos de agenda | `GET` | `api/v1/agenda/slots.php` |
+| Reservas de agenda | `POST` | `api/v1/agenda/bookings.php` |
+| Sesión cliente | `GET` | `api/v1/auth/session.php` |
+| Login cliente | `POST` | `api/v1/auth/login.php` |
+| Logout cliente | `POST` | `api/v1/auth/logout.php` |
+| Registro cliente | `POST` | `api/v1/auth/register.php` |
+| Confirmar registro (token email) | `POST` | `api/v1/auth/register-confirm.php` |
+| Registro sin correo | `POST` | `api/v1/auth/register-finalize.php` |
+| Bandeja mensajes | `GET` | `api/v1/client/messages.php` |
+| Poll bandeja | `GET` | `api/v1/client/inbox-poll.php` |
+| Sesión admin | `GET` | `api/v1/admin/auth/session.php` |
+| Login admin | `POST` | `api/v1/admin/auth/login.php` |
+| Logout admin | `POST` | `api/v1/admin/auth/logout.php` |
+| Recuperar clave admin | `POST` | `api/v1/admin/auth/password-reset-request.php` |
+| Nueva clave admin (token) | `POST` | `api/v1/admin/auth/password-reset.php` |
+
+URLs absolutas: helpers `app_*_api_url()` en `app_urls.php` (contacto, agenda, portal, admin).
+
+**SPA web y app móvil:** hoy la API usa la **misma cookie de sesión** que `admin.php` / `index.php` (`credentials: "same-origin"` en un front React/Vue servido desde la misma carpeta o dominio). Una app nativa en otro origen suele necesitar después **tokens** (Bearer); el diseño por servicios deja ese paso sin reescribir reglas de negocio.
+
+Requiere `features.expert_agenda` para agenda (403 `feature_disabled`). La bandeja exige `features.client_inbox` y cookie de sesión (`credentials: "same-origin"`).
+
+### Contacto
+
+URL: `app_contact_messages_api_url()`.
+
+**Cuerpo:** `application/json` o `application/x-www-form-urlencoded` (mismos campos que el formulario).
+
+| Campo | Obligatorio | Notas |
+| --- | --- | --- |
+| `nombre` | Sí | |
+| `email` | Sí | En seguimiento (`in_reply_to`) se toma de la sesión. |
+| `servicio` | Sí | En seguimiento se hereda del hilo. |
+| `mensaje` | Sí | |
+| `asunto` | Sí* | *No si `in_reply_to` > 0 (asunto del hilo). |
+| `in_reply_to` | No | Seguimiento; requiere cookie de sesión de cliente. |
+| `return_anchor` | No | `area-cliente` exige `features.client_inbox` (igual que `send.php`). |
+
+**Respuesta exitosa (201):**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "message_id": 42,
+    "outcome": "ok",
+    "mail_sent": true
+  }
+}
+```
+
+`outcome`: `ok` si el correo al admin se envió; `saved` si el mensaje quedó en BD pero el mail falló (mismo criterio que el redirect `status=saved`).
+
+**Errores:** `{ "ok": false, "error": "nombre", "fields": ["nombre", "..."] }` con códigos HTTP 400 (validación), 401 (`sesion_seguimiento`), 403 (`client_inbox_disabled`), 500 (`db_insert`).
+
+**Sesión:** las peticiones con `credentials: "same-origin"` reutilizan la cookie del portal para seguimientos y para asociar `client_id` cuando el email coincide con la sesión.
+
+**Ejemplo `curl` (local, carpeta `pag-template`):**
+
+```bash
+curl -X POST "http://localhost/pag-template/api/v1/contact/messages.php" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d "{\"nombre\":\"Ana\",\"email\":\"ana@ejemplo.com\",\"servicio\":\"Consulta\",\"asunto\":\"Desde API\",\"mensaje\":\"Hola\"}"
+```
+
+Archivos: `contact_lib.php`, `contact_service.php`.
+
+### Agenda
+
+**GET huecos** — query: `service_id` (o `agenda_service`), `date` (o `agenda_date`, `Y-m-d`).
+
+Respuesta (`200`): `data` con `bookable_services`, `slots` (cada uno incluye `slot_token` = `expertoId@YYYY-MM-DD HH:MM:SS`), `table` (misma estructura que la UI), `min_date`, `max_date`, `slot_minutes`, `max_slot_units`.
+
+**Ejemplo de respuesta GET (recortado):**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "service_id": 1,
+    "service_title": "Asesoría",
+    "date": "2026-05-18",
+    "min_date": "2026-05-15",
+    "max_date": "2026-08-13",
+    "show_expert_names": true,
+    "slot_minutes": 30,
+    "max_slot_units": 16,
+    "bookable_services": [
+      { "id": 1, "title": "Asesoría", "icon_class": "fa-solid fa-comments" }
+    ],
+    "slots": [
+      {
+        "expert_id": 2,
+        "display_name": "María López",
+        "starts": "2026-05-18 09:00:00",
+        "ends": "2026-05-18 09:30:00",
+        "label": "09:00–09:30",
+        "slot_token": "2@2026-05-18 09:00:00"
+      }
+    ],
+    "table": {
+      "layout": "by_expert",
+      "experts": { "2": "María López" },
+      "expert_order": [2],
+      "rows": [],
+      "show_expert_names": true
+    }
+  }
+}
+```
+
+El objeto `table` replica la grilla de la landing (`by_expert` o `by_time`); en el ejemplo, `rows` está vacío por brevedad — en producción trae las filas horarias y celdas como en `partials/agenda_public_section.php`.
+
+**POST reserva** — JSON o form; requiere `features.expert_agenda`.
+
+| Campo | Obligatorio | Notas |
+| --- | --- | --- |
+| `service_id` | Sí | También `agenda_service_id` en formularios HTML. |
+| `slot_token` | Sí* | Formato `expertId@starts_at`; también `agenda_slot`. |
+| `expert_id` + `starts_at` | Sí* | Alternativa a `slot_token`. |
+| `guest_name`, `guest_email` | Sí | |
+| `guest_phone`, `notes` | No | |
+| `slot_units` | No | Por defecto 1; máx. `AGENDA_MAX_SLOT_UNITS`. |
+
+Respuesta exitosa (**201**):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "appointment_id": 15,
+    "service_id": 1,
+    "expert_id": 2,
+    "starts_at": "2026-05-18 09:00:00",
+    "ends_at": "2026-05-18 09:30:00",
+    "slot_units": 1
+  }
+}
+```
+
+Errores: `message` en español (texto de `agenda_lib`); `error` suele ser `booking_rejected`. HTTP **409** si el hueco ya no está libre.
+
+**Ejemplos `curl` (local):**
+
+```bash
+# 1) Listar huecos de un servicio y día
+curl -s "http://localhost/pag-template/api/v1/agenda/slots.php?service_id=1&date=2026-05-18" \
+  -H "Accept: application/json"
+
+# 2) Reservar usando slot_token devuelto en slots[]
+curl -X POST "http://localhost/pag-template/api/v1/agenda/bookings.php" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d "{\"service_id\":1,\"slot_token\":\"2@2026-05-18 09:00:00\",\"guest_name\":\"Ana\",\"guest_email\":\"ana@ejemplo.com\",\"guest_phone\":\"\",\"notes\":\"\",\"slot_units\":1}"
+```
+
+Con sesión de cliente (cookie del portal), la reserva puede asociar `client_id` automáticamente si el correo coincide. En `fetch` del navegador usa `credentials: "same-origin"`.
+
+`agenda_book.php` delega en `agenda_service_create_booking()` (mismo criterio que la API).
+
+Archivos: `agenda_service.php`, `agenda_lib.php`, `agenda_public_bootstrap.php`.
+
+### Portal de clientes (auth + bandeja)
+
+Misma cookie de sesión que `index.php#area-cliente` (`client_session_*`). En `fetch` usa siempre `credentials: "same-origin"` para enviar la cookie.
+
+**GET sesión** (`app_client_auth_session_api_url()`):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "authenticated": true,
+    "user": { "id": 3, "email": "cliente@ejemplo.com", "display_name": "Ana" }
+  }
+}
+```
+
+Si no hay sesión: `"authenticated": false`. Si hay registro pendiente de verificación: `"registration_pending": true`, `"pending_email"`, `"verification_sent"`.
+
+| Endpoint | Campos principales |
+| --- | --- |
+| `POST auth/login.php` | `email`, `password` → `data.user` |
+| `POST auth/logout.php` | — |
+| `POST auth/register.php` | `email`, `password`, `password_confirm`, `display_name` → **202** `awaiting_verification` (correo con enlace 48 h) |
+| `POST auth/register-confirm.php` | `token` (del enlace) → sesión abierta |
+| `POST auth/register-finalize.php` | Sin cuerpo; requiere `client_reg_pending` en sesión tras fallo SMTP → **201** |
+| `GET client/messages.php` | Sesión + `client_inbox`; query `limit` (default 40) |
+| `GET client/inbox-poll.php` | Sesión; `site_unseen_total`, `max_reply_id`, `threads_site_unseen` |
+
+**Ejemplo `curl` con cookie jar:**
+
+```bash
+# Login (guarda cookie)
+curl -c cookies.txt -X POST "http://localhost/pag-template/api/v1/auth/login.php" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"TU_CLIENTE@ejemplo.com\",\"password\":\"TuClave2026!\"}"
+
+# Sesión
+curl -b cookies.txt "http://localhost/pag-template/api/v1/auth/session.php" -H "Accept: application/json"
+
+# Bandeja
+curl -b cookies.txt "http://localhost/pag-template/api/v1/client/messages.php" -H "Accept: application/json"
+
+# Poll (sustituye index.php?client_inbox_poll=1)
+curl -b cookies.txt "http://localhost/pag-template/api/v1/client/inbox-poll.php" -H "Accept: application/json"
+```
+
+Errores habituales: **401** `no_session`, **403** `feature_disabled` (bandeja), **401** `invalid_credentials` (login).
+
+Archivos: `client_service.php`, `client_portal_lib.php`, `client_inbox_helpers.php`.
+
+Pruebas locales: `php tools/test_contact_api.php`, `php tools/test_agenda_api.php`, `php tools/test_client_api.php`, `php tools/test_admin_api.php`, `php tools/test_admin_messages_api.php`, `php tools/test_admin_settings_api.php`, `php tools/test_admin_services_api.php`, `php tools/test_admin_experts_api.php`, `php tools/test_admin_portal_api.php`.
+
+### Admin (fase 4 — en curso)
+
+**4.1 Auth** (implementado): `admin_portal_lib.php`, `admin_service.php`, endpoints bajo `api/v1/admin/auth/`. El panel `admin.php` delega login, logout y recuperación de clave.
+
+```bash
+curl -c admin-cookies.txt -X POST "http://localhost/pag-template/api/v1/admin/auth/login.php" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"TU_ADMIN\",\"password\":\"TU_CLAVE\"}"
+
+curl -b admin-cookies.txt "http://localhost/pag-template/api/v1/admin/auth/session.php"
+```
+
+Prueba: `php tools/test_admin_api.php tu@admin.com TuClave`.
+
+**4.2 Mensajes** (implementado): `admin_inbox_lib.php`, `admin_messages_service.php`, endpoints bajo `api/v1/admin/messages*`. El panel `admin.php` carga la bandeja con `admin_inbox_load()` y delega marcar leído, borrar y responder.
+
+Misma cookie de sesión que `admin.php` (`admin_session_*`). En `fetch` usa `credentials: "same-origin"`.
+
+| Endpoint | Método | Campos / notas |
+| --- | --- | --- |
+| `admin/messages.php` | GET | `limit` (default 100) → `counts`, `messages`, `replies`, `groups` |
+| `admin/messages.php?id=` | GET | `message`, `replies` |
+| `admin/messages/read.php` | POST | `message_id`, `read` (default true) |
+| `admin/messages/read-all.php` | POST | `read` (default true) |
+| `admin/messages/delete.php` | POST | `message_id` |
+| `admin/messages/reply.php` | POST | `message_id`, `body` (o `reply_body`) → **201** |
+
+Helpers en `app_urls.php`: `app_admin_messages_api_url()`, `app_admin_messages_read_api_url()`, etc.
+
+```bash
+curl -c admin-cookies.txt -X POST "http://localhost/pag-template/api/v1/admin/auth/login.php" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"TU_ADMIN\",\"password\":\"TU_CLAVE\"}"
+
+curl -b admin-cookies.txt "http://localhost/pag-template/api/v1/admin/messages.php" -H "Accept: application/json"
+
+curl -b admin-cookies.txt -X POST "http://localhost/pag-template/api/v1/admin/messages/read.php" \
+  -H "Content-Type: application/json" \
+  -d "{\"message_id\":1,\"read\":true}"
+```
+
+Prueba: `php tools/test_admin_messages_api.php tu@admin.com TuClave`.
+
+**4.3 Ajustes del sitio** (implementado): `site_settings_lib.php`, `upload_image_lib.php`, `admin_settings_service.php`, endpoints bajo `api/v1/admin/settings*`. El panel `admin.php` delega guardado general, logo y opción de agenda pública.
+
+| Endpoint | Método | Notas |
+| --- | --- | --- |
+| `admin/settings.php` | GET | Textos, correo, WhatsApp, logo, `agenda_show_expert_names` |
+| `admin/settings.php` | PUT / PATCH | Mismos campos en JSON (`contact_whatsapp_country` + `contact_whatsapp_local` o columnas directas) |
+| `admin/settings/logo.php` | POST | multipart `logo_image_file`; `remove_logo=true` |
+| `admin/settings/agenda-display.php` | POST | `agenda_show_expert_names` (bool) |
+
+Helpers: `app_admin_settings_api_url()`, `app_admin_settings_logo_api_url()`, `app_admin_settings_agenda_display_api_url()`.
+
+```bash
+curl -b admin-cookies.txt "http://localhost/pag-template/api/v1/admin/settings.php" -H "Accept: application/json"
+
+curl -b admin-cookies.txt -X PUT "http://localhost/pag-template/api/v1/admin/settings.php" \
+  -H "Content-Type: application/json" \
+  -d @settings-payload.json
+```
+
+Prueba: `php tools/test_admin_settings_api.php tu@admin.com TuClave`.
+
+**4.4 Servicios y galería** (implementado): `services_lib.php`, `admin_services_service.php`, endpoints bajo `api/v1/admin/services*`. El panel `admin.php` delega alta, guardado masivo y borrado.
+
+| Endpoint | Método | Notas |
+| --- | --- | --- |
+| `admin/services.php` | GET | Lista con `gallery` por servicio |
+| `admin/services.php?id=` | GET / PUT / DELETE | Detalle, actualizar JSON, borrar |
+| `admin/services.php` | POST | Crear servicio (JSON; imagen en `services/image.php`) |
+| `admin/services/image.php` | POST | multipart `service_id`, `image_file` |
+| `admin/services/gallery.php` | POST | multipart añadir imagen a galería |
+| `admin/services/gallery.php?id=` | PUT / DELETE | Metadatos o borrar imagen |
+| `admin/services/gallery/reorder.php` | POST | `service_id`, `ordered_ids` |
+
+Helpers: `app_admin_services_api_url()`, `app_admin_services_image_api_url()`, `app_admin_services_gallery_api_url()`, `app_admin_services_gallery_reorder_api_url()`.
+
+Prueba: `php tools/test_admin_services_api.php tu@admin.com TuClave`.
+
+**4.5 Expertos y agenda** (implementado): `experts_admin_lib.php`, `admin_experts_service.php`, endpoints bajo `api/v1/admin/experts*`. Requiere `features.expert_agenda` en `app_config.php`. El panel `admin.php` delega CRUD, disponibilidad, excepciones por fecha y cancelación de citas.
+
+| Endpoint | Método | Notas |
+| --- | --- | --- |
+| `admin/experts.php` | GET | Lista de expertos con `service_ids` |
+| `admin/experts.php?id=` | GET | Detalle; `?include=schedule&week=` incluye grilla semanal |
+| `admin/experts.php` | POST | Crear (`service_ids`, jornada L–V por defecto) |
+| `admin/experts.php?id=` | PUT / DELETE | Actualizar / borrar |
+| `admin/experts/week-grid.php` | GET | `expert_id`, `week_start` |
+| `admin/experts/availability.php` | POST / DELETE | Franja semanal |
+| `admin/experts/availability/mon-fri.php` | POST | Jornada L–V de un experto |
+| `admin/experts/availability/bulk-mon-fri.php` | POST | L–V para todos |
+| `admin/experts/availability-date.php` | POST / DELETE | Excepción por fecha (`mode`: `closed` \| `window`) |
+| `admin/experts/appointments/cancel.php` | POST | `expert_id`, `appointment_id` |
+
+Helpers: `app_admin_experts_api_url()`, `app_admin_experts_week_grid_api_url()`, etc.
+
+Prueba: `php tools/test_admin_experts_api.php tu@admin.com TuClave` (con `expert_agenda` activo).
+
+**4.6 Portal clientes y WhatsApp** (implementado): `admin_clients_lib.php`, `admin_whatsapp_lib.php`, `admin_portal_service.php`, endpoints bajo `api/v1/admin/clients*` y `whatsapp-clicks*`.
+
+| Endpoint | Método | Notas |
+| --- | --- | --- |
+| `admin/clients.php` | GET | Lista de cuentas del portal |
+| `admin/clients.php?id=` | GET / DELETE | Detalle / eliminar |
+| `admin/clients/toggle-active.php` | POST | `client_id` |
+| `admin/clients/toggle-email-notify.php` | POST | Alternar envío SMTP al cliente |
+| `admin/whatsapp-clicks.php` | GET | `counts` + `clicks` (requiere `admin_whatsapp_clicks`) |
+| `admin/whatsapp-clicks.php?id=` | GET / DELETE | Detalle / borrar |
+| `admin/whatsapp-clicks/read.php` | POST | `click_id`, `read` |
+| `admin/whatsapp-clicks/read-all.php` | POST | Marcar todos leídos/no leídos |
+
+Helpers: `app_admin_clients_api_url()`, `app_admin_whatsapp_clicks_api_url()`, etc.
+
+Prueba: `php tools/test_admin_portal_api.php tu@admin.com TuClave`.
+
+**Fase 4 admin API:** completa. Siguiente paso natural: front SPA consumiendo estos endpoints con `credentials: "same-origin"`.
 
 ## Recuperación de clave del admin
 
@@ -468,13 +813,84 @@ para no revelar qué correos son admins.
 
 ```
 pag-template/
-├── admin.php                  Panel único: config, rutas, servicios, galerías, mensajes, portal clientes, expertos (flag), WhatsApp (flag), reset.
+├── admin.php                  Panel único (HTML); auth e inbox vía libs/servicios.
+├── admin_portal_lib.php       Sesión, login y recuperación de clave admin.
+├── admin_service.php          Casos de uso admin (auth).
+├── admin_inbox_lib.php        Bandeja de contacto admin (carga, leer, responder).
+├── admin_messages_service.php Casos de uso bandeja admin (API).
+├── site_settings_lib.php      Configuración global del sitio (lectura/escritura).
+├── admin_settings_service.php Casos de uso ajustes admin (API).
+├── services_lib.php           Servicios y galería (CRUD, batch admin).
+├── admin_services_service.php Casos de uso servicios admin (API).
+├── experts_admin_lib.php      Expertos, disponibilidad y citas (admin).
+├── admin_experts_service.php  Casos de uso expertos admin (API).
+├── admin_clients_lib.php      Cuentas del portal de clientes (admin).
+├── admin_whatsapp_lib.php     Clics WhatsApp en admin.
+├── admin_portal_service.php   Casos de uso clientes + WhatsApp (API).
+├── upload_image_lib.php       Subida de imágenes a uploads/ (logo, servicios).
 ├── index.php                  Landing pública + #area-cliente (portal), contacto, carruseles, #agenda (flag).
 ├── agenda.php                 Reserva de citas (página dedicada; flag expert_agenda).
-├── agenda_book.php            POST de reserva de cita.
+├── agenda_book.php            Adaptador POST reserva → redirect (usa agenda_service).
+├── agenda_service.php         Casos de uso agenda (huecos, reserva).
 ├── agenda_lib.php             Disponibilidad, huecos, tabla pública, grilla semanal admin.
 ├── agenda_public_bootstrap.php  Datos de agenda para index/agenda (require).
-├── send.php                   POST del formulario de contacto / seguimientos.
+├── send.php                   Adaptador POST contacto → redirect (usa contact_service).
+├── contact_lib.php            Dominio contacto (BD, mail, validación).
+├── contact_service.php        Caso de uso contact_service_submit().
+├── api/
+│   ├── bootstrap.php          Respuestas JSON y lectura de cuerpo.
+│   └── v1/
+│       ├── contact/messages.php   POST API mensajes de contacto.
+│       ├── agenda/
+│       │   ├── slots.php          GET API huecos.
+│       │   └── bookings.php       POST API reservas.
+│       ├── auth/
+│       │   ├── session.php        GET sesión cliente.
+│       │   ├── login.php          POST login.
+│       │   ├── logout.php         POST logout.
+│       │   ├── register.php       POST registro (correo verificación).
+│       │   ├── register-confirm.php POST token del email.
+│       │   └── register-finalize.php POST cuenta sin correo.
+│       ├── client/
+│       │   ├── messages.php       GET bandeja.
+│       │   └── inbox-poll.php     GET poll no leídos.
+│       └── admin/
+│           ├── auth/
+│           │   ├── session.php        GET sesión admin.
+│           │   ├── login.php          POST login.
+│           │   ├── logout.php         POST logout.
+│           │   ├── password-reset-request.php
+│           │   └── password-reset.php
+│           ├── messages.php           GET lista o detalle (?id=).
+│           ├── messages/
+│           │   ├── read.php           POST marcar leído/no leído.
+│           │   ├── read-all.php       POST marcar todos.
+│           │   ├── delete.php         POST borrar mensaje.
+│           │   └── reply.php          POST responder.
+│           ├── settings.php           GET / PUT configuración general.
+│           ├── settings/
+│           │   ├── logo.php           POST logo (multipart).
+│           │   └── agenda-display.php POST mostrar nombre experto en agenda.
+│           ├── services.php           GET / POST / PUT / DELETE servicios.
+│           └── services/
+│               ├── image.php          POST imagen principal del servicio.
+│               ├── gallery.php        POST / PUT / DELETE galería.
+│               └── gallery/reorder.php POST orden de imágenes.
+│           ├── experts.php            GET / POST / PUT / DELETE expertos.
+│           └── experts/
+│               ├── week-grid.php      GET grilla semanal.
+│               ├── availability.php   POST / DELETE franja semanal.
+│               ├── availability-date.php POST / DELETE excepción por fecha.
+│               ├── availability/mon-fri.php POST L–V un experto.
+│               ├── availability/bulk-mon-fri.php POST L–V todos.
+│               └── appointments/cancel.php POST cancelar cita.
+│           ├── clients.php            GET / DELETE clientes portal.
+│           ├── clients/toggle-active.php POST activar/desactivar cuenta.
+│           ├── clients/toggle-email-notify.php POST preferencia SMTP.
+│           ├── whatsapp-clicks.php    GET / DELETE clics WhatsApp.
+│           └── whatsapp-clicks/
+│               ├── read.php           POST marcar leído.
+│               └── read-all.php       POST marcar todos.
 ├── contact_click_log.php      Registro auxiliar de clics (según flujo).
 ├── app_urls.php               Resolución de URLs (respeta app_config opcional).
 ├── app_config.example.php     Plantilla de app_config (features, public_base_url).
@@ -482,6 +898,7 @@ pag-template/
 ├── setup.sql                  Esquema de referencia + seed; import opcional (phpMyAdmin).
 ├── smtp_mail.php              Envío SMTP sin dependencias externas.
 ├── client_portal_lib.php      Sesión y registro del portal de clientes.
+├── client_service.php         Casos de uso auth + bandeja (API).
 ├── client_inbox_helpers.php   Helpers de bandeja/hilo cliente (require desde index).
 ├── client_login.php           Redirección a #area-cliente (compatibilidad).
 ├── client_dashboard.php       Redirección a #area-cliente (compatibilidad).
@@ -545,6 +962,8 @@ landing es provisionada por el dueño del proyecto.
 **Portal de clientes:** varias filas en `clients` por landing; el alta la hace el visitante
 en la landing y el admin solo modera. Sesión y rutas propias (`client_session_*`), sin mezclar
 con el panel admin; sigue siendo single-tenant (un sitio por instalación).
+
+**Capa API:** contacto, agenda pública, portal cliente y **panel admin** (auth, bandeja, ajustes, servicios, expertos, clientes, WhatsApp) exponen JSON v1. Listo para un front SPA o app móvil con la misma cookie de sesión admin (`credentials: "same-origin"`).
 
 **Por qué no multi-tenant compartido (todos en una BD con `site_id`):**
 implicaba reescribir todas las queries de `admin.php` e `index.php` para

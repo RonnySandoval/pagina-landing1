@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . "/db.php";
 require_once __DIR__ . "/client_portal_lib.php";
 require_once __DIR__ . "/app_urls.php";
-require_once __DIR__ . "/agenda_lib.php";
+require_once __DIR__ . "/agenda_service.php";
 
 client_session_start();
 
@@ -23,31 +23,6 @@ if ($returnPage !== "agenda.php" && $returnPage !== "index.php") {
     $returnPage = "agenda.php";
 }
 
-$serviceId = (int)($_POST["agenda_service_id"] ?? 0);
-$slotTok = trim((string)($_POST["agenda_slot"] ?? ""));
-$expertId = 0;
-$startsAt = "";
-$p = strpos($slotTok, "@");
-if ($p !== false) {
-    $expertId = (int)substr($slotTok, 0, $p);
-    $startsAt = trim(substr($slotTok, $p + 1));
-}
-$guestName = (string)($_POST["guest_name"] ?? "");
-$guestEmail = (string)($_POST["guest_email"] ?? "");
-$guestPhone = (string)($_POST["guest_phone"] ?? "");
-$notes = (string)($_POST["agenda_notes"] ?? "");
-$slotUnits = (int)($_POST["agenda_slot_units"] ?? 1);
-if ($slotUnits < 1) {
-    $slotUnits = 1;
-}
-$dateReturn = trim((string)($_POST["agenda_date_return"] ?? ""));
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateReturn)) {
-    $dateReturn = "";
-}
-if ($dateReturn === "" && preg_match('/^(\d{4}-\d{2}-\d{2})\s/', $startsAt, $m)) {
-    $dateReturn = $m[1];
-}
-
 $clientId = null;
 if (client_portal_resume_session($conn)) {
     $cid = (int)($_SESSION["client_id"] ?? 0);
@@ -56,18 +31,22 @@ if (client_portal_resume_session($conn)) {
     }
 }
 
-$err = agenda_try_insert_booking(
-    $conn,
-    $serviceId,
-    $expertId,
-    $startsAt,
-    $guestName,
-    $guestEmail,
-    $guestPhone,
-    $notes,
-    $clientId,
-    $slotUnits
-);
+$result = agenda_service_create_booking($conn, $_POST, ["client_id" => $clientId]);
+
+$serviceId = (int)($_POST["agenda_service_id"] ?? 0);
+$slotTok = trim((string)($_POST["agenda_slot"] ?? ""));
+$startsAt = "";
+$p = strpos($slotTok, "@");
+if ($p !== false) {
+    $startsAt = trim(substr($slotTok, $p + 1));
+}
+$dateReturn = trim((string)($_POST["agenda_date_return"] ?? ""));
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateReturn)) {
+    $dateReturn = "";
+}
+if ($dateReturn === "" && preg_match('/^(\d{4}-\d{2}-\d{2})\s/', $startsAt, $m)) {
+    $dateReturn = $m[1];
+}
 
 $qParts = [];
 if ($serviceId > 0) {
@@ -78,8 +57,11 @@ if ($dateReturn !== "") {
 }
 $tail = $qParts === [] ? "" : ("?" . http_build_query($qParts));
 
-if ($err !== null) {
-    $_SESSION["agenda_flash"] = ["type" => "danger", "msg" => $err];
+if (!$result["ok"]) {
+    $_SESSION["agenda_flash"] = [
+        "type" => "danger",
+        "msg" => (string)($result["message"] ?? "No se pudo completar la reserva."),
+    ];
 } else {
     $_SESSION["agenda_flash"] = [
         "type" => "success",
@@ -88,6 +70,6 @@ if ($err !== null) {
 }
 
 $base = app_public_base_url() . "/" . $returnPage;
-$hash = $returnPage === "index.php" ? "#agenda-cita" : "#agenda-cita";
+$hash = "#agenda-cita";
 header("Location: " . $base . $tail . $hash);
 exit;

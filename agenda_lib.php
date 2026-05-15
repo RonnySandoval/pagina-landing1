@@ -696,8 +696,10 @@ function agenda_try_insert_booking(
     string $guestPhone,
     string $notes,
     ?int $clientId,
-    int $slotUnits = 1
+    int $slotUnits = 1,
+    ?int &$appointmentId = null
 ): ?string {
+    $appointmentId = null;
     $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
     $start = DateTimeImmutable::createFromFormat("Y-m-d H:i:s", $startsAt, $tz);
     if ($start === false) {
@@ -828,6 +830,7 @@ function agenda_try_insert_booking(
             }
             throw new RuntimeException("execute");
         }
+        $appointmentId = (int)$conn->insert_id;
         $ins->close();
         $conn->commit();
     } catch (Throwable $e) {

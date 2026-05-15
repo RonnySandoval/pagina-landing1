@@ -1,11 +1,24 @@
 const menuToggle = document.getElementById("menuToggle");
 const mainNav = document.getElementById("mainNav");
 const year = document.getElementById("year");
-const themeDropdown = document.querySelector("[data-theme-dropdown]");
-const themeDropdownToggle = document.querySelector("[data-theme-dropdown-toggle]");
-const themeDropdownPanel = document.querySelector("[data-theme-dropdown-panel]");
-const themeModeBtns = Array.from(document.querySelectorAll("[data-theme-mode]"));
+const themeModeSwitch = document.querySelector("[data-theme-mode-switch]");
 const paletteButtons = Array.from(document.querySelectorAll(".palette-swatch-btn"));
+const paletteAnchor = document.querySelector("[data-palette-anchor]");
+const paletteTrigger = document.querySelector("[data-palette-trigger]");
+const paletteActiveDot = document.querySelector("[data-palette-active-dot]");
+
+const paletteColors = {
+  blue: "#3b82f6",
+  cyan: "#06b6d4",
+  emerald: "#10b981",
+  lime: "#84cc16",
+  amber: "#f59e0b",
+  sunset: "#f97316",
+  rose: "#f43f5e",
+  magenta: "#d946ef",
+  violet: "#8b5cf6",
+  indigo: "#6366f1",
+};
 
 /** Panel admin vs web pública: claves de localStorage distintas para no cruzar temas. */
 const themeContext =
@@ -27,23 +40,11 @@ const allowedPalettes = new Set([
   "indigo",
 ]);
 
-function setThemeDropdownOpen(open) {
-  if (!themeDropdownToggle || !themeDropdownPanel) return;
-  themeDropdownToggle.setAttribute("aria-expanded", open ? "true" : "false");
-  if (open) {
-    themeDropdownPanel.removeAttribute("hidden");
-  } else {
-    themeDropdownPanel.setAttribute("hidden", "");
-  }
-}
-
-function syncModeButtons(activeMode) {
-  themeModeBtns.forEach((btn) => {
-    const m = btn.getAttribute("data-theme-mode") || "";
-    const isOn = m === activeMode;
-    btn.classList.toggle("is-active", isOn);
-    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
-  });
+function syncModeSwitch(activeMode) {
+  if (!themeModeSwitch) return;
+  const isLight = activeMode === "light";
+  themeModeSwitch.checked = isLight;
+  themeModeSwitch.setAttribute("aria-label", isLight ? "Desactivar modo claro" : "Activar modo claro");
 }
 
 function syncPaletteButtons(activePalette) {
@@ -53,6 +54,16 @@ function syncPaletteButtons(activePalette) {
     btn.classList.toggle("is-active", isOn);
     btn.setAttribute("aria-pressed", isOn ? "true" : "false");
   });
+  if (paletteActiveDot) {
+    paletteActiveDot.style.background =
+      paletteColors[activePalette] || paletteColors.blue;
+  }
+}
+
+function setPaletteFlyoutOpen(open) {
+  if (!paletteAnchor || !paletteTrigger) return;
+  paletteAnchor.classList.toggle("is-open", open);
+  paletteTrigger.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function applyTheme(mode, palette) {
@@ -60,7 +71,7 @@ function applyTheme(mode, palette) {
   const safePalette = allowedPalettes.has(palette) ? palette : "blue";
   document.documentElement.setAttribute("data-theme", safeMode);
   document.documentElement.setAttribute("data-palette", safePalette);
-  syncModeButtons(safeMode);
+  syncModeSwitch(safeMode);
   syncPaletteButtons(safePalette);
 }
 
@@ -81,24 +92,27 @@ const initialPalette =
   localStorage.getItem(LS_PALETTE_KEY) || document.documentElement.getAttribute("data-palette") || "blue";
 applyTheme(initialMode, initialPalette);
 
-if (themeDropdownToggle && themeDropdownPanel) {
-  themeDropdownToggle.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const open = themeDropdownToggle.getAttribute("aria-expanded") === "true";
-    setThemeDropdownOpen(!open);
+if (themeModeSwitch) {
+  themeModeSwitch.addEventListener("change", () => {
+    const nextMode = themeModeSwitch.checked ? "light" : "dark";
+    const palette = document.documentElement.getAttribute("data-palette") || "blue";
+    applyTheme(nextMode, palette);
+    localStorage.setItem(LS_MODE_KEY, nextMode);
   });
 }
 
-if (themeDropdown) {
-  themeDropdown.addEventListener("click", (e) => {
+if (paletteTrigger && paletteAnchor) {
+  paletteTrigger.addEventListener("click", (e) => {
     e.stopPropagation();
+    const open = paletteAnchor.classList.contains("is-open");
+    setPaletteFlyoutOpen(!open);
   });
 }
 
 document.addEventListener("click", (e) => {
-  if (!themeDropdown || !themeDropdownPanel) return;
-  if (themeDropdown.contains(e.target)) return;
-  setThemeDropdownOpen(false);
+  if (!paletteAnchor || !paletteTrigger) return;
+  if (paletteAnchor.contains(e.target)) return;
+  setPaletteFlyoutOpen(false);
 });
 
 document.addEventListener("keydown", (e) => {
@@ -108,17 +122,7 @@ document.addEventListener("keydown", (e) => {
     closeServiceFocus();
     return;
   }
-  setThemeDropdownOpen(false);
-});
-
-themeModeBtns.forEach((btn) => {
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const nextMode = btn.getAttribute("data-theme-mode") || "dark";
-    const palette = document.documentElement.getAttribute("data-palette") || "blue";
-    applyTheme(nextMode, palette);
-    localStorage.setItem(LS_MODE_KEY, nextMode);
-  });
+  setPaletteFlyoutOpen(false);
 });
 
 paletteButtons.forEach((btn) => {
@@ -128,6 +132,7 @@ paletteButtons.forEach((btn) => {
     const mode = document.documentElement.getAttribute("data-theme") || "dark";
     applyTheme(mode, nextPalette);
     localStorage.setItem(LS_PALETTE_KEY, nextPalette);
+    setPaletteFlyoutOpen(false);
   });
 });
 
