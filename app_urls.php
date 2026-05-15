@@ -10,8 +10,12 @@ declare(strict_types=1);
  *   Landing pública  → index.php
  *   Panel admin      → admin.php
  *   Formulario       → send.php (POST desde la landing)
+ *   API contacto     → api/v1/contact/messages.php (POST JSON o form; misma lógica que send.php)
  *   Agenda / citas   → agenda.php (tabla de huecos; requiere features.expert_agenda)
  *   Reserva agenda   → agenda_book.php (POST desde agenda.php o landing)
+ *   API agenda       → api/v1/agenda/slots.php (GET), api/v1/agenda/bookings.php (POST)
+ *   API portal       → api/v1/auth/* (sesión, login, registro), api/v1/client/* (mensajes)
+ *   API admin        → api/v1/admin/auth/* (sesión, login, recuperación de clave)
  *   Login clientes   → index.php#area-cliente (misma página tras sesión)
  *
  * Módulos opcionales: `app_feature_enabled()` lee `features` en app_config.php
@@ -182,6 +186,179 @@ function app_client_dashboard_url(): string
 function app_client_portal_url(): string
 {
     return app_public_base_url() . "/index.php#area-cliente";
+}
+
+/** POST mensajes de contacto (API v1). */
+function app_contact_messages_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/contact/messages.php";
+}
+
+/** GET huecos de agenda (API v1). */
+function app_agenda_slots_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/agenda/slots.php";
+}
+
+/** POST reservas de agenda (API v1). */
+function app_agenda_bookings_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/agenda/bookings.php";
+}
+
+function app_client_auth_session_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/auth/session.php";
+}
+
+function app_client_auth_login_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/auth/login.php";
+}
+
+function app_client_messages_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/client/messages.php";
+}
+
+function app_client_inbox_poll_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/client/inbox-poll.php";
+}
+
+function app_admin_auth_session_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/auth/session.php";
+}
+
+function app_admin_auth_login_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/auth/login.php";
+}
+
+function app_admin_messages_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/messages.php";
+}
+
+function app_admin_messages_read_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/messages/read.php";
+}
+
+function app_admin_messages_read_all_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/messages/read-all.php";
+}
+
+function app_admin_messages_delete_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/messages/delete.php";
+}
+
+function app_admin_messages_reply_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/messages/reply.php";
+}
+
+function app_admin_settings_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/settings.php";
+}
+
+function app_admin_settings_logo_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/settings/logo.php";
+}
+
+function app_admin_settings_agenda_display_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/settings/agenda-display.php";
+}
+
+function app_admin_services_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/services.php";
+}
+
+function app_admin_services_image_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/services/image.php";
+}
+
+function app_admin_services_gallery_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/services/gallery.php";
+}
+
+function app_admin_services_gallery_reorder_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/services/gallery/reorder.php";
+}
+
+function app_admin_experts_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts.php";
+}
+
+function app_admin_experts_week_grid_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/week-grid.php";
+}
+
+function app_admin_experts_availability_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/availability.php";
+}
+
+function app_admin_experts_availability_mon_fri_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/availability/mon-fri.php";
+}
+
+function app_admin_experts_availability_bulk_mon_fri_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/availability/bulk-mon-fri.php";
+}
+
+function app_admin_experts_availability_date_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/availability-date.php";
+}
+
+function app_admin_experts_appointments_cancel_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/experts/appointments/cancel.php";
+}
+
+function app_admin_clients_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/clients.php";
+}
+
+function app_admin_clients_toggle_active_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/clients/toggle-active.php";
+}
+
+function app_admin_clients_toggle_email_notify_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/clients/toggle-email-notify.php";
+}
+
+function app_admin_whatsapp_clicks_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/whatsapp-clicks.php";
+}
+
+function app_admin_whatsapp_clicks_read_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/whatsapp-clicks/read.php";
+}
+
+function app_admin_whatsapp_clicks_read_all_api_url(): string
+{
+    return app_public_base_url() . "/api/v1/admin/whatsapp-clicks/read-all.php";
 }
 
 /**

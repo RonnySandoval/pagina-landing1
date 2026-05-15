@@ -7,23 +7,16 @@ declare(strict_types=1);
 // la cookie PHPSESSID por defecto (path "/") se comparte entre ellas y los datos
 // de sesión se "cuelan": admin_email de una landing aparece logueado en otra y la
 // pantalla "Credenciales Admin" muestra/usa el correo equivocado.
-// Solución: nombre de cookie único por instalación + cookie path = directorio del script.
-$_adminSessionScopeId = substr(md5(__DIR__), 0, 8);
-$_adminSessionCookiePath = '/';
-$_adminSessionScriptName = (string)($_SERVER['SCRIPT_NAME'] ?? '');
-if ($_adminSessionScriptName !== '') {
-    $_adminSessionRawDir = str_replace('\\', '/', dirname($_adminSessionScriptName));
-    if ($_adminSessionRawDir !== '' && $_adminSessionRawDir !== '.') {
-        $_adminSessionCookiePath = rtrim($_adminSessionRawDir, '/') . '/';
-    }
-}
-session_set_cookie_params([
-    'path' => $_adminSessionCookiePath,
-    'httponly' => true,
-    'samesite' => 'Lax',
-]);
-session_name('admin_session_' . $_adminSessionScopeId);
-session_start();
+// Solución: nombre de cookie único por instalación + cookie path = directorio del script (admin_portal_lib.php).
+require_once __DIR__ . "/admin_portal_lib.php";
+require_once __DIR__ . "/admin_inbox_lib.php";
+require_once __DIR__ . "/admin_settings_service.php";
+require_once __DIR__ . "/services_lib.php";
+require_once __DIR__ . "/experts_admin_lib.php";
+require_once __DIR__ . "/admin_clients_lib.php";
+require_once __DIR__ . "/admin_whatsapp_lib.php";
+require_once __DIR__ . "/upload_image_lib.php";
+admin_session_start();
 
 require __DIR__ . "/db.php";
 require_once __DIR__ . "/app_urls.php";
@@ -44,220 +37,26 @@ function h(string $value): string {
 }
 
 /** URL de ficha experto: edit = datos; schedule = horario y disponibilidad. */
-function admin_expert_page_url(int $expertId, string $view = "edit", string $weekStart = ""): string
+function admin_expert_page_url(int $expertId, string $view = "edit", string $weekStart = "", string $section = ""): string
 {
     $view = $view === "schedule" ? "schedule" : "edit";
     $q = "expert_id=" . $expertId . "&expert_view=" . rawurlencode($view);
     if ($weekStart !== "") {
         $q .= "&expert_week=" . rawurlencode($weekStart);
     }
+    $scheduleSections = ["appts", "week", "template", "daily", "dates"];
+    if ($view === "schedule" && $section !== "" && in_array($section, $scheduleSections, true)) {
+        $q .= "&expert_section=" . rawurlencode($section);
+    }
     $hash = $view === "schedule" ? "admin-expert-schedule" : "admin-expert-edit";
 
     return "admin.php?" . $q . "#" . $hash;
 }
 
-/**
- * Hilos de contacto por raíz de in_reply_to (misma lógica que el área cliente).
- *
- * @param array<int, list<array<string, mixed>>> $repliesByMessageId
- * @return list<array{root_id:int, messages:list<array<string, mixed>>, latest_ts:int, has_admin_reply:bool}>
- */
-function admin_group_messages_threads(array $messages, array $repliesByMessageId): array
-{
-    $byId = [];
-    foreach ($messages as $m) {
-        $id = (int)($m["id"] ?? 0);
-        if ($id > 0) {
-            $byId[$id] = $m;
-        }
-    }
-    $buckets = [];
-    foreach ($messages as $m) {
-        $mid = (int)($m["id"] ?? 0);
-        if ($mid <= 0) {
-            continue;
-        }
-        $root = $mid;
-        $p = (int)($m["in_reply_to"] ?? 0);
-        $guard = 0;
-        while ($p > 0 && isset($byId[$p]) && $guard++ < 64) {
-            $root = $p;
-            $p = (int)($byId[$p]["in_reply_to"] ?? 0);
-        }
-        if (!isset($buckets[$root])) {
-            $buckets[$root] = [];
-        }
-        $buckets[$root][] = $m;
-    }
-    $threads = [];
-    foreach ($buckets as $rootId => $rows) {
-        usort($rows, static function (array $a, array $b): int {
-            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
-            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
-            if ($ta !== $tb) {
-                return $ta <=> $tb;
-            }
-            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
-        });
-        $latestTs = 0;
-        foreach ($rows as $r) {
-            $t = strtotime((string)($r["created_at"] ?? "")) ?: 0;
-            if ($t > $latestTs) {
-                $latestTs = $t;
-            }
-        }
-        $hasAdmin = false;
-        foreach ($rows as $r) {
-            $rid = (int)($r["id"] ?? 0);
-            if ($rid > 0 && !empty($repliesByMessageId[$rid])) {
-                $hasAdmin = true;
-                break;
-            }
-        }
-        $threads[] = [
-            "root_id" => (int)$rootId,
-            "messages" => $rows,
-            "latest_ts" => $latestTs,
-            "has_admin_reply" => $hasAdmin,
-        ];
-    }
-    usort($threads, static function (array $a, array $b): int {
-        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
-    });
-
-    return $threads;
-}
-
-/**
- * Sin leídos y total en la misma ventana que la lista del inbox (últimos 100).
- *
- * @return array{unread:int,total:int}
- */
-function admin_contact_inbox_counts(mysqli $conn): array
-{
-    $unread = 0;
-    $total = 0;
-    $q = $conn->query(
-        "SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS u, COUNT(*) AS t
-         FROM (
-             SELECT is_read FROM contact_messages ORDER BY created_at DESC, id DESC LIMIT 100
-         ) AS inbox_window"
-    );
-    if ($q) {
-        $row = $q->fetch_assoc();
-        if (is_array($row)) {
-            $unread = (int)($row["u"] ?? 0);
-            $total = (int)($row["t"] ?? 0);
-        }
-    }
-
-    return ["unread" => $unread, "total" => $total];
-}
-
-/**
- * @return array{unread:int,total:int}
- */
+/** @return array{unread:int,total:int} */
 function admin_whatsapp_inbox_counts(mysqli $conn): array
 {
-    $unread = 0;
-    $total = 0;
-    $q = $conn->query(
-        "SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS u, COUNT(*) AS t
-         FROM (
-             SELECT is_read FROM contact_whatsapp_clicks ORDER BY created_at DESC, id DESC LIMIT 100
-         ) AS wa_window"
-    );
-    if ($q) {
-        $row = $q->fetch_assoc();
-        if (is_array($row)) {
-            $unread = (int)($row["u"] ?? 0);
-            $total = (int)($row["t"] ?? 0);
-        }
-    }
-
-    return ["unread" => $unread, "total" => $total];
-}
-
-/**
- * Correo al visitante (respuesta desde el admin). Reply-To = correo receptor del sitio.
- * El From SMTP se toma de mail_config (from_email o username si es correo).
- *
- * Si host, usuario, contraseña y remitente están bien configurados, se usa SMTP
- * aunque `use_smtp` sea false (útil cuando solo el formulario público dejaba mail()
- * y las respuestas del panel necesitan el mismo servidor SMTP).
- *
- * @return array{ok: bool, code: string} code: ok | smtp_failed | php_mail_failed | bad_config
- */
-function admin_send_visitor_reply_mail(
-    array $mailConfig,
-    string $to,
-    string $subject,
-    string $bodyPlain,
-    string $replyToEmail,
-    string $fromDisplayName
-): array {
-    $replyToEmail = trim($replyToEmail);
-    $fromDisplayName = trim($fromDisplayName);
-    $fromEmail = mail_config_resolve_smtp_from($mailConfig);
-    if ($replyToEmail === "" || !filter_var($replyToEmail, FILTER_VALIDATE_EMAIL)) {
-        return ["ok" => false, "code" => "bad_config"];
-    }
-    if ($fromEmail === "" || !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
-        return ["ok" => false, "code" => "bad_config"];
-    }
-    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
-        return ["ok" => false, "code" => "bad_config"];
-    }
-
-    $host = trim((string)($mailConfig["host"] ?? ""));
-    $user = trim((string)($mailConfig["username"] ?? ""));
-    $pass = preg_replace('/\s+/', '', (string)($mailConfig["password"] ?? ""));
-    $smtpFullyConfigured = $host !== "" && $user !== "" && $pass !== "";
-
-    // Respuestas del admin: SMTP si la config está completa (no dependemos solo de use_smtp).
-    $smtpReady = $smtpFullyConfigured && $fromEmail !== "";
-
-    if ($smtpReady) {
-        $smtpCfg = $mailConfig;
-        $smtpCfg["from_email"] = $fromEmail;
-        $smtpCfg["from_name"] = $fromDisplayName;
-
-        $ok = send_mail_smtp($smtpCfg, $to, $subject, $bodyPlain, $replyToEmail);
-        if ($ok) {
-            return ["ok" => true, "code" => "smtp"];
-        }
-        if (!empty($mailConfig["debug"]) && !empty($mailConfig["debug_log"])) {
-            smtp_debug_log($mailConfig, "Respuesta admin: envio SMTP fallo (To=" . $to . ")");
-        }
-        $fromHeaderLine = smtp_format_from_header($fromDisplayName !== "" ? $fromDisplayName : "Web", $fromEmail);
-        $headers = "From: " . $fromHeaderLine . "\r\n";
-        $headers .= "Reply-To: " . $replyToEmail . "\r\n";
-        $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
-        $headers .= "MIME-Version: 1.0\r\n";
-        $mailOk = (bool)@mail($to, $subject, $bodyPlain, $headers);
-        if ($mailOk) {
-            return ["ok" => true, "code" => "php_mail_fallback"];
-        }
-
-        return ["ok" => false, "code" => "smtp_failed"];
-    }
-
-    $fromHeaderLine = smtp_format_from_header($fromDisplayName !== "" ? $fromDisplayName : "Web", $fromEmail);
-    $headers = "From: " . $fromHeaderLine . "\r\n";
-    $headers .= "Reply-To: " . $replyToEmail . "\r\n";
-    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
-    $headers .= "MIME-Version: 1.0\r\n";
-
-    $mailOk = (bool)@mail($to, $subject, $bodyPlain, $headers);
-
-    return $mailOk ? ["ok" => true, "code" => "php_mail"] : ["ok" => false, "code" => "php_mail_failed"];
-}
-
-function admin_ajax_trace(string $message): void
-{
-    $path = __DIR__ . "/contact_send_trace.log";
-    $line = date("c") . " [admin] " . $message . "\n";
-    @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+    return whatsapp_admin_counts($conn);
 }
 
 function admin_set_flash(string $type, string $msg): void
@@ -284,114 +83,14 @@ function admin_redirect_after_action(): void
     exit;
 }
 
-function admin_send_password_reset_email(string $toEmail, string $resetUrl): bool
+function storeServiceImage(array $file): array
 {
-    $subject = "Recuperacion de clave de administrador";
-    $body = "Recibimos una solicitud para restablecer tu clave del panel.\n\n";
-    $body .= "Usa este enlace (expira en 30 minutos):\n";
-    $body .= $resetUrl . "\n\n";
-    $body .= "Si no solicitaste este cambio, ignora este correo.\n";
-
-    $mailConfigPath = __DIR__ . "/mail_config.php";
-    $mailConfig = is_readable($mailConfigPath) ? require $mailConfigPath : [];
-    $mailConfig = is_array($mailConfig) ? $mailConfig : [];
-
-    $useSmtp = !empty($mailConfig["use_smtp"]);
-    $smtpFrom = mail_config_resolve_smtp_from($mailConfig);
-    $smtpReady = $useSmtp
-        && !empty($mailConfig["host"])
-        && !empty($mailConfig["username"])
-        && !empty($mailConfig["password"])
-        && $smtpFrom !== "";
-
-    if ($smtpReady) {
-        $replyTo = $smtpFrom;
-        $smtpCfg = $mailConfig;
-        $smtpCfg["from_email"] = $smtpFrom;
-        $smtpSent = send_mail_smtp($smtpCfg, $toEmail, $subject, $body, $replyTo);
-        admin_ajax_trace("password_reset smtp send result=" . ($smtpSent ? "ok" : "fail") . " to=" . $toEmail);
-        if ($smtpSent) {
-            return true;
-        }
-    }
-
-    $fromEmail = $smtpFrom;
-    $fromName = trim((string)($mailConfig["from_name"] ?? "Panel Administrador"));
-    $headers = "Content-Type: text/plain; charset=UTF-8\r\n";
-    if ($fromEmail !== "") {
-        $headers .= "From: " . smtp_format_from_header($fromName, $fromEmail) . "\r\n";
-        $headers .= "Reply-To: {$fromEmail}\r\n";
-    }
-
-    $mailSent = (bool)@mail($toEmail, $subject, $body, $headers);
-    admin_ajax_trace("password_reset php_mail result=" . ($mailSent ? "ok" : "fail") . " to=" . $toEmail);
-    return $mailSent;
+    return upload_store_service_image($file, __DIR__);
 }
 
-/**
- * Guarda un archivo subido como imagen en uploads/<subdir>/. Devuelve la ruta
- * relativa (uploads/<subdir>/<nombre>) lista para guardar en BD.
- *
- * Sirve tanto para imágenes de servicios como para el logo del sitio: el
- * único cambio es la subcarpeta de destino y el prefijo del nombre generado.
- */
-function storeUploadedImage(array $file, string $subdir, string $prefix): array {
-    if (!isset($file["error"]) || $file["error"] === UPLOAD_ERR_NO_FILE) {
-        return ["path" => null, "error" => ""];
-    }
-    if ($file["error"] !== UPLOAD_ERR_OK) {
-        return ["path" => null, "error" => "No se pudo subir la imagen."];
-    }
-
-    $tmpPath = $file["tmp_name"] ?? "";
-    if ($tmpPath === "" || !is_uploaded_file($tmpPath)) {
-        return ["path" => null, "error" => "Archivo de imagen inválido."];
-    }
-
-    $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $mime = $finfo ? (string)finfo_file($finfo, $tmpPath) : "";
-    if ($finfo) {
-        finfo_close($finfo);
-    }
-
-    $allowedMimeMap = [
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-    ];
-    if (!isset($allowedMimeMap[$mime])) {
-        return ["path" => null, "error" => "Formato no permitido. Usa JPG, PNG, WEBP, GIF o SVG."];
-    }
-
-    $safeSubdir = preg_replace('/[^a-z0-9_-]/i', '', $subdir);
-    if ($safeSubdir === "") {
-        return ["path" => null, "error" => "Subcarpeta de uploads inválida."];
-    }
-
-    $uploadsDir = __DIR__ . "/uploads/" . $safeSubdir;
-    if (!is_dir($uploadsDir) && !mkdir($uploadsDir, 0777, true) && !is_dir($uploadsDir)) {
-        return ["path" => null, "error" => "No se pudo crear la carpeta de imágenes."];
-    }
-
-    $extension = $allowedMimeMap[$mime];
-    $fileName = $prefix . bin2hex(random_bytes(8)) . "." . $extension;
-    $targetPath = $uploadsDir . "/" . $fileName;
-
-    if (!move_uploaded_file($tmpPath, $targetPath)) {
-        return ["path" => null, "error" => "No se pudo guardar la imagen en el servidor."];
-    }
-
-    return ["path" => "uploads/" . $safeSubdir . "/" . $fileName, "error" => ""];
-}
-
-function storeServiceImage(array $file): array {
-    return storeUploadedImage($file, "services", "service_");
-}
-
-function storeLogoImage(array $file): array {
-    return storeUploadedImage($file, "logo", "logo_");
+function storeLogoImage(array $file): array
+{
+    return upload_store_logo_image($file, __DIR__);
 }
 
 $message = "";
@@ -440,301 +139,73 @@ $iconOptions = [
 ];
 
 if (isset($_POST["action"]) && $_POST["action"] === "login") {
-    $email = trim($_POST["email"] ?? "");
-    $password = trim($_POST["password"] ?? "");
-
-    $stmt = $conn->prepare("SELECT id, password FROM admins WHERE email = ? LIMIT 1");
-    $adminId = 0;
-    $passwordFromDb = "";
-    $isValidPassword = false;
-    $needsRehash = false;
-    $newHashedPassword = "";
-
-    $stmt->bind_param("s", $email);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    if ($result && $result->num_rows === 1) {
-        $adminRow = $result->fetch_assoc();
-        $adminId = (int)($adminRow["id"] ?? 0);
-        $passwordFromDb = (string)($adminRow["password"] ?? "");
-        if ($passwordFromDb !== "") {
-            $isValidPassword = password_verify($password, $passwordFromDb);
-            if ($isValidPassword) {
-                $needsRehash = password_needs_rehash($passwordFromDb, PASSWORD_DEFAULT);
-            } elseif (hash_equals($passwordFromDb, $password)) {
-                // Compatibilidad con contraseñas antiguas guardadas en texto plano.
-                $isValidPassword = true;
-                $needsRehash = true;
-            }
-        }
-    }
-
-    if ($isValidPassword) {
-        if ($needsRehash && $adminId > 0) {
-            $newHashedPassword = password_hash($password, PASSWORD_DEFAULT);
-            if ($newHashedPassword !== false) {
-                $updateStmt = $conn->prepare("UPDATE admins SET password = ? WHERE id = ?");
-                if ($updateStmt !== false) {
-                    $updateStmt->bind_param("si", $newHashedPassword, $adminId);
-                    $updateStmt->execute();
-                    $updateStmt->close();
-                }
-            }
-        }
-        $_SESSION["admin_logged"] = true;
-        $_SESSION["admin_email"] = $email;
+    $loginErr = admin_try_login($conn, trim((string)($_POST["email"] ?? "")), (string)($_POST["password"] ?? ""));
+    if ($loginErr !== null) {
+        $error = $loginErr;
+    } else {
         header("Location: admin.php");
         exit;
     }
-    $error = "Credenciales invalidas.";
 }
 
 if (isset($_POST["action"]) && $_POST["action"] === "request_admin_password_reset") {
-    $email = trim((string)($_POST["reset_email"] ?? ""));
-    $genericMessage = "Si el correo existe, enviamos un enlace de recuperacion.";
-    admin_ajax_trace("password_reset request email=" . $email);
-
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        admin_ajax_trace("password_reset abort invalid_email");
-    } else {
-        $stmt = $conn->prepare("SELECT id, email FROM admins WHERE email = ? LIMIT 1");
-        if ($stmt === false) {
-            admin_ajax_trace("password_reset abort prepare_failed err=" . $conn->error);
-        } else {
-            $stmt->bind_param("s", $email);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $stmt->close();
-
-            if (!$result || $result->num_rows !== 1) {
-                admin_ajax_trace("password_reset abort no_admin_with_this_email (debe coincidir con el correo del panel)");
-            } else {
-                $adminRow = $result->fetch_assoc();
-                $adminId = (int)($adminRow["id"] ?? 0);
-                $adminEmail = (string)($adminRow["email"] ?? "");
-
-                if ($adminId <= 0 || $adminEmail === "") {
-                    admin_ajax_trace("password_reset abort bad_admin_row");
-                } else {
-                    $token = bin2hex(random_bytes(32));
-                    $tokenHash = hash("sha256", $token);
-                    $expiresAt = date("Y-m-d H:i:s", time() + (30 * 60));
-                    $insertStmt = $conn->prepare("INSERT INTO admin_password_resets (admin_id, token_hash, expires_at) VALUES (?, ?, ?)");
-                    if ($insertStmt === false) {
-                        admin_ajax_trace("password_reset abort insert_prepare_failed err=" . $conn->error);
-                    } else {
-                        $insertStmt->bind_param("iss", $adminId, $tokenHash, $expiresAt);
-                        $inserted = $insertStmt->execute();
-                        $insertErr = $insertStmt->error;
-                        $insertStmt->close();
-                        if (!$inserted) {
-                            admin_ajax_trace("password_reset abort insert_execute_failed err=" . $insertErr);
-                        } else {
-                            $baseUrl = app_public_base_url();
-                            $resetUrl = $baseUrl . "/admin.php?reset_token=" . urlencode($token);
-                            admin_ajax_trace("password_reset token_created admin_id={$adminId} expires_at={$expiresAt}");
-                            admin_ajax_trace("password_reset link=" . $resetUrl);
-                            $sent = admin_send_password_reset_email($adminEmail, $resetUrl);
-                            admin_ajax_trace("password_reset final_send=" . ($sent ? "ok" : "fail"));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    $message = $genericMessage;
+    $resetReq = admin_request_password_reset($conn, (string)($_POST["reset_email"] ?? ""));
+    $message = (string)($resetReq["message"] ?? "Si el correo existe, enviamos un enlace de recuperacion.");
 }
 
 if (isset($_POST["action"]) && $_POST["action"] === "reset_admin_password") {
-    $token = trim((string)($_POST["reset_token"] ?? ""));
-    $newPassword = (string)($_POST["new_admin_password"] ?? "");
-    $confirmPassword = (string)($_POST["confirm_admin_password"] ?? "");
-
-    if ($token === "") {
-        $error = "Token de recuperacion invalido.";
-    } elseif ($newPassword === "" || $confirmPassword === "") {
-        $error = "Completa los campos de nueva clave.";
-    } elseif ($newPassword !== $confirmPassword) {
-        $error = "La nueva clave y su confirmacion no coinciden.";
-    } elseif (strlen($newPassword) < 10) {
-        $error = "La nueva clave debe tener al menos 10 caracteres.";
-    } elseif (!preg_match('/[a-z]/', $newPassword) || !preg_match('/[A-Z]/', $newPassword) || !preg_match('/\d/', $newPassword)) {
-        $error = "La nueva clave debe incluir mayuscula, minuscula y numero.";
+    $resetErr = admin_reset_password_with_token(
+        $conn,
+        (string)($_POST["reset_token"] ?? ""),
+        (string)($_POST["new_admin_password"] ?? ""),
+        (string)($_POST["confirm_admin_password"] ?? "")
+    );
+    if ($resetErr !== null) {
+        $error = $resetErr;
     } else {
-        $tokenHash = hash("sha256", $token);
-        $resetStmt = $conn->prepare("
-            SELECT id, admin_id
-            FROM admin_password_resets
-            WHERE token_hash = ?
-              AND used_at IS NULL
-              AND expires_at >= NOW()
-            LIMIT 1
-        ");
-        if ($resetStmt === false) {
-            $error = "No se pudo validar el token de recuperacion.";
-        } else {
-            $resetStmt->bind_param("s", $tokenHash);
-            $resetStmt->execute();
-            $resetResult = $resetStmt->get_result();
-            $resetStmt->close();
-
-            if (!$resetResult || $resetResult->num_rows !== 1) {
-                $error = "El enlace de recuperacion no es valido o ya expiro.";
-            } else {
-                $resetRow = $resetResult->fetch_assoc();
-                $resetId = (int)($resetRow["id"] ?? 0);
-                $adminId = (int)($resetRow["admin_id"] ?? 0);
-                $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-
-                if ($adminId <= 0 || $resetId <= 0 || $hashedPassword === false) {
-                    $error = "No se pudo restablecer la clave.";
-                } else {
-                    $conn->begin_transaction();
-                    try {
-                        $updateAdminStmt = $conn->prepare("UPDATE admins SET password = ? WHERE id = ?");
-                        if ($updateAdminStmt === false) {
-                            throw new RuntimeException("prepare_admin_update_failed");
-                        }
-                        $updateAdminStmt->bind_param("si", $hashedPassword, $adminId);
-                        if (!$updateAdminStmt->execute()) {
-                            throw new RuntimeException("execute_admin_update_failed");
-                        }
-                        $updateAdminStmt->close();
-
-                        $markUsedStmt = $conn->prepare("UPDATE admin_password_resets SET used_at = NOW() WHERE id = ?");
-                        if ($markUsedStmt === false) {
-                            throw new RuntimeException("prepare_reset_update_failed");
-                        }
-                        $markUsedStmt->bind_param("i", $resetId);
-                        if (!$markUsedStmt->execute()) {
-                            throw new RuntimeException("execute_reset_update_failed");
-                        }
-                        $markUsedStmt->close();
-
-                        $invalidateStmt = $conn->prepare("
-                            UPDATE admin_password_resets
-                            SET used_at = NOW()
-                            WHERE admin_id = ?
-                              AND used_at IS NULL
-                              AND id <> ?
-                        ");
-                        if ($invalidateStmt !== false) {
-                            $invalidateStmt->bind_param("ii", $adminId, $resetId);
-                            $invalidateStmt->execute();
-                            $invalidateStmt->close();
-                        }
-
-                        $conn->commit();
-                        $message = "Clave restablecida. Ya puedes iniciar sesion.";
-                        $resetTokenFromUrl = "";
-                    } catch (Throwable $e) {
-                        $conn->rollback();
-                        $error = "No se pudo restablecer la clave.";
-                    }
-                }
-            }
-        }
+        $message = "Clave restablecida. Ya puedes iniciar sesion.";
+        $resetTokenFromUrl = "";
     }
 }
 
 if (isset($_GET["logout"])) {
-    session_destroy();
+    admin_session_destroy();
     header("Location: admin.php");
     exit;
 }
 
-$isLogged = isset($_SESSION["admin_logged"]) && $_SESSION["admin_logged"] === true;
-
-// Defensa adicional contra sesiones "huérfanas" entre landings.
-// Si la cookie de una landing previa sobrevivió (p. ej. instalaciones anteriores al
-// aislamiento, o usuarios que comparten navegador entre /pag-laura y /pag-juan),
-// validamos que admin_email exista en ESTA BD. Si no, descartamos la sesión.
-if ($isLogged) {
-    $_sessionEmail = (string)($_SESSION["admin_email"] ?? "");
-    $_sessionValid = false;
-    if ($_sessionEmail !== "") {
-        $stmt = $conn->prepare("SELECT id FROM admins WHERE email = ? LIMIT 1");
-        if ($stmt !== false) {
-            $stmt->bind_param("s", $_sessionEmail);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($res && $res->num_rows === 1) {
-                $_sessionValid = true;
-            }
-            $stmt->close();
-        }
-    }
-    if (!$_sessionValid) {
-        $_SESSION = [];
-        $isLogged = false;
-    }
-}
+$isLogged = admin_resume_session($conn);
 
 $adminInboxWide = $isLogged && $adminInboxUi && isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1";
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings") {
-    $personName = trim($_POST["person_name"] ?? "");
-    $brandName = trim($_POST["brand_name"] ?? "");
-    $heroTitle = trim($_POST["hero_title"] ?? "");
-    $heroIntro = trim($_POST["hero_intro"] ?? "");
-    $aboutText = trim($_POST["about_text"] ?? "");
-    $contactIntro = trim($_POST["contact_intro"] ?? "");
-    $contactEmail = trim($_POST["contact_email"] ?? "");
-    $waCountryRaw = trim((string)($_POST["contact_whatsapp_country"] ?? ""));
-    $waLocalRaw = trim((string)($_POST["contact_whatsapp_local"] ?? ""));
-    $waCountryDigits = preg_replace('/\D+/', '', $waCountryRaw) ?? "";
-    $waLocalDigits = preg_replace('/\D+/', '', $waLocalRaw) ?? "";
-    $waCountryDigits = substr($waCountryDigits, 0, 3);
-    $waLocalDigits = substr($waLocalDigits, 0, 32);
-    // wa.me: solo dígitos E.164. Con código de país: columna país + número nacional.
-    // Sin código de país: todo en contact_whatsapp (compatibilidad con datos antiguos).
-    if ($waLocalDigits === "") {
-        $contactWhatsappForDb = null;
-        $contactWhatsappCountryForDb = null;
-    } elseif ($waCountryDigits === "") {
-        $contactWhatsappForDb = $waLocalDigits;
-        $contactWhatsappCountryForDb = null;
-    } else {
-        $contactWhatsappForDb = $waLocalDigits;
-        $contactWhatsappCountryForDb = $waCountryDigits;
-    }
-    $footerText = trim($_POST["footer_text"] ?? "");
-
-    // Logo: la ruta actual viaja en hidden para preservarla si no se sube otra.
-    // Si se sube un archivo nuevo, reemplaza. Si se marca "remove_logo_image"
-    // o se sube un reemplazo, el archivo viejo se borra del disco.
-    $currentLogoPath = trim((string)($_POST["current_logo_image_path"] ?? ""));
-    $logoPath = $currentLogoPath;
-    $logoError = "";
-    $logoUpload = storeLogoImage($_FILES["logo_image_file"] ?? []);
-    if ($logoUpload["error"] !== "") {
-        $logoError = $logoUpload["error"];
-    } elseif ($logoUpload["path"] !== null) {
-        if ($currentLogoPath !== "" && is_file(__DIR__ . "/" . $currentLogoPath)) {
-            @unlink(__DIR__ . "/" . $currentLogoPath);
+    $textResult = site_settings_update($conn, $_POST);
+    if (!$textResult["ok"]) {
+        $code = (string)($textResult["error"] ?? "");
+        if ($code === "invalid_contact_email") {
+            $error = "Ingresa un correo de contacto válido.";
+        } elseif (str_starts_with($code, "missing_")) {
+            $error = "Completa todos los campos obligatorios de configuración general.";
+        } else {
+            $error = "No se pudo guardar la configuración general.";
         }
-        $logoPath = $logoUpload["path"];
-    } elseif (!empty($_POST["remove_logo_image"])) {
-        if ($currentLogoPath !== "" && is_file(__DIR__ . "/" . $currentLogoPath)) {
-            @unlink(__DIR__ . "/" . $currentLogoPath);
-        }
-        $logoPath = "";
-    }
-
-    if ($logoError !== "") {
-        $error = $logoError;
     } else {
-        $logoForDb = $logoPath !== "" ? $logoPath : null;
-        $stmt = $conn->prepare("
-          UPDATE site_settings
-          SET person_name = ?, brand_name = ?, hero_title = ?, hero_intro = ?, about_text = ?, contact_intro = ?, contact_email = ?, contact_whatsapp = ?, contact_whatsapp_country_code = ?, footer_text = ?, logo_image_path = ?
-          WHERE id = 1
-        ");
-        $stmt->bind_param("sssssssssss", $personName, $brandName, $heroTitle, $heroIntro, $aboutText, $contactIntro, $contactEmail, $contactWhatsappForDb, $contactWhatsappCountryForDb, $footerText, $logoForDb);
-        $stmt->execute();
-        $message = "Configuración general actualizada.";
+        $currentLogoPath = trim((string)($_POST["current_logo_image_path"] ?? ""));
+        $removeLogo = !empty($_POST["remove_logo_image"]);
+        $logoFile = $_FILES["logo_image_file"] ?? [];
+        $hasLogoFile = is_array($logoFile)
+            && isset($logoFile["error"])
+            && (int)$logoFile["error"] !== UPLOAD_ERR_NO_FILE;
+        if ($hasLogoFile || $removeLogo) {
+            $logoResult = site_settings_update_logo($conn, is_array($logoFile) ? $logoFile : [], $currentLogoPath, $removeLogo, __DIR__);
+            if (!$logoResult["ok"]) {
+                $error = (string)($logoResult["message"] ?? "No se pudo actualizar el logo.");
+            } else {
+                $message = "Configuración general actualizada.";
+            }
+        } else {
+            $message = "Configuración general actualizada.";
+        }
     }
 }
 
@@ -823,21 +294,11 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_delete") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid <= 0) {
-        admin_set_flash("error", "Cliente no válido.");
+    $deleted = clients_admin_delete($conn, $cid);
+    if (!$deleted["ok"]) {
+        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo eliminar el cliente.");
     } else {
-        $del = $conn->prepare("DELETE FROM clients WHERE id = ?");
-        if ($del === false) {
-            admin_set_flash("error", "No se pudo eliminar el cliente.");
-        } else {
-            $del->bind_param("i", $cid);
-            if ($del->execute()) {
-                admin_set_flash("success", "Cliente eliminado.");
-            } else {
-                admin_set_flash("error", "No se pudo eliminar el cliente.");
-            }
-            $del->close();
-        }
+        admin_set_flash("success", "Cliente eliminado.");
     }
     header("Location: admin.php#admin-tool-clients");
     exit;
@@ -845,368 +306,107 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_delete"
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_active") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid <= 0) {
-        admin_set_flash("error", "Cliente no válido.");
+    $toggled = clients_admin_toggle_active($conn, $cid);
+    if (!$toggled["ok"]) {
+        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la cuenta.");
     } else {
-        $tog = $conn->prepare("UPDATE clients SET is_active = IF(is_active = 1, 0, 1) WHERE id = ?");
-        if ($tog === false) {
-            admin_set_flash("error", "No se pudo actualizar la cuenta.");
-        } else {
-            $tog->bind_param("i", $cid);
-            if ($tog->execute()) {
-                admin_set_flash("success", "Estado de la cuenta actualizado.");
-            } else {
-                admin_set_flash("error", "No se pudo guardar el estado de la cuenta.");
-            }
-            $tog->close();
-        }
+        admin_set_flash("success", "Estado de la cuenta actualizado.");
     }
     header("Location: admin.php#admin-tool-clients");
     exit;
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "add_service") {
-    $title = trim($_POST["title"] ?? "");
-    $description = trim($_POST["description"] ?? "");
-    $iconClass = trim($_POST["icon_class"] ?? "fa-solid fa-star");
-    $sortOrder = (int)($_POST["sort_order"] ?? 999);
-    if ($sortOrder < 0) {
-        $sortOrder = 999;
-    }
-    if ($sortOrder > 999999) {
-        $sortOrder = 999999;
-    }
-    $isActive = isset($_POST["is_active"]) ? 1 : 0;
-
-    $uploadResult = storeServiceImage($_FILES["image_file"] ?? []);
-    if ($uploadResult["error"] !== "") {
-        $error = $uploadResult["error"];
-    } elseif ($title !== "" && $description !== "") {
-        $imagePath = $uploadResult["path"];
-        if ($imagePath === null) {
-            $imagePath = "";
+    $created = services_create($conn, [
+        "title" => $_POST["title"] ?? "",
+        "description" => $_POST["description"] ?? "",
+        "icon_class" => $_POST["icon_class"] ?? "fa-solid fa-star",
+        "sort_order" => $_POST["sort_order"] ?? 999,
+        "is_active" => isset($_POST["is_active"]),
+    ], $_FILES["image_file"] ?? [], __DIR__);
+    if (!$created["ok"]) {
+        $code = (string)($created["error"] ?? "");
+        if ($code === "missing_fields") {
+            $error = "Título y descripción son obligatorios.";
+        } else {
+            $error = (string)($created["message"] ?? "No se pudo agregar el servicio.");
         }
-        $stmt = $conn->prepare(
-            "INSERT INTO services (title, description, icon_class, image_path, sort_order, is_active) VALUES (?, ?, ?, ?, ?, ?)"
-        );
-        $stmt->bind_param("ssssii", $title, $description, $iconClass, $imagePath, $sortOrder, $isActive);
-        $stmt->execute();
-        $stmt->close();
-        $message = "Servicio agregado.";
     } else {
-        $error = "Título y descripción son obligatorios.";
+        $message = "Servicio agregado.";
     }
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services" && isset($_POST["services"])) {
-    $removeGalleryIds = array_values(array_filter(array_map("intval", $_POST["remove_gallery_ids"] ?? []), static fn(int $id): bool => $id > 0));
-    if (count($removeGalleryIds) > 0) {
-        $placeholders = implode(",", array_fill(0, count($removeGalleryIds), "?"));
-        $types = str_repeat("i", count($removeGalleryIds));
-        $deleteGalleryStmt = $conn->prepare("DELETE FROM service_gallery WHERE id IN ($placeholders)");
-        $deleteGalleryStmt->bind_param($types, ...$removeGalleryIds);
-        $deleteGalleryStmt->execute();
-    }
-
-    if (isset($_POST["gallery_image_titles"]) && is_array($_POST["gallery_image_titles"])) {
-        $galMetaStmt = $conn->prepare("UPDATE service_gallery SET image_title = ?, image_description = ?, caption = ? WHERE id = ?");
-        if ($galMetaStmt !== false) {
-            foreach ($_POST["gallery_image_titles"] as $galleryIdRaw => $titleRaw) {
-                $galleryId = (int)$galleryIdRaw;
-                if ($galleryId <= 0) {
-                    continue;
-                }
-                if (in_array($galleryId, $removeGalleryIds, true)) {
-                    continue;
-                }
-                $imgTitle = trim((string)$titleRaw);
-                $imgDesc = trim((string)($_POST["gallery_image_descriptions"][$galleryIdRaw] ?? ""));
-                $capSync = $imgTitle;
-                if (function_exists("mb_substr")) {
-                    $capSync = mb_substr($imgTitle, 0, 180, "UTF-8");
-                } elseif (strlen($capSync) > 180) {
-                    $capSync = substr($capSync, 0, 180);
-                }
-                $galMetaStmt->bind_param("sssi", $imgTitle, $imgDesc, $capSync, $galleryId);
-                $galMetaStmt->execute();
-            }
-            $galMetaStmt->close();
-        }
-    }
-
-    foreach ($_POST["services"] as $id => $serviceData) {
-        $serviceId = (int)$id;
-        $title = trim($serviceData["title"] ?? "");
-        $description = trim($serviceData["description"] ?? "");
-        $iconClass = trim($serviceData["icon_class"] ?? "fa-solid fa-star");
-        $sortOrder = (int)($serviceData["sort_order"] ?? 999);
-        $isActive = isset($serviceData["is_active"]) ? 1 : 0;
-
-        $currentImagePath = trim((string)($serviceData["current_image_path"] ?? ""));
-        $serviceFile = [];
-        if (isset($_FILES["service_images"]["error"][$serviceId])) {
-            $serviceFile = [
-                "name" => $_FILES["service_images"]["name"][$serviceId] ?? "",
-                "type" => $_FILES["service_images"]["type"][$serviceId] ?? "",
-                "tmp_name" => $_FILES["service_images"]["tmp_name"][$serviceId] ?? "",
-                "error" => (int)($_FILES["service_images"]["error"][$serviceId] ?? UPLOAD_ERR_NO_FILE),
-                "size" => (int)($_FILES["service_images"]["size"][$serviceId] ?? 0)
-            ];
-        }
-        $uploadResult = storeServiceImage($serviceFile);
-        if ($uploadResult["error"] !== "") {
-            $error = $uploadResult["error"];
-            break;
-        }
-        $imagePath = $uploadResult["path"] ?? null;
-        if ($imagePath === null) {
-            $imagePath = $currentImagePath !== "" ? $currentImagePath : null;
-        }
-
-        $stmt = $conn->prepare("UPDATE services SET title = ?, description = ?, icon_class = ?, image_path = ?, sort_order = ?, is_active = ? WHERE id = ?");
-        $stmt->bind_param("ssssiii", $title, $description, $iconClass, $imagePath, $sortOrder, $isActive, $serviceId);
-        $stmt->execute();
-
-        $galleryOrderRaw = (string)($serviceData["gallery_order"] ?? "");
-        $orderedIds = array_values(array_unique(array_filter(array_map("intval", explode(",", $galleryOrderRaw)), static fn(int $value): bool => $value > 0)));
-        if (count($orderedIds) > 0) {
-            $resetOrderStmt = $conn->prepare("UPDATE service_gallery SET sort_order = 999 WHERE service_id = ?");
-            $resetOrderStmt->bind_param("i", $serviceId);
-            $resetOrderStmt->execute();
-
-            $position = 1;
-            foreach ($orderedIds as $galleryId) {
-                $orderStmt = $conn->prepare("UPDATE service_gallery SET sort_order = ? WHERE id = ? AND service_id = ?");
-                $orderStmt->bind_param("iii", $position, $galleryId, $serviceId);
-                $orderStmt->execute();
-                $position++;
-            }
-        }
-
-        if (isset($_FILES["gallery_images"]["error"][$serviceId]) && is_array($_FILES["gallery_images"]["error"][$serviceId])) {
-            foreach ($_FILES["gallery_images"]["error"][$serviceId] as $index => $fileError) {
-                $galleryFile = [
-                    "name" => $_FILES["gallery_images"]["name"][$serviceId][$index] ?? "",
-                    "type" => $_FILES["gallery_images"]["type"][$serviceId][$index] ?? "",
-                    "tmp_name" => $_FILES["gallery_images"]["tmp_name"][$serviceId][$index] ?? "",
-                    "error" => (int)$fileError,
-                    "size" => (int)($_FILES["gallery_images"]["size"][$serviceId][$index] ?? 0)
-                ];
-                $galleryUpload = storeServiceImage($galleryFile);
-                if ($galleryUpload["error"] !== "") {
-                    $error = $galleryUpload["error"];
-                    break 2;
-                }
-                if (!empty($galleryUpload["path"])) {
-                    $galleryStmt = $conn->prepare("INSERT INTO service_gallery (service_id, image_path, sort_order, is_active, image_title, image_description) VALUES (?, ?, 999, 1, NULL, NULL)");
-                    $galleryStmt->bind_param("is", $serviceId, $galleryUpload["path"]);
-                    $galleryStmt->execute();
-                }
-            }
-        }
-    }
-    if ($error === "") {
-      $message = "Servicios actualizados.";
+    $batch = services_save_batch_from_post($conn, $_POST, $_FILES, __DIR__);
+    if (!$batch["ok"]) {
+        $error = (string)($batch["message"] ?? "No se pudieron actualizar los servicios.");
+    } else {
+        $message = (string)($batch["message"] ?? "Servicios actualizados.");
     }
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_service") {
     $serviceId = (int)($_POST["service_id"] ?? 0);
-    if ($serviceId > 0) {
-        $stmt = $conn->prepare("DELETE FROM services WHERE id = ?");
-        $stmt->bind_param("i", $serviceId);
-        $stmt->execute();
+    $deleted = services_delete($conn, $serviceId);
+    if ($deleted["ok"]) {
         $message = "Servicio eliminado.";
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "add_expert") {
-    $displayName = trim((string)($_POST["display_name"] ?? ""));
-    if ($displayName === "") {
-        $error = "Indica el nombre visible del experto.";
-    } elseif (mb_strlen($displayName, "UTF-8") > 180) {
-        $error = "El nombre es demasiado largo (máx. 180 caracteres).";
-    } else {
-        $email = trim((string)($_POST["email"] ?? ""));
-        if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    $svcList = $_POST["expert_services"] ?? [];
+    if (!is_array($svcList)) {
+        $svcList = [];
+    }
+    $created = experts_admin_create($conn, $_POST, $svcList);
+    if (!$created["ok"]) {
+        $code = (string)($created["error"] ?? "");
+        if ($code === "missing_display_name") {
+            $error = "Indica el nombre visible del experto.";
+        } elseif ($code === "invalid_email") {
             $error = "El correo del experto no es válido.";
+        } elseif ($code === "services_link_failed") {
+            $error = "No se pudo vincular servicios al experto.";
+        } else {
+            $error = "No se pudo crear el experto.";
         }
-        $phone = trim((string)($_POST["phone"] ?? ""));
-        if (mb_strlen($phone, "UTF-8") > 48) {
-            $phone = mb_substr($phone, 0, 48, "UTF-8");
-        }
-        $notes = (string)($_POST["notes"] ?? "");
-        if (strlen($notes) > 12000) {
-            $notes = substr($notes, 0, 12000);
-        }
-        $sortOrder = (int)($_POST["sort_order"] ?? 999);
-        if ($sortOrder < 0) {
-            $sortOrder = 0;
-        }
-        if ($sortOrder > 999999) {
-            $sortOrder = 999999;
-        }
-        $isActive = isset($_POST["is_active"]) ? 1 : 0;
-        if ($error === "") {
-            $emailDb = $email;
-            $phoneDb = $phone;
-            $ins = $conn->prepare("INSERT INTO experts (display_name, email, phone, notes, sort_order, is_active) VALUES (?, ?, ?, ?, ?, ?)");
-            if ($ins === false) {
-                $error = "No se pudo crear el experto.";
-            } else {
-                $ins->bind_param("ssssii", $displayName, $emailDb, $phoneDb, $notes, $sortOrder, $isActive);
-                if (!$ins->execute()) {
-                    $error = "No se pudo crear el experto.";
-                    $ins->close();
-                } else {
-                    $newExpertId = (int)$conn->insert_id;
-                    $ins->close();
-                    $validServiceIds = [];
-                    $vs = $conn->query("SELECT id FROM services");
-                    if ($vs) {
-                        while ($z = $vs->fetch_assoc()) {
-                            $validServiceIds[(int)$z["id"]] = true;
-                        }
-                    }
-                    $list = $_POST["expert_services"] ?? [];
-                    if (!is_array($list)) {
-                        $list = [];
-                    }
-                    $insEs = $conn->prepare("INSERT INTO expert_services (expert_id, service_id) VALUES (?, ?)");
-                    if ($insEs === false) {
-                        $error = "No se pudo vincular servicios al experto.";
-                    } else {
-                        foreach ($list as $sidRaw) {
-                            $sid = (int)$sidRaw;
-                            if ($sid <= 0 || !isset($validServiceIds[$sid])) {
-                                continue;
-                            }
-                            $insEs->bind_param("ii", $newExpertId, $sid);
-                            if (!$insEs->execute()) {
-                                $error = "No se pudo vincular un servicio.";
-                                break;
-                            }
-                        }
-                        $insEs->close();
-                    }
-                    if ($error === "") {
-                        agenda_replace_mon_fri_single_window(
-                            $conn,
-                            $newExpertId,
-                            AGENDA_DEFAULT_MON_FRI_START,
-                            AGENDA_DEFAULT_MON_FRI_END
-                        );
-                        admin_set_flash("success", "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.");
-                        header("Location: " . admin_expert_page_url($newExpertId, "edit"));
-                        exit;
-                    }
-                }
-            }
-        }
+    } else {
+        $newExpertId = (int)$created["expert_id"];
+        admin_set_flash("success", "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.");
+        header("Location: " . admin_expert_page_url($newExpertId, "edit"));
+        exit;
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "save_expert") {
     $eid = (int)($_POST["expert_id"] ?? 0);
-    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
-    if ($chk === false || $eid <= 0) {
-        $error = "Experto no válido.";
-    } else {
-        $chk->bind_param("i", $eid);
-        $chk->execute();
-        $chkRes = $chk->get_result();
-        $chk->close();
-        if (!$chkRes || $chkRes->num_rows !== 1) {
-            $error = "Ese experto no existe.";
+    $svcList = $_POST["expert_services"] ?? [];
+    if (!is_array($svcList)) {
+        $svcList = [];
+    }
+    $updated = experts_admin_update($conn, $eid, $_POST, $svcList);
+    if (!$updated["ok"]) {
+        $code = (string)($updated["error"] ?? "");
+        if ($code === "not_found" || $code === "invalid_expert") {
+            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
+        } elseif ($code === "invalid_email") {
+            $error = "El correo del experto no es válido.";
+        } elseif ($code === "services_link_failed") {
+            $error = "No se pudo actualizar los servicios del experto.";
         } else {
-            $name = trim((string)($_POST["display_name"] ?? ""));
-            if ($name === "") {
-                $name = "Sin nombre";
-            }
-            if (mb_strlen($name, "UTF-8") > 180) {
-                $name = mb_substr($name, 0, 180, "UTF-8");
-            }
-            $email = trim((string)($_POST["email"] ?? ""));
-            if ($email !== "" && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $error = "El correo del experto no es válido.";
-            }
-            $phone = trim((string)($_POST["phone"] ?? ""));
-            if (mb_strlen($phone, "UTF-8") > 48) {
-                $phone = mb_substr($phone, 0, 48, "UTF-8");
-            }
-            $notes = (string)($_POST["notes"] ?? "");
-            if (strlen($notes) > 12000) {
-                $notes = substr($notes, 0, 12000);
-            }
-            $sort = (int)($_POST["sort_order"] ?? 999);
-            $active = isset($_POST["is_active"]) ? 1 : 0;
-            if ($error === "") {
-                $emailDb = $email;
-                $phoneDb = $phone;
-                $upd = $conn->prepare("UPDATE experts SET display_name = ?, email = ?, phone = ?, notes = ?, sort_order = ?, is_active = ? WHERE id = ?");
-                if ($upd === false) {
-                    $error = "No se pudo guardar el experto.";
-                } else {
-                    $upd->bind_param("ssssiii", $name, $emailDb, $phoneDb, $notes, $sort, $active, $eid);
-                    if (!$upd->execute()) {
-                        $error = "No se pudo guardar el experto.";
-                    }
-                    $upd->close();
-                }
-            }
-            if ($error === "") {
-                $validServiceIds = [];
-                $vs = $conn->query("SELECT id FROM services");
-                if ($vs) {
-                    while ($z = $vs->fetch_assoc()) {
-                        $validServiceIds[(int)$z["id"]] = true;
-                    }
-                }
-                $list = $_POST["expert_services"] ?? [];
-                if (!is_array($list)) {
-                    $list = [];
-                }
-                $delEs = $conn->prepare("DELETE FROM expert_services WHERE expert_id = ?");
-                $insEs = $conn->prepare("INSERT INTO expert_services (expert_id, service_id) VALUES (?, ?)");
-                if ($delEs === false || $insEs === false) {
-                    $error = "No se pudo actualizar los servicios del experto.";
-                } else {
-                    $delEs->bind_param("i", $eid);
-                    if (!$delEs->execute()) {
-                        $error = "No se pudo actualizar los servicios del experto.";
-                    } else {
-                        foreach ($list as $sidRaw) {
-                            $sid = (int)$sidRaw;
-                            if ($sid <= 0 || !isset($validServiceIds[$sid])) {
-                                continue;
-                            }
-                            $insEs->bind_param("ii", $eid, $sid);
-                            if (!$insEs->execute()) {
-                                $error = "No se pudo vincular un servicio.";
-                                break;
-                            }
-                        }
-                    }
-                    $delEs->close();
-                    $insEs->close();
-                }
-            }
-            if ($error === "") {
-                admin_set_flash("success", "Experto actualizado.");
-                header("Location: " . admin_expert_page_url($eid, "edit"));
-                exit;
-            }
+            $error = "No se pudo guardar el experto.";
         }
+    } else {
+        admin_set_flash("success", "Experto actualizado.");
+        header("Location: " . admin_expert_page_url($eid, "edit"));
+        exit;
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "delete_expert") {
     $expertId = (int)($_POST["expert_id"] ?? 0);
-    if ($expertId > 0) {
-        $stmt = $conn->prepare("DELETE FROM experts WHERE id = ?");
-        $stmt->bind_param("i", $expertId);
-        $stmt->execute();
-        $stmt->close();
+    $deleted = experts_admin_delete($conn, $expertId);
+    if ($deleted["ok"]) {
         admin_set_flash("success", "Experto eliminado.");
         header("Location: admin.php#admin-tools-experts");
         exit;
@@ -1215,165 +415,57 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_add_availability") {
     $eid = (int)($_POST["expert_id"] ?? 0);
-    $wd = (int)($_POST["weekday"] ?? -1);
-    $startRaw = trim((string)($_POST["start_time"] ?? ""));
-    $endRaw = trim((string)($_POST["end_time"] ?? ""));
-    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
-    if ($chk === false || $eid <= 0) {
-        $error = "Experto no válido.";
-    } else {
-        $chk->bind_param("i", $eid);
-        $chk->execute();
-        $chkRes = $chk->get_result();
-        $chk->close();
-        if (!$chkRes || $chkRes->num_rows !== 1) {
-            $error = "Ese experto no existe.";
-        } elseif ($wd < 0 || $wd > 6) {
+    $added = experts_admin_add_weekly_availability(
+        $conn,
+        $eid,
+        (int)($_POST["weekday"] ?? -1),
+        trim((string)($_POST["start_time"] ?? "")),
+        trim((string)($_POST["end_time"] ?? ""))
+    );
+    if (!$added["ok"]) {
+        $code = (string)($added["error"] ?? "");
+        if ($code === "not_found" || $code === "invalid_expert") {
+            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
+        } elseif ($code === "invalid_weekday") {
             $error = "El día de la semana no es válido.";
+        } elseif ($code === "invalid_time_range") {
+            $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_time") {
+            $error = "Indica hora de inicio y fin con formato HH:MM.";
         } else {
-            $tStart = DateTimeImmutable::createFromFormat("H:i", $startRaw);
-            if ($tStart === false) {
-                $tStart = DateTimeImmutable::createFromFormat("H:i:s", $startRaw);
-            }
-            $tEnd = DateTimeImmutable::createFromFormat("H:i", $endRaw);
-            if ($tEnd === false) {
-                $tEnd = DateTimeImmutable::createFromFormat("H:i:s", $endRaw);
-            }
-            if ($tStart === false || $tEnd === false) {
-                $error = "Indica hora de inicio y fin con formato HH:MM.";
-            } elseif ($tEnd <= $tStart) {
-                $error = "La hora de fin debe ser posterior a la de inicio.";
-            } else {
-                $startSql = $tStart->format("H:i:s");
-                $endSql = $tEnd->format("H:i:s");
-                $ins = $conn->prepare(
-                    "INSERT INTO expert_availability (expert_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)"
-                );
-                if ($ins === false) {
-                    $error = "No se pudo guardar la franja.";
-                } else {
-                    $ins->bind_param("iiss", $eid, $wd, $startSql, $endSql);
-                    if (!$ins->execute()) {
-                        $error = "No se pudo guardar la franja.";
-                    }
-                    $ins->close();
-                }
-                if ($error === "") {
-                    admin_set_flash("success", "Franja de disponibilidad añadida.");
-                    header("Location: " . admin_expert_page_url($eid, "schedule"));
-                    exit;
-                }
-            }
+            $error = "No se pudo guardar la franja.";
         }
+    } else {
+        admin_set_flash("success", "Franja de disponibilidad añadida.");
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "daily"));
+        exit;
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_add_availability_date") {
     $eid = (int)($_POST["expert_id"] ?? 0);
-    $cal = trim((string)($_POST["calendar_date"] ?? ""));
     $mode = trim((string)($_POST["date_av_mode"] ?? ""));
-    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
-    if ($chk === false || $eid <= 0) {
-        $error = "Experto no válido.";
-    } else {
-        $chk->bind_param("i", $eid);
-        $chk->execute();
-        $chkRes = $chk->get_result();
-        $chk->close();
-        if (!$chkRes || $chkRes->num_rows !== 1) {
-            $error = "Ese experto no existe.";
-        }
-    }
-    $dtCal = null;
-    if ($error === "") {
-        $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
-        $dtCal = DateTimeImmutable::createFromFormat("Y-m-d", $cal, $tz);
-        if ($dtCal === false) {
+    $saved = experts_admin_add_date_exception($conn, $eid, $_POST);
+    if (!$saved["ok"]) {
+        $code = (string)($saved["error"] ?? "");
+        if ($code === "not_found" || $code === "invalid_expert") {
+            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
+        } elseif ($code === "invalid_date") {
             $error = "Fecha no válida.";
-        } else {
-            $today0 = (new DateTimeImmutable("now", $tz))->setTime(0, 0, 0);
-            $maxD = $today0->modify("+" . AGENDA_DATE_EXCEPTION_MAX_DAYS . " days");
-            if ($dtCal < $today0 || $dtCal > $maxD) {
-                $error = "La fecha debe estar entre hoy y " . (string)AGENDA_DATE_EXCEPTION_MAX_DAYS . " días a futuro.";
-            }
-        }
-    }
-    if ($error === "" && ($mode !== "closed" && $mode !== "window")) {
-        $error = "Indica si el día queda cerrado o con franjas horarias concretas.";
-    }
-    if ($error === "" && $dtCal !== null && $mode === "closed") {
-        $calSql = $dtCal->format("Y-m-d");
-        $delAll = $conn->prepare("DELETE FROM expert_availability_date WHERE expert_id = ? AND calendar_date = ?");
-        if ($delAll === false) {
-            $error = "No se pudo actualizar la agenda por fecha.";
-        } else {
-            $delAll->bind_param("is", $eid, $calSql);
-            if (!$delAll->execute()) {
-                $error = "No se pudo actualizar la agenda por fecha.";
-            }
-            $delAll->close();
-        }
-        if ($error === "") {
-            $insC = $conn->prepare(
-                "INSERT INTO expert_availability_date (expert_id, calendar_date, is_closed, start_time, end_time)
-                 VALUES (?, ?, 1, NULL, NULL)"
-            );
-            if ($insC === false) {
-                $error = "No se pudo guardar el cierre.";
-            } else {
-                $insC->bind_param("is", $eid, $calSql);
-                if (!$insC->execute()) {
-                    $error = "No se pudo guardar el cierre.";
-                }
-                $insC->close();
-            }
-        }
-    } elseif ($error === "" && $dtCal !== null && $mode === "window") {
-        $startRaw = trim((string)($_POST["date_start_time"] ?? ""));
-        $endRaw = trim((string)($_POST["date_end_time"] ?? ""));
-        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
-        $tStart = DateTimeImmutable::createFromFormat("H:i", $startRaw, $tzW);
-        if ($tStart === false) {
-            $tStart = DateTimeImmutable::createFromFormat("H:i:s", $startRaw, $tzW);
-        }
-        $tEnd = DateTimeImmutable::createFromFormat("H:i", $endRaw, $tzW);
-        if ($tEnd === false) {
-            $tEnd = DateTimeImmutable::createFromFormat("H:i:s", $endRaw, $tzW);
-        }
-        if ($tStart === false || $tEnd === false) {
-            $error = "Indica hora de inicio y fin (HH:MM).";
-        } elseif ($tEnd <= $tStart) {
+        } elseif ($code === "date_out_of_range") {
+            $error = "La fecha debe estar entre hoy y " . (string)AGENDA_DATE_EXCEPTION_MAX_DAYS . " días a futuro.";
+        } elseif ($code === "invalid_mode") {
+            $error = "Indica si el día queda cerrado o con franjas horarias concretas.";
+        } elseif ($code === "invalid_time_range") {
             $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_time") {
+            $error = "Indica hora de inicio y fin (HH:MM).";
         } else {
-            $calSql = $dtCal->format("Y-m-d");
-            $startSql = $tStart->format("H:i:s");
-            $endSql = $tEnd->format("H:i:s");
-            $delClosed = $conn->prepare(
-                "DELETE FROM expert_availability_date WHERE expert_id = ? AND calendar_date = ? AND is_closed = 1"
-            );
-            if ($delClosed !== false) {
-                $delClosed->bind_param("is", $eid, $calSql);
-                $delClosed->execute();
-                $delClosed->close();
-            }
-            $insW = $conn->prepare(
-                "INSERT INTO expert_availability_date (expert_id, calendar_date, is_closed, start_time, end_time)
-                 VALUES (?, ?, 0, ?, ?)"
-            );
-            if ($insW === false) {
-                $error = "No se pudo guardar la franja.";
-            } else {
-                $insW->bind_param("isss", $eid, $calSql, $startSql, $endSql);
-                if (!$insW->execute()) {
-                    $error = "No se pudo guardar la franja.";
-                }
-                $insW->close();
-            }
+            $error = "No se pudo actualizar la agenda por fecha.";
         }
-    }
-    if ($error === "") {
+    } else {
         admin_set_flash("success", $mode === "closed" ? "Día marcado como cerrado en la agenda." : "Franja por fecha añadida.");
-        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "dates"));
         exit;
     }
 }
@@ -1382,83 +474,43 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $eid = (int)($_POST["expert_id"] ?? 0);
     $did = (int)($_POST["av_date_id"] ?? 0);
     if ($eid > 0 && $did > 0) {
-        $delD = $conn->prepare("DELETE FROM expert_availability_date WHERE id = ? AND expert_id = ? LIMIT 1");
-        if ($delD !== false) {
-            $delD->bind_param("ii", $did, $eid);
-            $delD->execute();
-            $delD->close();
-        }
+        experts_admin_delete_date_exception($conn, $eid, $did);
         admin_set_flash("success", "Cambio por fecha eliminado.");
-        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "dates"));
         exit;
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_set_mon_fri_window") {
     $eid = (int)($_POST["expert_id"] ?? 0);
-    $useDef = isset($_POST["use_defaults"]) && (string)($_POST["use_defaults"] ?? "") === "1";
-    $chk = $conn->prepare("SELECT id FROM experts WHERE id = ? LIMIT 1");
-    if ($chk === false || $eid <= 0) {
-        $error = "Experto no válido.";
-    } else {
-        $chk->bind_param("i", $eid);
-        $chk->execute();
-        $chkRes = $chk->get_result();
-        $chk->close();
-        if (!$chkRes || $chkRes->num_rows !== 1) {
-            $error = "Ese experto no existe.";
-        }
-    }
-    $startSql = AGENDA_DEFAULT_MON_FRI_START;
-    $endSql = AGENDA_DEFAULT_MON_FRI_END;
-    if ($error === "" && !$useDef) {
-        $sr = trim((string)($_POST["mon_fri_start"] ?? ""));
-        $er = trim((string)($_POST["mon_fri_end"] ?? ""));
-        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
-        $tS = DateTimeImmutable::createFromFormat("H:i", $sr, $tzW);
-        if ($tS === false) {
-            $tS = DateTimeImmutable::createFromFormat("H:i:s", $sr, $tzW);
-        }
-        $tE = DateTimeImmutable::createFromFormat("H:i", $er, $tzW);
-        if ($tE === false) {
-            $tE = DateTimeImmutable::createFromFormat("H:i:s", $er, $tzW);
-        }
-        if ($tS === false || $tE === false) {
-            $error = "Indica hora inicio y fin en formato HH:MM.";
-        } elseif ($tE <= $tS) {
+    $set = experts_admin_set_mon_fri_window($conn, $eid, $_POST);
+    if (!$set["ok"]) {
+        $code = (string)($set["error"] ?? "");
+        if ($code === "not_found" || $code === "invalid_expert") {
+            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
+        } elseif ($code === "invalid_time_range") {
             $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_time") {
+            $error = "Indica hora inicio y fin en formato HH:MM.";
         } else {
-            $startSql = $tS->format("H:i:s");
-            $endSql = $tE->format("H:i:s");
-        }
-    }
-    if ($error === "") {
-        if (!agenda_replace_mon_fri_single_window($conn, $eid, $startSql, $endSql)) {
             $error = "No se pudo actualizar la jornada L–V.";
-        } else {
-            admin_set_flash("success", "Lunes a viernes actualizados (una sola franja; sábado y domingo no cambian).");
-            header("Location: " . admin_expert_page_url($eid, "schedule"));
-            exit;
         }
+    } else {
+        admin_set_flash("success", "Lunes a viernes actualizados (una sola franja; sábado y domingo no cambian).");
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "template"));
+        exit;
     }
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "save_agenda_display") {
-    $showNames = isset($_POST["agenda_show_expert_names"]) ? 1 : 0;
-    $updAg = $conn->prepare("UPDATE site_settings SET agenda_show_expert_names = ? WHERE id = 1");
-    if ($updAg === false) {
+    $showNames = isset($_POST["agenda_show_expert_names"]);
+    $agResult = site_settings_set_agenda_show_expert_names($conn, $showNames);
+    if (!$agResult["ok"]) {
         $error = "No se pudo guardar la opción de agenda pública.";
     } else {
-        $updAg->bind_param("i", $showNames);
-        if (!$updAg->execute()) {
-            $error = "No se pudo guardar la opción de agenda pública.";
-        }
-        $updAg->close();
-    }
-    if ($error === "") {
         admin_set_flash(
             "success",
-            $showNames === 1
+            $showNames
                 ? "La agenda pública mostrará el nombre de cada experto."
                 : "La agenda pública será anónima (solo servicio y horario)."
         );
@@ -1468,40 +520,17 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "bulk_mon_fri_all_experts") {
-    $useDef = isset($_POST["use_defaults"]) && (string)($_POST["use_defaults"] ?? "") === "1";
-    $startSql = AGENDA_DEFAULT_MON_FRI_START;
-    $endSql = AGENDA_DEFAULT_MON_FRI_END;
-    if (!$useDef) {
-        $sr = trim((string)($_POST["mon_fri_start"] ?? ""));
-        $er = trim((string)($_POST["mon_fri_end"] ?? ""));
-        $tzW = new DateTimeZone(date_default_timezone_get() ?: "UTC");
-        $tS = DateTimeImmutable::createFromFormat("H:i", $sr, $tzW);
-        if ($tS === false) {
-            $tS = DateTimeImmutable::createFromFormat("H:i:s", $sr, $tzW);
-        }
-        $tE = DateTimeImmutable::createFromFormat("H:i", $er, $tzW);
-        if ($tE === false) {
-            $tE = DateTimeImmutable::createFromFormat("H:i:s", $er, $tzW);
-        }
-        if ($tS === false || $tE === false) {
-            $error = "Indica hora inicio y fin (HH:MM).";
-        } elseif ($tE <= $tS) {
+    $bulk = experts_admin_bulk_mon_fri_all($conn, $_POST);
+    if (!$bulk["ok"]) {
+        $code = (string)($bulk["error"] ?? "");
+        if ($code === "invalid_time_range") {
             $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_time") {
+            $error = "Indica hora inicio y fin (HH:MM).";
         } else {
-            $startSql = $tS->format("H:i:s");
-            $endSql = $tE->format("H:i:s");
+            $error = "No se pudo aplicar la jornada a todos los expertos.";
         }
-    }
-    if ($error === "") {
-        $allQ = $conn->query("SELECT id FROM experts");
-        if ($allQ) {
-            while ($erow = $allQ->fetch_assoc()) {
-                $xid = (int)($erow["id"] ?? 0);
-                if ($xid > 0) {
-                    agenda_replace_mon_fri_single_window($conn, $xid, $startSql, $endSql);
-                }
-            }
-        }
+    } else {
         admin_set_flash("success", "Jornada L–V aplicada a todos los expertos.");
         header("Location: admin.php#admin-tools-experts");
         exit;
@@ -1512,14 +541,9 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $eid = (int)($_POST["expert_id"] ?? 0);
     $avid = (int)($_POST["availability_id"] ?? 0);
     if ($eid > 0 && $avid > 0) {
-        $del = $conn->prepare("DELETE FROM expert_availability WHERE id = ? AND expert_id = ? LIMIT 1");
-        if ($del !== false) {
-            $del->bind_param("ii", $avid, $eid);
-            $del->execute();
-            $del->close();
-        }
+        experts_admin_delete_weekly_availability($conn, $eid, $avid);
         admin_set_flash("success", "Franja eliminada.");
-        header("Location: " . admin_expert_page_url($eid, "schedule"));
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "daily"));
         exit;
     }
 }
@@ -1528,17 +552,18 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $eid = (int)($_POST["expert_id"] ?? 0);
     $apid = (int)($_POST["appointment_id"] ?? 0);
     if ($eid > 0 && $apid > 0) {
-        $upd = $conn->prepare(
-            "UPDATE expert_appointments SET status = 'cancelled' WHERE id = ? AND expert_id = ? AND status = 'confirmed' LIMIT 1"
-        );
-        if ($upd !== false) {
-            $upd->bind_param("ii", $apid, $eid);
-            $upd->execute();
-            $upd->close();
-        }
+        experts_admin_cancel_appointment($conn, $eid, $apid);
         admin_set_flash("success", "Cita cancelada.");
         $weekBack = trim((string)($_POST["expert_week"] ?? ""));
-        header("Location: " . admin_expert_page_url($eid, "schedule", $weekBack));
+        $returnView = trim((string)($_POST["expert_return_view"] ?? "schedule"));
+        if ($returnView === "edit") {
+            header("Location: " . admin_expert_page_url($eid, "edit"));
+        } elseif ($returnView === "list") {
+            header("Location: admin.php#expert_acc_appointments");
+        } else {
+            $schSec = $weekBack !== "" ? "week" : "appts";
+            header("Location: " . admin_expert_page_url($eid, "schedule", $weekBack, $schSec));
+        }
         exit;
     }
 }
@@ -1546,57 +571,33 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_message_read") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = false;
-    $affected = 0;
-    $err = "";
-    if (!$isLogged) {
-        $err = "no_session";
-    } elseif ($messageId <= 0) {
-        $err = "id_invalido";
-    } else {
-        $stmt = $conn->prepare("UPDATE contact_messages SET is_read = 1 WHERE id = ?");
-        if ($stmt === false) {
-            $err = "prepare_failed: " . $conn->error;
-        } else {
-            $stmt->bind_param("i", $messageId);
-            $ok = $stmt->execute();
-            $affected = $stmt->affected_rows;
-            if (!$ok) {
-                $err = "execute_failed: " . $stmt->error;
-            }
-            $stmt->close();
-        }
-    }
+    $mark = admin_inbox_mark_read($conn, $messageId, true);
     if ($isAjax) {
-        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => (bool)$ok,
+            "ok" => (bool)$mark["ok"],
             "id" => $messageId,
-            "affected" => $affected,
-            "err" => $err,
-            "logged" => (bool)$isLogged,
-            "unread_total" => $counts["unread"],
-            "messages_total" => $counts["total"],
+            "affected" => (int)($mark["affected"] ?? 0),
+            "err" => (string)($mark["error"] ?? ""),
+            "logged" => true,
+            "unread_total" => (int)($mark["counts"]["unread"] ?? 0),
+            "messages_total" => (int)($mark["counts"]["total"] ?? 0),
         ]);
         exit;
     }
-    if ($isLogged) {
-        admin_set_flash("success", "Mensaje marcado como leído.");
-        admin_redirect_after_action();
-    }
+    admin_set_flash("success", "Mensaje marcado como leído.");
+    admin_redirect_after_action();
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_read") {
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = (bool)$conn->query("UPDATE contact_messages SET is_read = 1 WHERE is_read = 0");
+    $mark = admin_inbox_mark_all($conn, true);
     if ($isAjax) {
-        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => $ok,
-            "unread_total" => $counts["unread"],
-            "messages_total" => $counts["total"],
+            "ok" => (bool)$mark["ok"],
+            "unread_total" => (int)($mark["counts"]["unread"] ?? 0),
+            "messages_total" => (int)($mark["counts"]["total"] ?? 0),
         ]);
         exit;
     }
@@ -1607,20 +608,14 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_message_unread") {
     $messageId = (int)($_POST["message_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = false;
-    if ($messageId > 0) {
-        $stmt = $conn->prepare("UPDATE contact_messages SET is_read = 0 WHERE id = ?");
-        $stmt->bind_param("i", $messageId);
-        $ok = $stmt->execute();
-    }
+    $mark = admin_inbox_mark_read($conn, $messageId, false);
     if ($isAjax) {
-        $counts = admin_contact_inbox_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => (bool)$ok,
+            "ok" => (bool)$mark["ok"],
             "id" => $messageId,
-            "unread_total" => $counts["unread"],
-            "messages_total" => $counts["total"],
+            "unread_total" => (int)($mark["counts"]["unread"] ?? 0),
+            "messages_total" => (int)($mark["counts"]["total"] ?? 0),
         ]);
         exit;
     }
@@ -1629,24 +624,13 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_messages_unread") {
-    $conn->query("UPDATE contact_messages SET is_read = 0 WHERE is_read = 1");
+    admin_inbox_mark_all($conn, false);
     admin_set_flash("success", "Todos los mensajes marcados como sin leer.");
     admin_redirect_after_action();
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "delete_message") {
-    $messageId = (int)($_POST["message_id"] ?? 0);
-    if ($messageId > 0) {
-        $delReplies = $conn->prepare("DELETE FROM contact_message_replies WHERE contact_message_id = ?");
-        if ($delReplies !== false) {
-            $delReplies->bind_param("i", $messageId);
-            $delReplies->execute();
-            $delReplies->close();
-        }
-        $stmt = $conn->prepare("DELETE FROM contact_messages WHERE id = ?");
-        $stmt->bind_param("i", $messageId);
-        $stmt->execute();
-    }
+    admin_inbox_delete_message($conn, (int)($_POST["message_id"] ?? 0));
     admin_set_flash("success", "Mensaje eliminado.");
     admin_redirect_after_action();
 }
@@ -1654,12 +638,7 @@ if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] ==
 if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "delete_whatsapp_click") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     if ($whatsappClickId > 0) {
-        $waDel = $conn->prepare("DELETE FROM contact_whatsapp_clicks WHERE id = ?");
-        if ($waDel !== false) {
-            $waDel->bind_param("i", $whatsappClickId);
-            $waDel->execute();
-            $waDel->close();
-        }
+        whatsapp_admin_delete($conn, $whatsappClickId);
     }
     admin_set_flash("success", "Entrada eliminada.");
     admin_redirect_after_action();
@@ -1668,20 +647,12 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
 if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_read") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = false;
-    if ($whatsappClickId > 0) {
-        $wst = $conn->prepare("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE id = ?");
-        if ($wst !== false) {
-            $wst->bind_param("i", $whatsappClickId);
-            $ok = $wst->execute();
-            $wst->close();
-        }
-    }
+    $result = $whatsappClickId > 0 ? whatsapp_admin_set_read($conn, $whatsappClickId, true) : ["ok" => false];
     if ($isAjax) {
-        $counts = admin_whatsapp_inbox_counts($conn);
+        $counts = $result["counts"] ?? whatsapp_admin_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => (bool)$ok,
+            "ok" => (bool)($result["ok"] ?? false),
             "id" => $whatsappClickId,
             "unread_total" => $counts["unread"],
             "messages_total" => $counts["total"],
@@ -1695,20 +666,12 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
 if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_whatsapp_unread") {
     $whatsappClickId = (int)($_POST["whatsapp_click_id"] ?? 0);
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = false;
-    if ($whatsappClickId > 0) {
-        $wst = $conn->prepare("UPDATE contact_whatsapp_clicks SET is_read = 0 WHERE id = ?");
-        if ($wst !== false) {
-            $wst->bind_param("i", $whatsappClickId);
-            $ok = $wst->execute();
-            $wst->close();
-        }
-    }
+    $result = $whatsappClickId > 0 ? whatsapp_admin_set_read($conn, $whatsappClickId, false) : ["ok" => false];
     if ($isAjax) {
-        $counts = admin_whatsapp_inbox_counts($conn);
+        $counts = $result["counts"] ?? whatsapp_admin_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => (bool)$ok,
+            "ok" => (bool)($result["ok"] ?? false),
             "id" => $whatsappClickId,
             "unread_total" => $counts["unread"],
             "messages_total" => $counts["total"],
@@ -1721,12 +684,12 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
 
 if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_read") {
     $isAjax = isset($_POST["ajax"]) && $_POST["ajax"] === "1";
-    $ok = (bool)$conn->query("UPDATE contact_whatsapp_clicks SET is_read = 1 WHERE is_read = 0");
+    $result = whatsapp_admin_set_all_read($conn, true);
     if ($isAjax) {
-        $counts = admin_whatsapp_inbox_counts($conn);
+        $counts = $result["counts"] ?? whatsapp_admin_counts($conn);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
-            "ok" => $ok,
+            "ok" => (bool)($result["ok"] ?? false),
             "unread_total" => $counts["unread"],
             "messages_total" => $counts["total"],
         ]);
@@ -1737,266 +700,43 @@ if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["ac
 }
 
 if ($isLogged && $adminWhatsappClicksUi && isset($_POST["action"]) && $_POST["action"] === "mark_all_whatsapp_unread") {
-    $conn->query("UPDATE contact_whatsapp_clicks SET is_read = 0 WHERE is_read = 1");
+    whatsapp_admin_set_all_read($conn, false);
     admin_set_flash("success", "Todos los clics de WhatsApp marcados como sin leer.");
     admin_redirect_after_action();
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_email_notify") {
     $cid = (int)($_POST["client_id"] ?? 0);
-    if ($cid <= 0) {
-        admin_set_flash("error", "Cliente no válido.");
+    $toggled = clients_admin_toggle_email_notify($conn, $cid);
+    if (!$toggled["ok"]) {
+        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la preferencia de correo.");
     } else {
-        $tog = $conn->prepare("UPDATE clients SET email_notify_outbound = IF(email_notify_outbound = 1, 0, 1) WHERE id = ?");
-        if ($tog === false) {
-            admin_set_flash("error", "No se pudo actualizar la preferencia de correo.");
-        } else {
-            $tog->bind_param("i", $cid);
-            if ($tog->execute()) {
-                admin_set_flash("success", "Preferencia de envío por SMTP al cliente actualizada.");
-            } else {
-                admin_set_flash("error", "No se pudo guardar el cambio de envío por correo.");
-            }
-            $tog->close();
-        }
+        admin_set_flash("success", "Preferencia de envío por SMTP al cliente actualizada.");
     }
     header("Location: admin.php#admin-tool-clients");
     exit;
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
-    $messageId = (int)($_POST["message_id"] ?? 0);
-    $replyBody = trim((string)($_POST["reply_body"] ?? ""));
-    if ($messageId <= 0) {
-        admin_set_flash("error", "Mensaje no valido.");
-        admin_redirect_after_action();
-    }
-    if ($replyBody === "") {
-        admin_set_flash("error", "Escribe el texto de la respuesta.");
-        admin_redirect_after_action();
-    }
-    if (strlen($replyBody) > 20000) {
-        admin_set_flash("error", "La respuesta es demasiado larga.");
-        admin_redirect_after_action();
-    }
-    $stmt = $conn->prepare(
-        "SELECT id, nombre, email, servicio, subject, mensaje, created_at, in_reply_to, client_id FROM contact_messages WHERE id = ? LIMIT 1"
+    $reply = admin_inbox_reply_message(
+        $conn,
+        (int)($_POST["message_id"] ?? 0),
+        (string)($_POST["reply_body"] ?? "")
     );
-    if ($stmt === false) {
-        admin_set_flash("error", "No se pudo cargar el mensaje.");
+    if (!$reply["ok"]) {
+        admin_set_flash("error", (string)($reply["message"] ?? "No se pudo enviar la respuesta."));
         admin_redirect_after_action();
     }
-    $stmt->bind_param("i", $messageId);
-    $stmt->execute();
-    $msgRes = $stmt->get_result();
-    $stmt->close();
-    if (!$msgRes || $msgRes->num_rows !== 1) {
-        admin_set_flash("error", "Ese mensaje ya no existe.");
-        admin_redirect_after_action();
-    }
-    $msgRow = $msgRes->fetch_assoc();
-    $visitorEmail = trim((string)($msgRow["email"] ?? ""));
-    if (!filter_var($visitorEmail, FILTER_VALIDATE_EMAIL)) {
-        admin_set_flash("error", "El correo del visitante no es valido.");
-        admin_redirect_after_action();
-    }
-
-    $ins = $conn->prepare("INSERT INTO contact_message_replies (contact_message_id, body) VALUES (?, ?)");
-    if ($ins === false) {
-        admin_set_flash("error", "No se pudo guardar la respuesta.");
-        admin_redirect_after_action();
-    }
-    $ins->bind_param("is", $messageId, $replyBody);
-    if (!$ins->execute()) {
-        $ins->close();
-        admin_set_flash("error", "No se pudo guardar la respuesta.");
-        admin_redirect_after_action();
-    }
-    $ins->close();
-    $mark = $conn->prepare("UPDATE contact_messages SET is_read = 1 WHERE id = ?");
-    if ($mark !== false) {
-        $mark->bind_param("i", $messageId);
-        $mark->execute();
-        $mark->close();
-    }
-    $clientUnseen = $conn->prepare("UPDATE contact_messages SET client_has_unseen_reply = 1 WHERE id = ?");
-    if ($clientUnseen !== false) {
-        $clientUnseen->bind_param("i", $messageId);
-        $clientUnseen->execute();
-        $clientUnseen->close();
-    }
-
-    $msgClientId = (int)($msgRow["client_id"] ?? 0);
-    $skipOutbound = false;
-    if ($msgClientId > 0) {
-        $cst = $conn->prepare("SELECT email_notify_outbound FROM clients WHERE id = ? LIMIT 1");
-        if ($cst !== false) {
-            $cst->bind_param("i", $msgClientId);
-            $cst->execute();
-            $cres = $cst->get_result();
-            $crow = $cres ? $cres->fetch_assoc() : null;
-            $cst->close();
-            if ($crow !== null && (int)($crow["email_notify_outbound"] ?? 1) === 0) {
-                $skipOutbound = true;
-            }
-        }
-    }
-    if ($skipOutbound) {
-        admin_set_flash(
-            "success",
-            "Respuesta guardada. Este cliente no recibe correos del sitio (solo verá el mensaje en la web)."
-        );
-        admin_redirect_after_action();
-    }
-
-    $settingsRes = $conn->query("SELECT contact_email, person_name, brand_name FROM site_settings WHERE id = 1 LIMIT 1");
-    $contactEmail = "";
-    $personName = "";
-    $brandName = "";
-    if ($settingsRes && $settingsRes->num_rows === 1) {
-        $srow = $settingsRes->fetch_assoc();
-        $contactEmail = trim((string)($srow["contact_email"] ?? ""));
-        $personName = trim((string)($srow["person_name"] ?? ""));
-        $brandName = trim((string)($srow["brand_name"] ?? ""));
-    }
-    if ($contactEmail === "" || !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
-        admin_set_flash(
-            "warning",
-            "Respuesta guardada en el panel. Configura un correo receptor valido en Configuracion general para poder enviar por SMTP al visitante."
-        );
-        admin_redirect_after_action();
-    }
-    $mailConfigPath = __DIR__ . "/mail_config.php";
-    $mailConfig = is_readable($mailConfigPath) ? require $mailConfigPath : [];
-    $mailConfig = is_array($mailConfig) ? $mailConfig : [];
-    $fromEmail = mail_config_resolve_smtp_from($mailConfig);
-    if ($fromEmail === "") {
-        admin_set_flash(
-            "warning",
-            "Respuesta guardada. En mail_config indica from_email o un username que sea un correo valido (cuenta SMTP) para enviar al visitante."
-        );
-        admin_redirect_after_action();
-    }
-    $smtpHost = strtolower((string)($mailConfig["host"] ?? ""));
-    $smtpUser = trim((string)($mailConfig["username"] ?? ""));
-    if (!empty($mailConfig["use_smtp"]) && str_contains($smtpHost, "gmail") && strcasecmp($fromEmail, $smtpUser) !== 0) {
-        admin_set_flash(
-            "warning",
-            "Respuesta guardada. Con Gmail (smtp.gmail.com), username y remitente SMTP deben ser el mismo correo para poder enviar al visitante."
-        );
-        admin_redirect_after_action();
-    }
-    $fromDisplayName = trim((string)($mailConfig["from_name"] ?? ""));
-    if ($fromDisplayName === "") {
-        $fromDisplayName = $personName !== "" ? $personName : $brandName;
-    }
-    if ($fromDisplayName === "") {
-        $localPart = str_contains($fromEmail, "@") ? trim(explode("@", $fromEmail, 2)[0] ?? "") : "";
-        $fromDisplayName = $localPart !== "" ? $localPart : "Web";
-    }
-    $visitorNombre = trim((string)($msgRow["nombre"] ?? ""));
-    $servicio = trim((string)($msgRow["servicio"] ?? ""));
-    $msgSubject = trim((string)($msgRow["subject"] ?? ""));
-    $mensajeOriginal = trim((string)($msgRow["mensaje"] ?? ""));
-    $createdOriginal = (string)($msgRow["created_at"] ?? "");
-    $subject = "Respuesta a tu mensaje de contacto";
-    if ($msgSubject !== "") {
-        $subject = "Re: " . $msgSubject;
-    }
-    if ($brandName !== "") {
-        $subject .= " (" . $brandName . ")";
-    }
-    $body = "Hola" . ($visitorNombre !== "" ? " " . $visitorNombre : "") . ",\n\n";
-    $body .= "Gracias por escribirnos. Respondemos a continuacion:\n\n";
-    $body .= $replyBody . "\n\n";
-    $body .= "---\nTu mensaje (" . $createdOriginal . ")\n";
-    if ($msgSubject !== "") {
-        $body .= "Asunto: " . $msgSubject . "\n";
-    }
-    $body .= "Servicio: " . $servicio . "\n\n" . $mensajeOriginal . "\n\n---\n";
-    $inReplyRow = isset($msgRow["in_reply_to"]) ? (int)$msgRow["in_reply_to"] : 0;
-    if ($inReplyRow > 0) {
-        $body .= "Nota: este envío es un seguimiento enlazado al mensaje n.º " . $inReplyRow . " en el panel.\n\n";
-    }
-    $body .= "Puedes responder a este correo y llegara a nuestra bandeja.\n\n";
-    $body .= app_mail_plain_text_links_footer("visitor_reply");
-    $sendResult = admin_send_visitor_reply_mail(
-        $mailConfig,
-        $visitorEmail,
-        $subject,
-        $body,
-        $contactEmail,
-        $fromDisplayName
-    );
-    $sent = (bool)($sendResult["ok"] ?? false);
-    if (!$sent) {
-        $traceLine = date("c") . " admin_reply fallo To=" . $visitorEmail
-            . " code=" . ($sendResult["code"] ?? "?")
-            . " smtp_cfg=" . (!empty($mailConfig["host"]) && trim((string)($mailConfig["username"] ?? "")) !== "" ? "1" : "0")
-            . "\n";
-        @file_put_contents(__DIR__ . "/contact_send_trace.log", $traceLine, FILE_APPEND | LOCK_EX);
-        $code = (string)($sendResult["code"] ?? "");
-        if ($code === "smtp_failed") {
-            admin_set_flash(
-                "warning",
-                "Respuesta guardada en el panel, pero SMTP falló al enviar al visitante (revisa contact_send_trace.log). Con Gmail usa contraseña de aplicación; username y from_email deben coincidir."
-            );
-        } elseif ($code === "php_mail_failed") {
-            admin_set_flash(
-                "warning",
-                "Respuesta guardada. Falta SMTP completo en mail_config y mail() del servidor también falló; el visitante no recibió correo."
-            );
-        } elseif ($code === "bad_config") {
-            admin_set_flash("warning", "Respuesta guardada. Revisa correo del visitante, remitente SMTP y contacto del sitio.");
-        } else {
-            admin_set_flash(
-                "warning",
-                "Respuesta guardada. No se pudo completar el envío por correo; revisa mail_config y el log de depuración."
-            );
-        }
-        admin_redirect_after_action();
-    }
-    admin_set_flash("success", "Respuesta guardada y enviada a " . $visitorEmail . ".");
+    $flashType = !empty($reply["email_sent"]) ? "success" : "warning";
+    admin_set_flash($flashType, (string)($reply["notice"] ?? "Respuesta guardada."));
     admin_redirect_after_action();
 }
 
-$settings = [
-    "person_name" => "",
-    "brand_name" => "",
-    "hero_title" => "",
-    "hero_intro" => "",
-    "about_text" => "",
-    "contact_intro" => "",
-    "contact_email" => "",
-    "contact_whatsapp" => "",
-    "contact_whatsapp_country_code" => null,
-    "footer_text" => ""
-];
+$settings = site_settings_get($conn) ?? site_settings_defaults();
 
-$settingsQuery = $conn->query("SELECT * FROM site_settings WHERE id = 1 LIMIT 1");
-if ($settingsQuery && $settingsQuery->num_rows === 1) {
-    $settings = $settingsQuery->fetch_assoc();
-}
-
-$services = [];
-$servicesQuery = $conn->query("SELECT * FROM services ORDER BY sort_order ASC, id ASC");
-if ($servicesQuery) {
-    while ($row = $servicesQuery->fetch_assoc()) {
-        $services[] = $row;
-    }
-}
-
-$galleryByService = [];
-$galleryQuery = $conn->query("SELECT id, service_id, image_path, caption, image_title, image_description FROM service_gallery WHERE is_active = 1 ORDER BY sort_order ASC, id ASC");
-if ($galleryQuery) {
-    while ($galleryRow = $galleryQuery->fetch_assoc()) {
-        $serviceId = (int)$galleryRow["service_id"];
-        if (!isset($galleryByService[$serviceId])) {
-            $galleryByService[$serviceId] = [];
-        }
-        $galleryByService[$serviceId][] = $galleryRow;
-    }
-}
+$servicesCatalog = services_load_admin_catalog($conn);
+$services = $servicesCatalog["services"];
+$galleryByService = $servicesCatalog["gallery_by_service"];
 
 $experts = [];
 $expertServiceIds = [];
@@ -2007,6 +747,7 @@ $expertsPanelOpen = false;
 $expertAvailabilityRows = [];
 $expertAvailabilityDateRows = [];
 $expertAppointmentsUpcoming = [];
+$allExpertsAppointmentsUpcoming = [];
 $expertWeekGrid = [
     "week_start" => "",
     "week_end" => "",
@@ -2015,18 +756,25 @@ $expertWeekGrid = [
     "rows" => [],
 ];
 $expertView = "";
+$expertScheduleSection = "";
 if ($isLogged && $adminExpertAgendaUi) {
     $expertEditId = (int)($_GET["expert_id"] ?? 0);
     $expertView = trim((string)($_GET["expert_view"] ?? ""));
     if (!in_array($expertView, ["edit", "schedule"], true)) {
         $expertView = "";
     }
-    $expertsQuery = $conn->query(
-        "SELECT id, display_name, email, phone, notes, sort_order, is_active, created_at FROM experts ORDER BY sort_order ASC, id ASC"
-    );
-    if ($expertsQuery) {
-        while ($er = $expertsQuery->fetch_assoc()) {
-            $experts[] = $er;
+    if ($expertView === "schedule") {
+        $secRaw = trim((string)($_GET["expert_section"] ?? ""));
+        if (in_array($secRaw, ["appts", "week", "template", "daily", "dates"], true)) {
+            $expertScheduleSection = $secRaw;
+        }
+    }
+    $expertsCatalog = experts_admin_load_admin_catalog($conn);
+    $experts = $expertsCatalog["raw_experts"];
+    foreach ($expertsCatalog["expert_service_ids"] as $eid => $sidList) {
+        $expertServiceIds[(int)$eid] = [];
+        foreach ($sidList as $sid) {
+            $expertServiceIds[(int)$eid][(int)$sid] = true;
         }
     }
     if ($expertEditId > 0) {
@@ -2037,272 +785,52 @@ if ($isLogged && $adminExpertAgendaUi) {
             }
         }
         if ($expertEdit === null) {
-            $exf = $conn->prepare(
-                "SELECT id, display_name, email, phone, notes, sort_order, is_active, created_at FROM experts WHERE id = ? LIMIT 1"
-            );
-            if ($exf !== false) {
-                $exf->bind_param("i", $expertEditId);
-                $exf->execute();
-                $exr = $exf->get_result();
-                if ($exr && ($row = $exr->fetch_assoc())) {
-                    $expertEdit = $row;
-                } else {
-                    $expertEditNotFound = true;
-                }
-                $exf->close();
+            $got = experts_admin_get($conn, $expertEditId);
+            if ($got["ok"]) {
+                $expertEdit = $got["expert"];
             } else {
                 $expertEditNotFound = true;
             }
         }
     }
-    $eidList = array_values(array_filter(array_map(static fn(array $e): int => (int)($e["id"] ?? 0), $experts), static fn(int $id): bool => $id > 0));
-    if ($expertEditId > 0 && $expertEdit !== null && !in_array($expertEditId, $eidList, true)) {
-        $eidList[] = $expertEditId;
-    }
-    if (count($eidList) > 0) {
-        $ph = implode(",", array_fill(0, count($eidList), "?"));
-        $types = str_repeat("i", count($eidList));
-        $esStmt = $conn->prepare("SELECT expert_id, service_id FROM expert_services WHERE expert_id IN ($ph)");
-        if ($esStmt !== false) {
-            $esStmt->bind_param($types, ...$eidList);
-            $esStmt->execute();
-            $esRes = $esStmt->get_result();
-            if ($esRes) {
-                while ($pair = $esRes->fetch_assoc()) {
-                    $eid = (int)$pair["expert_id"];
-                    $sid = (int)$pair["service_id"];
-                    if (!isset($expertServiceIds[$eid])) {
-                        $expertServiceIds[$eid] = [];
-                    }
-                    $expertServiceIds[$eid][$sid] = true;
-                }
-            }
-            $esStmt->close();
-        }
+    if (count($experts) > 0) {
+        $allExpertsAppointmentsUpcoming = experts_admin_fetch_all_upcoming_appointments($conn);
     }
     if ($expertEditId > 0 && $expertEdit !== null && $expertView === "schedule") {
-        $eaStmt = $conn->prepare(
-            "SELECT id, weekday, start_time, end_time FROM expert_availability WHERE expert_id = ? ORDER BY weekday ASC, start_time ASC"
-        );
-        if ($eaStmt !== false) {
-            $eaStmt->bind_param("i", $expertEditId);
-            $eaStmt->execute();
-            $eaRes = $eaStmt->get_result();
-            if ($eaRes) {
-                while ($ar = $eaRes->fetch_assoc()) {
-                    $expertAvailabilityRows[] = $ar;
-                }
-            }
-            $eaStmt->close();
-        }
-        $adStmt = $conn->prepare(
-            "SELECT id, calendar_date, is_closed, start_time, end_time
-             FROM expert_availability_date
-             WHERE expert_id = ? AND calendar_date >= (CURDATE() - INTERVAL 14 DAY)
-             ORDER BY calendar_date ASC, is_closed DESC, start_time ASC
-             LIMIT 300"
-        );
-        if ($adStmt !== false) {
-            $adStmt->bind_param("i", $expertEditId);
-            $adStmt->execute();
-            $adRes = $adStmt->get_result();
-            if ($adRes) {
-                while ($dr = $adRes->fetch_assoc()) {
-                    $expertAvailabilityDateRows[] = $dr;
-                }
-            }
-            $adStmt->close();
-        }
-        $apStmt = $conn->prepare(
-            "SELECT a.id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone, s.title AS service_title
-             FROM expert_appointments a
-             INNER JOIN services s ON s.id = a.service_id
-             WHERE a.expert_id = ? AND a.status = 'confirmed' AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
-             ORDER BY a.starts_at ASC
-             LIMIT 80"
-        );
-        if ($apStmt !== false) {
-            $apStmt->bind_param("i", $expertEditId);
-            $apStmt->execute();
-            $apRes = $apStmt->get_result();
-            if ($apRes) {
-                while ($ar = $apRes->fetch_assoc()) {
-                    $expertAppointmentsUpcoming[] = $ar;
-                }
-            }
-            $apStmt->close();
-        }
         $expertWeekParam = trim((string)($_GET["expert_week"] ?? ""));
-        $expertWeekGrid = agenda_expert_admin_week_grid($conn, $expertEditId, $expertWeekParam);
+        $sched = experts_admin_load_schedule($conn, $expertEditId, $expertWeekParam);
+        if ($sched["ok"]) {
+            $expertAvailabilityRows = $sched["schedule"]["weekly_availability"];
+            $expertAvailabilityDateRows = $sched["schedule"]["date_exceptions"];
+            $expertAppointmentsUpcoming = $sched["schedule"]["upcoming_appointments"];
+            $expertWeekGrid = $sched["schedule"]["week_grid"];
+        }
+    } elseif ($expertEditId > 0 && $expertEdit !== null && $expertView === "edit") {
+        $expertAppointmentsUpcoming = experts_admin_fetch_upcoming_appointments_for_expert($conn, $expertEditId);
     }
     $expertsPanelOpen = $expertEditId > 0 || $expertView !== "";
 }
 
+$portalClients = $isLogged ? clients_admin_list($conn) : [];
+
 $contactMessages = [];
+$contactRepliesByMessageId = [];
+$contactMessageGroups = [];
 $contactMessagesUnread = 0;
 if ($isLogged && $adminInboxUi) {
-    $contactMessagesQuery = $conn->query(
-        "SELECT id, nombre, email, servicio, subject, mensaje, sent_to, is_read, created_at, client_id, in_reply_to
-         FROM contact_messages
-         ORDER BY created_at DESC, id DESC
-         LIMIT 100"
-    );
-    if ($contactMessagesQuery) {
-        while ($row = $contactMessagesQuery->fetch_assoc()) {
-            $contactMessages[] = $row;
-            if ((int)($row["is_read"] ?? 0) === 0) {
-                $contactMessagesUnread++;
-            }
-        }
-    }
-}
-
-$contactRepliesByMessageId = [];
-if ($isLogged && $adminInboxUi && count($contactMessages) > 0) {
-    $msgIds = [];
-    foreach ($contactMessages as $row) {
-        $mid = (int)($row["id"] ?? 0);
-        if ($mid > 0) {
-            $msgIds[$mid] = true;
-        }
-    }
-    $idList = array_keys($msgIds);
-    if (count($idList) > 0) {
-        $inList = implode(",", $idList);
-        $repQuery = $conn->query(
-            "SELECT id, contact_message_id, body, created_at FROM contact_message_replies WHERE contact_message_id IN ($inList) ORDER BY created_at ASC, id ASC"
-        );
-        if ($repQuery) {
-            while ($r = $repQuery->fetch_assoc()) {
-                $mid = (int)$r["contact_message_id"];
-                if (!isset($contactRepliesByMessageId[$mid])) {
-                    $contactRepliesByMessageId[$mid] = [];
-                }
-                $contactRepliesByMessageId[$mid][] = $r;
-            }
-        }
-    }
+    $inboxData = admin_inbox_load($conn, 100, $portalClients);
+    $contactMessages = $inboxData["messages"];
+    $contactRepliesByMessageId = $inboxData["replies_by_message_id"];
+    $contactMessageGroups = $inboxData["groups"];
+    $contactMessagesUnread = (int)($inboxData["counts"]["unread"] ?? 0);
 }
 
 $whatsappClicks = [];
 $whatsappClicksUnread = 0;
 if ($isLogged && $adminWhatsappClicksUi) {
-    $whatsappClicksQuery = $conn->query(
-        "SELECT id, nombre, email, servicio, mensaje, composed_text, created_at, is_read
-         FROM contact_whatsapp_clicks
-         ORDER BY created_at DESC, id DESC
-         LIMIT 100"
-    );
-    if ($whatsappClicksQuery) {
-        while ($waRow = $whatsappClicksQuery->fetch_assoc()) {
-            $whatsappClicks[] = $waRow;
-            if ((int)($waRow["is_read"] ?? 0) === 0) {
-                $whatsappClicksUnread++;
-            }
-        }
-    }
-}
-
-$portalClients = [];
-if ($isLogged) {
-    $pcQuery = $conn->query("SELECT id, email, display_name, is_active, email_notify_outbound, created_at FROM clients ORDER BY id ASC");
-    if ($pcQuery) {
-        while ($pcRow = $pcQuery->fetch_assoc()) {
-            $portalClients[] = $pcRow;
-        }
-    }
-}
-
-/** Agrupa mensajes de contacto: por cuenta de cliente o, si no, por correo. */
-$contactMessageGroups = [];
-if ($isLogged && $adminInboxUi && count($contactMessages) > 0) {
-    $clientDirectoryById = [];
-    foreach ($portalClients as $pcRow) {
-        $clientDirectoryById[(int)$pcRow["id"]] = $pcRow;
-    }
-    $groupsAccum = [];
-    foreach ($contactMessages as $row) {
-        $cid = (int)($row["client_id"] ?? 0);
-        if ($cid > 0) {
-            $gkey = "c:" . $cid;
-        } else {
-            $em = strtolower(trim((string)($row["email"] ?? "")));
-            $gkey = "e:" . ($em !== "" ? $em : "__sin_correo__");
-        }
-        if (!isset($groupsAccum[$gkey])) {
-            $groupsAccum[$gkey] = [
-                "key" => $gkey,
-                "slug" => "h" . substr(md5($gkey), 0, 14),
-                "type" => $cid > 0 ? "client" : "email",
-                "client_id" => $cid > 0 ? $cid : 0,
-                "anchor_email" => trim((string)($row["email"] ?? "")),
-                "messages" => [],
-                "unread" => 0,
-                "latest_ts" => 0,
-            ];
-        }
-        $groupsAccum[$gkey]["messages"][] = $row;
-        if ((int)($row["is_read"] ?? 0) === 0) {
-            $groupsAccum[$gkey]["unread"]++;
-        }
-        $ts = strtotime((string)($row["created_at"] ?? "")) ?: 0;
-        if ($ts > $groupsAccum[$gkey]["latest_ts"]) {
-            $groupsAccum[$gkey]["latest_ts"] = $ts;
-        }
-    }
-    foreach ($groupsAccum as &$g) {
-        usort($g["messages"], static function (array $a, array $b): int {
-            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
-            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
-            if ($ta !== $tb) {
-                return $ta <=> $tb;
-            }
-            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
-        });
-    }
-    unset($g);
-    $contactMessageGroups = array_values($groupsAccum);
-    usort($contactMessageGroups, static function (array $a, array $b): int {
-        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
-    });
-    foreach ($contactMessageGroups as &$g) {
-        if ($g["type"] === "client") {
-            $pid = (int)$g["client_id"];
-            $cl = $clientDirectoryById[$pid] ?? null;
-            $g["head_badge"] = "Cliente";
-            if ($cl !== null) {
-                $dn = trim((string)($cl["display_name"] ?? ""));
-                $g["head_title"] = $dn !== "" ? $dn : (string)$cl["email"];
-                $g["head_email"] = (string)$cl["email"];
-            } else {
-                $first = $g["messages"][0] ?? [];
-                $g["head_title"] = "Cliente n.º " . $pid;
-                $g["head_email"] = (string)($first["email"] ?? "");
-            }
-            $g["head_sub"] = "";
-        } else {
-            $first = $g["messages"][0] ?? [];
-            $nm = trim((string)($first["nombre"] ?? ""));
-            $em = (string)($g["anchor_email"] ?? "");
-            $g["head_badge"] = "Correo";
-            $g["head_title"] = $em !== "" ? $em : "Sin correo";
-            $g["head_email"] = $em;
-            if ($nm !== "") {
-                $g["head_sub"] = $nm;
-            } else {
-                $g["head_sub"] = "";
-            }
-        }
-        $g["msg_count"] = count($g["messages"]);
-        $g["threads"] = admin_group_messages_threads($g["messages"], $contactRepliesByMessageId);
-        $g["conv_count"] = count($g["threads"]);
-        $ts = (int)($g["latest_ts"] ?? 0);
-        $g["latest_label"] = "";
-        if ($ts > 0) {
-            $g["latest_label"] = date("d/m H:i", $ts);
-        }
-    }
-    unset($g);
+    $whatsappClicks = whatsapp_admin_list($conn, 100);
+    $waCounts = whatsapp_admin_counts($conn);
+    $whatsappClicksUnread = (int)($waCounts["unread"] ?? 0);
 }
 
 $waSideTotal = count($whatsappClicks);
@@ -2525,178 +1053,92 @@ $waSideCounterTitle = $waSideUnread > 0
       color: var(--bs-card-color);
       border-radius: 14px;
     }
-    /* Encabezado (tema/colores) por encima del grid: el panel de paleta sigue al frente
-       hasta cerrarse; si no, la columna mensajes (sticky) lo tapa al interactuar. */
+    /* Barra superior compacta (nav), fija al scroll. */
     .admin-wrap > .admin-header-card {
-      position: relative;
+      position: sticky;
+      top: 0;
       z-index: 400;
+      margin-bottom: 0.65rem !important;
+      padding: 0 !important;
+      border-radius: 0 0 12px 12px;
+      border-top: none;
+      backdrop-filter: blur(10px);
+      background: color-mix(in srgb, var(--surface) 96%, transparent);
+      box-shadow: 0 1px 0 var(--border);
     }
-    .admin-theme-toolbar {
-      position: relative;
-      z-index: 1;
-    }
-    /* Menú tema: reglas completas aquí (el admin antes solo “pinteaba” encima de styles.css;
-       con CSS en caché sin .theme-dropdown*, el panel quedaba en flujo y los botones nativos). */
-    .admin-wrap .theme-sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
-    }
-    .admin-wrap .theme-dropdown {
-      position: relative;
-    }
-    .admin-wrap .theme-btn {
-      width: 38px;
-      height: 38px;
-      display: grid;
-      place-items: center;
-      cursor: pointer;
-      border: 1px solid var(--border);
-      background:
-        linear-gradient(155deg, var(--palette-soft), transparent 58%),
-        var(--surface-2);
-      color: var(--text);
-      border-radius: 10px;
-      font-family: inherit;
-      font-size: 1rem;
-      line-height: 1;
-    }
-    .admin-wrap .theme-dropdown-toggle.theme-btn {
-      flex-shrink: 0;
-      background: var(--field-bg);
-      border-color: var(--border);
-      color: var(--text);
-    }
-    .admin-wrap .theme-dropdown-toggle.theme-btn:hover {
-      border-color: var(--ring);
-      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
-    }
-    .admin-wrap .theme-dropdown-toggle[aria-expanded="true"] {
-      border-color: var(--ring);
-      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 40%, transparent);
-    }
-    .admin-wrap .theme-dropdown-panel {
-      position: absolute;
-      right: 0;
-      top: calc(100% + 6px);
-      z-index: 500;
-      width: min(320px, calc(100vw - 1.5rem));
-      padding: 0.75rem 0.8rem 0.85rem;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      font-family: inherit;
-      box-shadow:
-        0 22px 56px color-mix(in srgb, #000 58%, transparent),
-        0 0 0 1px color-mix(in srgb, var(--border) 55%, transparent);
-    }
-    .admin-wrap .theme-dropdown-panel[hidden] {
-      display: none !important;
-    }
-    .admin-wrap .theme-dropdown-section + .theme-dropdown-section {
-      margin-top: 0.75rem;
-      padding-top: 0.75rem;
-      border-top: 1px solid var(--border);
-    }
-    .admin-wrap .theme-dropdown-section-title {
-      font-size: 0.65rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.45rem;
-    }
-    .admin-wrap .theme-mode-toggle {
+    .admin-top-nav {
       display: flex;
-      gap: 0.35rem;
-    }
-    .admin-wrap .theme-mode-btn {
-      flex: 1;
-      min-width: 0;
-      min-height: 2.5rem;
-      padding: 0.35rem 0.5rem;
-      display: grid;
-      place-items: center;
-      font-size: 1.05rem;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--field-bg);
-      color: var(--text);
-      line-height: 1;
-      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
-    }
-    .admin-wrap .theme-mode-btn:hover {
-      border-color: var(--ring);
-      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
-    }
-    .admin-wrap .theme-mode-btn.is-active {
-      border-color: var(--ring);
-      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 35%, transparent);
-      background: color-mix(in srgb, var(--field-bg) 68%, var(--palette-soft));
-    }
-    .admin-wrap .palette-picker {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 0.35rem;
-    }
-    .admin-wrap .palette-swatch-btn {
-      display: inline-flex;
       align-items: center;
-      justify-content: center;
-      gap: 0;
-      width: 100%;
+      justify-content: space-between;
+      gap: 0.5rem;
+      min-height: 3rem;
+      padding: 0.35rem 0.65rem;
+    }
+    .admin-top-nav__brand {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
       min-width: 0;
-      min-height: 2.35rem;
-      padding: 0.3rem;
-      font-size: 0.72rem;
-      font-weight: 600;
-      font-family: inherit;
-      line-height: 1;
-      cursor: pointer;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: var(--field-bg);
-      color: var(--text);
-      white-space: nowrap;
-      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      flex: 1 1 auto;
     }
-    .admin-wrap .palette-swatch-btn:hover {
-      border-color: var(--ring);
-      background: color-mix(in srgb, var(--field-bg) 88%, var(--palette-soft));
-    }
-    .admin-wrap .palette-swatch-btn.is-active {
-      border-color: var(--ring);
-      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 45%, transparent);
-      background: color-mix(in srgb, var(--field-bg) 70%, var(--palette-soft));
-    }
-    .admin-wrap .palette-swatch {
-      display: inline-block;
-      vertical-align: middle;
-      width: 1.1rem;
-      height: 1.1rem;
-      border-radius: 50%;
+    .admin-top-nav__brand > i {
       flex-shrink: 0;
-      border: 1px solid rgb(255 255 255 / 22%);
-      box-shadow: inset 0 0 0 1px rgb(0 0 0 / 15%);
+      font-size: 1rem;
+      color: var(--accent);
     }
-    html[data-theme="light"] .admin-wrap .palette-swatch {
-      border-color: rgb(0 0 0 / 12%);
-      box-shadow: inset 0 0 0 1px rgb(255 255 255 / 35%);
+    .admin-top-nav__title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      line-height: 1.2;
+      white-space: nowrap;
     }
-    html[data-theme="light"] .admin-wrap .theme-dropdown-panel {
-      box-shadow:
-        0 16px 44px color-mix(in srgb, #000 14%, transparent),
-        0 0 0 1px var(--border);
+    .admin-top-nav__session {
+      font-size: 0.72rem;
+      color: var(--muted);
+      max-width: 12rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .admin-top-nav__actions {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-shrink: 0;
+    }
+    .admin-top-nav__logout {
+      padding: 0.28rem 0.5rem;
+      font-size: 0.82rem;
+      line-height: 1.2;
+    }
+    .admin-top-nav__logout .admin-top-nav__logout-label {
+      display: none;
+    }
+    .admin-header-alerts {
+      padding: 0 0.65rem 0.45rem;
+    }
+    .admin-header-alerts .alert {
+      font-size: 0.85rem;
+      padding: 0.35rem 0.55rem;
+      margin-bottom: 0.35rem;
+    }
+    .admin-header-alerts .alert:last-child {
+      margin-bottom: 0;
+    }
+    @media (min-width: 576px) {
+      .admin-top-nav {
+        min-height: 3.15rem;
+        padding: 0.4rem 0.85rem;
+      }
+      .admin-top-nav__session {
+        max-width: 18rem;
+      }
+      .admin-top-nav__logout .admin-top-nav__logout-label {
+        display: inline;
+      }
+      .admin-top-nav__logout {
+        padding: 0.3rem 0.65rem;
+      }
     }
     .admin-wrap .form-label {
       color: var(--text);
@@ -2838,6 +1280,99 @@ $waSideCounterTitle = $waSideUnread > 0
       outline: 2px solid color-mix(in srgb, var(--accent, #0d6efd) 85%, #fff);
       outline-offset: 2px;
     }
+    .admin-portal-clients-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+    .admin-portal-clients-table .portal-col-email {
+      width: 34%;
+      min-width: 0;
+    }
+    .admin-portal-clients-table .portal-col-name {
+      width: 26%;
+      min-width: 0;
+    }
+    .admin-portal-clients-table .portal-col-account,
+    .admin-portal-clients-table .portal-col-smtp {
+      width: 14%;
+      text-align: center;
+    }
+    .admin-portal-clients-table .portal-col-actions {
+      width: 12%;
+    }
+    .admin-portal-clients-table .portal-client-email-line {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.35;
+    }
+    .admin-portal-clients-table .portal-th-short {
+      display: none;
+    }
+    .admin-portal-clients-table .portal-client-name-mobile {
+      display: none;
+      margin-top: 0.15rem;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 575.98px) {
+      .admin-portal-clients-table {
+        table-layout: auto;
+      }
+      .admin-portal-clients-table thead .portal-th-full {
+        display: none;
+      }
+      .admin-portal-clients-table thead .portal-th-short {
+        display: inline;
+      }
+      .admin-portal-clients-table .portal-col-email {
+        width: auto;
+        min-width: 0;
+        max-width: none;
+      }
+      .admin-portal-clients-table .portal-col-name {
+        display: none !important;
+      }
+      .admin-portal-clients-table .portal-client-name-mobile {
+        display: block;
+      }
+      .admin-portal-clients-table .portal-col-account,
+      .admin-portal-clients-table .portal-col-smtp {
+        width: 2.35rem;
+        padding-left: 0.2rem;
+        padding-right: 0.2rem;
+      }
+      .admin-portal-clients-table .portal-col-actions {
+        width: 2.35rem;
+        padding-left: 0.15rem;
+        white-space: nowrap;
+      }
+      .admin-portal-clients-table .portal-pill-label {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+      }
+      .admin-portal-clients-table .portal-client-toggle-btn {
+        padding: 0.32em 0.42em;
+        min-width: 2rem;
+        justify-content: center;
+      }
+      .admin-portal-clients-table .portal-client-toggle-btn .ms-1 {
+        margin-left: 0 !important;
+      }
+      .admin-portal-clients-body .table td.font-monospace {
+        max-width: none;
+      }
+      .admin-portal-client-actions .btn {
+        min-width: 2rem;
+        padding: 0.22rem 0.35rem;
+      }
+    }
     .admin-experts-table.table-hover tbody tr {
       transition: background-color 0.12s ease;
     }
@@ -2913,6 +1448,85 @@ $waSideCounterTitle = $waSideUnread > 0
     }
     .admin-experts-table .expert-svc-icon i {
       line-height: 1;
+    }
+    .admin-experts-table .expert-th-short {
+      display: none;
+    }
+    .admin-experts-table .expert-info-btn--mobile {
+      display: none;
+    }
+    .admin-experts-table .expert-info-badge--desktop {
+      display: inline-flex;
+    }
+    .admin-experts-table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    @media (max-width: 575.98px) {
+      .admin-experts-table {
+        table-layout: auto;
+      }
+      .admin-experts-table thead .expert-th-full {
+        display: none;
+      }
+      .admin-experts-table thead .expert-th-short {
+        display: inline;
+      }
+      .admin-experts-table .expert-col-services {
+        display: none !important;
+      }
+      .admin-experts-table .expert-pill-label {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+      }
+      .admin-experts-table .expert-pill {
+        padding: 0.35em 0.45em;
+      }
+      .admin-experts-table .expert-col-order {
+        width: 2.25rem;
+        padding-left: 0.15rem;
+        padding-right: 0.15rem;
+      }
+      .admin-experts-table .expert-col-status {
+        width: 2.5rem;
+        padding-left: 0.15rem;
+        padding-right: 0.15rem;
+      }
+      .admin-experts-table .expert-col-actions {
+        width: auto;
+        white-space: nowrap;
+        padding-left: 0.15rem;
+      }
+      .admin-experts-table .expert-col-name {
+        min-width: 0;
+        max-width: 42vw;
+      }
+      .admin-experts-table .expert-row-name {
+        font-size: 0.88rem;
+      }
+      .admin-experts-table .expert-info-btn--mobile {
+        display: inline-flex;
+      }
+      .admin-experts-table .expert-info-badge--desktop {
+        display: none !important;
+      }
+      .admin-experts-table .admin-expert-row-actions {
+        gap: 0.2rem !important;
+      }
+      .admin-experts-table .admin-expert-row-actions .btn {
+        min-width: 2rem;
+        padding: 0.22rem 0.35rem;
+      }
+      .admin-experts-table .expert-detail-row td {
+        border-top: none;
+      }
     }
     .admin-services-accordion .accordion-item {
       background: transparent;
@@ -3677,22 +2291,30 @@ $waSideCounterTitle = $waSideUnread > 0
     </div>
   <?php else: ?>
   <div class="admin-wrap">
-    <div class="card admin-header-card p-3 p-md-4 mb-3">
-      <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
-        <div>
-          <h1 class="h3 mb-1"><i class="fa-solid fa-screwdriver-wrench me-2"></i>Panel de Administración</h1>
-          <p class="mb-0 text-light-emphasis">Sesión: <?= h($_SESSION["admin_email"] ?? "") ?></p>
+    <header class="card admin-header-card mb-3">
+      <div class="admin-top-nav">
+        <div class="admin-top-nav__brand">
+          <i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>
+          <div class="min-w-0">
+            <div class="admin-top-nav__title">Admin</div>
+            <div class="admin-top-nav__session" title="<?= h($_SESSION["admin_email"] ?? "") ?>"><?= h($_SESSION["admin_email"] ?? "") ?></div>
+          </div>
         </div>
-        <div class="d-flex align-items-center gap-2 flex-wrap admin-theme-toolbar">
+        <div class="admin-top-nav__actions">
           <?php require __DIR__ . "/palette_picker.php"; ?>
-          <a href="admin.php?logout=1" class="btn btn-outline-light">
-            <i class="fa-solid fa-right-from-bracket me-2"></i>Cerrar sesión
+          <a href="admin.php?logout=1" class="btn btn-outline-secondary btn-sm admin-top-nav__logout" title="Cerrar sesión">
+            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+            <span class="admin-top-nav__logout-label ms-1">Salir</span>
           </a>
         </div>
       </div>
-      <?php if ($message !== ""): ?><div class="alert <?= h($messageAlertClass) ?> mt-3 mb-0"><?= h($message) ?></div><?php endif; ?>
-      <?php if ($error !== ""): ?><div class="alert alert-danger mt-3 mb-0"><?= h($error) ?></div><?php endif; ?>
-    </div>
+      <?php if ($message !== "" || $error !== ""): ?>
+        <div class="admin-header-alerts">
+          <?php if ($message !== ""): ?><div class="alert <?= h($messageAlertClass) ?> mb-0"><?= h($message) ?></div><?php endif; ?>
+          <?php if ($error !== ""): ?><div class="alert alert-danger mb-0"><?= h($error) ?></div><?php endif; ?>
+        </div>
+      <?php endif; ?>
+    </header>
 
     <div class="admin-layout<?= $adminInboxWide ? " admin-layout--inbox-wide" : "" ?>">
       <?php if ($adminInboxWide): ?>
@@ -3764,11 +2386,29 @@ $waSideCounterTitle = $waSideUnread > 0
                     <table class="table table-sm table-hover table-borderless align-middle mb-0 admin-portal-clients-table">
                       <thead>
                         <tr class="text-secondary small">
-                          <th scope="col">Correo</th>
-                          <th scope="col">Nombre</th>
-                          <th scope="col">Cuenta</th>
-                          <th scope="col">Correo SMTP</th>
-                          <th scope="col" class="text-end">Acciones</th>
+                          <th scope="col" class="portal-col-email">
+                            <span class="portal-th-full">Correo</span>
+                            <span class="portal-th-short" aria-hidden="true"><i class="fa-solid fa-envelope"></i></span>
+                            <span class="visually-hidden">Correo y nombre</span>
+                          </th>
+                          <th scope="col" class="portal-col-name">
+                            <span class="portal-th-full">Nombre</span>
+                          </th>
+                          <th scope="col" class="portal-col-account" title="Estado de la cuenta">
+                            <span class="portal-th-full">Cuenta</span>
+                            <span class="portal-th-short" aria-hidden="true"><i class="fa-solid fa-user-check"></i></span>
+                            <span class="visually-hidden">Cuenta</span>
+                          </th>
+                          <th scope="col" class="portal-col-smtp" title="Envío por correo SMTP">
+                            <span class="portal-th-full">Correo SMTP</span>
+                            <span class="portal-th-short" aria-hidden="true"><i class="fa-solid fa-paper-plane"></i></span>
+                            <span class="visually-hidden">Correo SMTP</span>
+                          </th>
+                          <th scope="col" class="text-end portal-col-actions">
+                            <span class="portal-th-full">Acciones</span>
+                            <span class="portal-th-short" aria-hidden="true"><i class="fa-solid fa-ellipsis"></i></span>
+                            <span class="visually-hidden">Acciones</span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3779,9 +2419,14 @@ $waSideCounterTitle = $waSideUnread > 0
                             $notifyOut = (int)($pc["email_notify_outbound"] ?? 1) === 1;
                           ?>
                           <tr>
-                            <td class="font-monospace small text-break"><?= h((string)($pc["email"] ?? "")) ?></td>
-                            <td class="small"><?= h((string)($pc["display_name"] ?? "")) ?></td>
-                            <td>
+                            <td class="portal-col-email font-monospace small">
+                              <div class="portal-client-email-line"><?= h((string)($pc["email"] ?? "")) ?></div>
+                              <?php if (trim((string)($pc["display_name"] ?? "")) !== ""): ?>
+                                <div class="portal-client-name-mobile small text-secondary"><?= h((string)($pc["display_name"] ?? "")) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td class="portal-col-name small"><?= h((string)($pc["display_name"] ?? "")) ?></td>
+                            <td class="portal-col-account">
                               <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
                                 <input type="hidden" name="action" value="client_toggle_active">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
@@ -3793,14 +2438,14 @@ $waSideCounterTitle = $waSideUnread > 0
                                   onclick="event.stopPropagation();"
                                 >
                                   <?php if ($active): ?>
-                                    <i class="fa-solid fa-user-check" aria-hidden="true"></i><span class="ms-1">Activo</span>
+                                    <i class="fa-solid fa-user-check" aria-hidden="true"></i><span class="ms-1 portal-pill-label">Activo</span>
                                   <?php else: ?>
-                                    <i class="fa-solid fa-user-slash" aria-hidden="true"></i><span class="ms-1">Inactivo</span>
+                                    <i class="fa-solid fa-user-slash" aria-hidden="true"></i><span class="ms-1 portal-pill-label">Inactivo</span>
                                   <?php endif; ?>
                                 </button>
                               </form>
                             </td>
-                            <td>
+                            <td class="portal-col-smtp">
                               <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
                                 <input type="hidden" name="action" value="client_toggle_email_notify">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
@@ -3812,15 +2457,15 @@ $waSideCounterTitle = $waSideUnread > 0
                                   onclick="event.stopPropagation();"
                                 >
                                   <?php if ($notifyOut): ?>
-                                    <i class="fa-solid fa-paper-plane" aria-hidden="true"></i><span class="ms-1">Correo</span>
+                                    <i class="fa-solid fa-paper-plane" aria-hidden="true"></i><span class="ms-1 portal-pill-label">Correo</span>
                                   <?php else: ?>
-                                    <i class="fa-solid fa-display" aria-hidden="true"></i><span class="ms-1">Solo web</span>
+                                    <i class="fa-solid fa-display" aria-hidden="true"></i><span class="ms-1 portal-pill-label">Solo web</span>
                                   <?php endif; ?>
                                 </button>
                               </form>
                             </td>
-                            <td class="text-end">
-                              <div class="d-inline-flex flex-wrap align-items-center justify-content-end admin-portal-client-actions">
+                            <td class="text-end portal-col-actions">
+                              <div class="d-inline-flex flex-nowrap align-items-center justify-content-end admin-portal-client-actions">
                                 <form method="post" class="m-0" onsubmit="return confirm('¿Eliminar este cliente? No se puede deshacer.');" onclick="event.stopPropagation();">
                                   <input type="hidden" name="action" value="client_delete">
                                   <input type="hidden" name="client_id" value="<?= $pid ?>">
@@ -4778,20 +3423,90 @@ $waSideCounterTitle = $waSideUnread > 0
 
       document.addEventListener("DOMContentLoaded", function () {
         var hash = (window.location.hash || "").trim();
-        if (hash !== "#admin-tool-clients" && hash !== "#tools_clients_panel") {
-          return;
-        }
-        var panel = document.getElementById("tools_clients_panel");
-        if (panel && window.bootstrap && bootstrap.Collapse) {
+        var schLegacySection = null;
+        var legacySchMatch = /^#expert_sch_acc_(appts|week|template|daily|dates)$/.exec(hash);
+        if (legacySchMatch) {
+          schLegacySection = legacySchMatch[1];
           try {
-            bootstrap.Collapse.getOrCreateInstance(panel).show();
+            history.replaceState(
+              null,
+              "",
+              window.location.pathname + window.location.search + "#admin-expert-schedule"
+            );
+          } catch (e) {}
+          hash = "#admin-expert-schedule";
+        }
+
+        function collapseShowIfNeeded(el) {
+          if (!el || !window.bootstrap || !bootstrap.Collapse) {
+            return;
+          }
+          if (el.classList.contains("show")) {
+            return;
+          }
+          try {
+            bootstrap.Collapse.getOrCreateInstance(el).show();
           } catch (e) {}
         }
-        var item = document.getElementById("admin-tool-clients");
-        if (item) {
-          setTimeout(function () {
-            item.scrollIntoView({ block: "nearest", behavior: "smooth" });
-          }, 120);
+
+        if (hash === "#admin-tool-clients" || hash === "#tools_clients_panel") {
+          collapseShowIfNeeded(document.getElementById("tools_clients_panel"));
+          var item = document.getElementById("admin-tool-clients");
+          if (item) {
+            setTimeout(function () {
+              item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            }, 120);
+          }
+          return;
+        }
+
+        var urlParams = null;
+        try {
+          urlParams = new URLSearchParams(window.location.search);
+        } catch (e) {}
+        var isExpertSchedule =
+          hash === "#admin-expert-schedule" ||
+          (urlParams &&
+            urlParams.get("expert_view") === "schedule" &&
+            urlParams.get("expert_id"));
+
+        if (
+          hash === "#expert_acc_bulk" ||
+          hash === "#expert_acc_appointments" ||
+          hash === "#admin-experts-list" ||
+          isExpertSchedule
+        ) {
+          collapseShowIfNeeded(document.getElementById("tools_experts_panel"));
+          if (hash === "#expert_acc_bulk" || hash === "#expert_acc_appointments") {
+            var innerTarget = hash === "#expert_acc_bulk" ? "expert_acc_bulk" : "expert_acc_appointments";
+            collapseShowIfNeeded(document.getElementById(innerTarget));
+          }
+          if (isExpertSchedule) {
+            collapseShowIfNeeded(document.getElementById("expert_acc_schedule"));
+            var schSec = schLegacySection;
+            if (!schSec && urlParams) {
+              schSec = urlParams.get("expert_section");
+            }
+            if (schSec) {
+              collapseShowIfNeeded(document.getElementById("expert_sch_acc_" + schSec));
+            }
+          }
+          var scrollEl = null;
+          if (isExpertSchedule) {
+            scrollEl = document.getElementById("admin-expert-schedule");
+          } else if (hash === "#admin-experts-list") {
+            scrollEl = document.getElementById("admin-experts-list");
+          } else if (hash === "#expert_acc_bulk" || hash === "#expert_acc_appointments") {
+            scrollEl = document.getElementById(hash.slice(1));
+          } else if (hash) {
+            scrollEl = document.querySelector(hash);
+          }
+          if (scrollEl) {
+            setTimeout(function () {
+              scrollEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            }, 160);
+          }
+          return;
         }
       });
     })();

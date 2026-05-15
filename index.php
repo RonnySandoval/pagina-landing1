@@ -502,68 +502,7 @@ function index_format_datetime(string $sqlDatetime): string
  */
 function index_client_group_messages_threads(array $messages, array $repliesByMessageId): array
 {
-    $byId = [];
-    foreach ($messages as $m) {
-        $id = (int)($m["id"] ?? 0);
-        if ($id > 0) {
-            $byId[$id] = $m;
-        }
-    }
-    $buckets = [];
-    foreach ($messages as $m) {
-        $mid = (int)($m["id"] ?? 0);
-        if ($mid <= 0) {
-            continue;
-        }
-        $root = $mid;
-        $p = (int)($m["in_reply_to"] ?? 0);
-        $guard = 0;
-        while ($p > 0 && isset($byId[$p]) && $guard++ < 64) {
-            $root = $p;
-            $p = (int)($byId[$p]["in_reply_to"] ?? 0);
-        }
-        if (!isset($buckets[$root])) {
-            $buckets[$root] = [];
-        }
-        $buckets[$root][] = $m;
-    }
-    $threads = [];
-    foreach ($buckets as $rootId => $rows) {
-        usort($rows, static function (array $a, array $b): int {
-            $ta = strtotime((string)($a["created_at"] ?? "")) ?: 0;
-            $tb = strtotime((string)($b["created_at"] ?? "")) ?: 0;
-            if ($ta !== $tb) {
-                return $ta <=> $tb;
-            }
-            return ((int)($a["id"] ?? 0)) <=> ((int)($b["id"] ?? 0));
-        });
-        $latestTs = 0;
-        foreach ($rows as $r) {
-            $t = strtotime((string)($r["created_at"] ?? "")) ?: 0;
-            if ($t > $latestTs) {
-                $latestTs = $t;
-            }
-        }
-        $hasAdmin = false;
-        foreach ($rows as $r) {
-            $rid = (int)($r["id"] ?? 0);
-            if ($rid > 0 && !empty($repliesByMessageId[$rid])) {
-                $hasAdmin = true;
-                break;
-            }
-        }
-        $threads[] = [
-            "root_id" => (int)$rootId,
-            "messages" => $rows,
-            "latest_ts" => $latestTs,
-            "has_admin_reply" => $hasAdmin,
-        ];
-    }
-    usort($threads, static function (array $a, array $b): int {
-        return ($b["latest_ts"] ?? 0) <=> ($a["latest_ts"] ?? 0);
-    });
-
-    return $threads;
+    return client_inbox_group_threads($messages, $repliesByMessageId);
 }
 
 $clientThreads = [];

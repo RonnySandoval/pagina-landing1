@@ -1,59 +1,43 @@
 <?php
 declare(strict_types=1);
-/** Tema: icono abre panel; nombres de paleta vía title (hover) + .theme-sr-only. */
+/** Interruptor claro/oscuro + paleta en panel compacto (hover / clic). */
 ?>
-<div class="theme-dropdown" data-theme-dropdown>
-  <button
-    type="button"
-    class="theme-btn theme-dropdown-toggle"
-    id="themeDropdownToggle"
-    data-theme-dropdown-toggle
-    aria-expanded="false"
-    aria-haspopup="true"
-    aria-controls="themeDropdownPanel"
-    title="Tema"
-  >
-    <i class="fa-solid fa-palette" aria-hidden="true"></i>
-    <span class="theme-sr-only">Tema</span>
-  </button>
-  <div
-    class="theme-dropdown-panel"
-    id="themeDropdownPanel"
-    data-theme-dropdown-panel
-    hidden
-    role="region"
-    aria-label="Opciones de tema"
-  >
-    <div class="theme-dropdown-section">
-      <div class="theme-dropdown-section-title">Aspecto</div>
-      <div class="theme-mode-toggle" role="group" aria-label="Aspecto claro u oscuro">
-        <button
-          type="button"
-          class="theme-mode-btn"
-          data-theme-mode="dark"
-          aria-pressed="true"
-          title="Modo oscuro"
-          aria-label="Modo oscuro"
-        >
-          <i class="fa-solid fa-moon" aria-hidden="true"></i>
-          <span class="theme-sr-only">Oscuro</span>
-        </button>
-        <button
-          type="button"
-          class="theme-mode-btn"
-          data-theme-mode="light"
-          aria-pressed="false"
-          title="Modo claro"
-          aria-label="Modo claro"
-        >
-          <i class="fa-solid fa-sun" aria-hidden="true"></i>
-          <span class="theme-sr-only">Claro</span>
-        </button>
-      </div>
-    </div>
-    <div class="theme-dropdown-section">
-      <div class="theme-dropdown-section-title">Paleta</div>
-      <div class="palette-picker palette-picker--compact" role="radiogroup" aria-label="Paleta de color">
+<div class="theme-toolbar" data-theme-toolbar>
+  <label class="theme-mode-switch" title="Modo oscuro / claro">
+    <input
+      type="checkbox"
+      class="theme-mode-switch-input"
+      data-theme-mode-switch
+      aria-label="Activar modo claro"
+    />
+    <span class="theme-mode-switch-track" aria-hidden="true">
+      <span class="theme-mode-switch-thumb"></span>
+      <i class="fa-solid fa-moon theme-mode-switch-icon theme-mode-switch-icon--dark" aria-hidden="true"></i>
+      <i class="fa-solid fa-sun theme-mode-switch-icon theme-mode-switch-icon--light" aria-hidden="true"></i>
+    </span>
+  </label>
+
+  <div class="theme-palette-anchor" data-palette-anchor>
+    <button
+      type="button"
+      class="theme-palette-trigger"
+      data-palette-trigger
+      aria-expanded="false"
+      aria-controls="themePaletteFlyout"
+      title="Color del tema (pasa el cursor o pulsa)"
+    >
+      <i class="fa-solid fa-palette" aria-hidden="true"></i>
+      <span class="theme-palette-trigger-dot" data-palette-active-dot aria-hidden="true"></span>
+      <span class="theme-sr-only">Paleta de color</span>
+    </button>
+    <div
+      id="themePaletteFlyout"
+      class="theme-palette-flyout"
+      data-palette-flyout
+      role="region"
+      aria-label="Paleta de color"
+    >
+      <div class="palette-picker palette-picker--flyout" role="radiogroup" aria-label="Elegir paleta">
         <button type="button" class="palette-swatch-btn" data-palette="blue" aria-pressed="false" title="Azul">
           <span class="palette-swatch" style="background:#3b82f6"></span><span class="theme-sr-only">Azul</span>
         </button>

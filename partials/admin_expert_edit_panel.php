@@ -3,6 +3,7 @@ declare(strict_types=1);
 /** @var array<string, mixed> $expertEdit */
 /** @var array<int, array<int, bool>> $expertServiceIds */
 /** @var list<array<string, mixed>> $services */
+/** @var list<array<string, mixed>> $expertAppointmentsUpcoming */
 if (!is_array($expertEdit) || !isset($expertEdit["id"])) {
     return;
 }
@@ -74,6 +75,22 @@ $svcSet = $expertServiceIds[$eid] ?? [];
       <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Guardar datos</button>
     </div>
   </form>
+
+  <section class="expert-schedule-block mt-4 pt-3 border-top border-secondary" aria-labelledby="expert-edit-appt-heading">
+    <h4 id="expert-edit-appt-heading" class="h6 expert-schedule-block-title">
+      <i class="fa-solid fa-calendar-check me-2" aria-hidden="true"></i>Citas programadas
+    </h4>
+    <?php
+      $appointments = $expertAppointmentsUpcoming ?? [];
+      $showExpertColumn = false;
+      $cancelExpertId = $eid;
+      $expertWeekHidden = "";
+      $appointmentReturnView = "edit";
+      $emptyMessage = "Este experto no tiene citas confirmadas próximas.";
+      require __DIR__ . "/admin_expert_appointments_table.php";
+    ?>
+  </section>
+
   <form method="post" class="mt-3 pt-3 border-top border-secondary" onsubmit="return confirm('¿Eliminar este experto? Se quitarán sus vínculos con servicios.');">
     <input type="hidden" name="action" value="delete_expert">
     <input type="hidden" name="expert_id" value="<?= $eid ?>">

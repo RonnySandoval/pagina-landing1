@@ -17,22 +17,20 @@ $monNav = DateTimeImmutable::createFromFormat("Y-m-d", $weekStart, $tzNav);
 $prevWeek = $monNav !== false ? $monNav->modify("-7 days")->format("Y-m-d") : $weekStart;
 $nextWeek = $monNav !== false ? $monNav->modify("+7 days")->format("Y-m-d") : $weekStart;
 $todayWeek = agenda_normalize_week_start("");
-$navBase = "admin.php?expert_id=" . (int)$eid . "&expert_view=schedule&expert_week=";
 ?>
-<div id="admin-expert-week-grid" class="admin-expert-week-section mt-4 pt-3 border-top border-secondary">
-  <h4 class="h6 mb-2"><i class="fa-solid fa-table me-2"></i>Agenda semanal (vista tipo cliente)</h4>
-  <p class="small text-light-emphasis mb-3">
+<div id="admin-expert-week-grid" class="admin-expert-week-section">
+  <p class="small text-muted mb-3">
     Misma lógica que la reserva pública: filas por hora y columnas por día. <span class="admin-agenda-legend admin-agenda-legend--free">Libre</span>
     <span class="admin-agenda-legend admin-agenda-legend--booked">Reservado</span>
     <span class="admin-agenda-legend admin-agenda-legend--past">Pasado</span>
     <span class="admin-agenda-legend admin-agenda-legend--closed">Cerrado</span>
   </p>
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3 admin-expert-week-toolbar">
-    <a class="btn btn-sm btn-outline-light" href="<?= h($navBase . urlencode($prevWeek)) ?>#admin-expert-week-grid"><i class="fa-solid fa-chevron-left"></i> Semana anterior</a>
+    <a class="btn btn-sm btn-outline-secondary" href="<?= h(admin_expert_page_url($eid, "schedule", $prevWeek, "week")) ?>"><i class="fa-solid fa-chevron-left"></i> Semana anterior</a>
     <span class="small fw-semibold px-2"><?= h($weekLabel) ?></span>
-    <a class="btn btn-sm btn-outline-light" href="<?= h($navBase . urlencode($nextWeek)) ?>#admin-expert-week-grid">Semana siguiente <i class="fa-solid fa-chevron-right"></i></a>
+    <a class="btn btn-sm btn-outline-secondary" href="<?= h(admin_expert_page_url($eid, "schedule", $nextWeek, "week")) ?>">Semana siguiente <i class="fa-solid fa-chevron-right"></i></a>
     <?php if ($weekStart !== $todayWeek): ?>
-      <a class="btn btn-sm btn-outline-secondary" href="<?= h($navBase . urlencode($todayWeek)) ?>#admin-expert-week-grid">Semana actual</a>
+      <a class="btn btn-sm btn-outline-secondary" href="<?= h(admin_expert_page_url($eid, "schedule", $todayWeek, "week")) ?>">Semana actual</a>
     <?php endif; ?>
   </div>
   <?php if (count($weekRows) === 0): ?>
