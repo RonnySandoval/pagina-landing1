@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . "/app_urls.php";
 require_once __DIR__ . "/agenda_lib.php";
 require_once __DIR__ . "/agenda_public_bootstrap.php";
+require_once __DIR__ . "/agenda_notifications_lib.php";
 
 /**
  * @return array{expert_id: int, starts_at: string}|null
@@ -124,7 +125,8 @@ function agenda_service_booking_http_status(string $message): int
  *   expert_id: int,
  *   starts_at: string,
  *   ends_at: string,
- *   slot_units: int
+ *   slot_units: int,
+ *   notifications: array{guest: bool, admin: bool, expert: bool, skipped_guest: bool}
  * } | array{ok: false, error: string, message: string}
  */
 function agenda_service_create_booking(mysqli $conn, array $input, array $context = []): array
@@ -194,13 +196,29 @@ function agenda_service_create_booking(mysqli $conn, array $input, array $contex
         $endsAt = $start->modify("+" . ($slotUnits * AGENDA_SLOT_MINUTES) . " minutes")->format("Y-m-d H:i:s");
     }
 
+    $aid = (int)($appointmentId ?? 0);
+    $notifications = [
+        "guest" => false,
+        "admin" => false,
+        "expert" => false,
+        "skipped_guest" => false,
+        "in_app_admin" => false,
+        "in_app_client" => false,
+        "deliveries" => [],
+    ];
+    if ($aid > 0) {
+        agenda_notifications_link_appointment_client($conn, $aid, $clientId, $guestEmail);
+        $notifications = agenda_notifications_send_booking($conn, $aid);
+    }
+
     return [
         "ok" => true,
-        "appointment_id" => (int)($appointmentId ?? 0),
+        "appointment_id" => $aid,
         "service_id" => $serviceId,
         "expert_id" => $expertId,
         "starts_at" => $startsAt,
         "ends_at" => $endsAt,
         "slot_units" => $slotUnits,
+        "notifications" => $notifications,
     ];
 }

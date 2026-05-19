@@ -243,7 +243,7 @@ function experts_admin_fetch_upcoming_appointments_for_expert(mysqli $conn, int 
     }
     $apStmt = $conn->prepare(
         "SELECT a.id, a.expert_id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone,
-                s.title AS service_title
+                s.title AS service_title, s.icon_class AS service_icon_class
          FROM expert_appointments a
          INNER JOIN services s ON s.id = a.service_id
          WHERE a.expert_id = ? AND a.status = 'confirmed' AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
@@ -279,7 +279,7 @@ function experts_admin_fetch_all_upcoming_appointments(mysqli $conn, int $limit 
     }
     $apStmt = $conn->prepare(
         "SELECT a.id, a.expert_id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone,
-                s.title AS service_title, e.display_name AS expert_name
+                s.title AS service_title, s.icon_class AS service_icon_class, e.display_name AS expert_name
          FROM expert_appointments a
          INNER JOIN services s ON s.id = a.service_id
          INNER JOIN experts e ON e.id = a.expert_id
@@ -570,6 +570,31 @@ function experts_admin_delete_weekly_availability(mysqli $conn, int $expertId, i
 }
 
 /**
+ * @return list<int> 0=Dom … 6=Sáb
+ */
+function experts_admin_parse_weekdays_from_input(array $input): array
+{
+    $raw = $input["weekdays"] ?? $input["template_weekdays"] ?? null;
+    if ($raw === null || $raw === "" || $raw === []) {
+        return [1, 2, 3, 4, 5];
+    }
+    if (!is_array($raw)) {
+        $raw = preg_split('/\s*,\s*/', (string)$raw, -1, PREG_SPLIT_NO_EMPTY) ?: [(string)$raw];
+    }
+    $out = [];
+    foreach ($raw as $d) {
+        $wd = (int)$d;
+        if ($wd >= 0 && $wd <= 6) {
+            $out[$wd] = true;
+        }
+    }
+    $days = array_keys($out);
+    sort($days);
+
+    return $days;
+}
+
+/**
  * @return array{ok: true, start: string, end: string}|array{ok: false, error: string}
  */
 function experts_admin_resolve_mon_fri_times(array $input): array
@@ -580,9 +605,62 @@ function experts_admin_resolve_mon_fri_times(array $input): array
     }
 
     return experts_admin_parse_time_range(
-        trim((string)($input["mon_fri_start"] ?? $input["start_time"] ?? "")),
-        trim((string)($input["mon_fri_end"] ?? $input["end_time"] ?? ""))
+        trim((string)($input["mon_fri_start"] ?? $input["template_slot1_start"] ?? $input["start_time"] ?? "")),
+        trim((string)($input["mon_fri_end"] ?? $input["template_slot1_end"] ?? $input["end_time"] ?? ""))
     );
+}
+
+/**
+ * @return array{ok: true, windows: list<array{start: string, end: string}>}|array{ok: false, error: string}
+ */
+function experts_admin_resolve_template_windows(array $input): array
+{
+    $windows = [];
+    $slot1 = experts_admin_resolve_mon_fri_times($input);
+    if (!$slot1["ok"]) {
+        return $slot1;
+    }
+    $windows[] = ["start" => $slot1["start"], "end" => $slot1["end"]];
+
+    $s2Start = trim((string)($input["template_slot2_start"] ?? ""));
+    $s2End = trim((string)($input["template_slot2_end"] ?? ""));
+    if ($s2Start !== "" || $s2End !== "") {
+        if ($s2Start === "" || $s2End === "") {
+            return ["ok" => false, "error" => "invalid_time"];
+        }
+        $slot2 = experts_admin_parse_time_range($s2Start, $s2End);
+        if (!$slot2["ok"]) {
+            return $slot2;
+        }
+        if ($slot2["start"] >= $slot1["end"] && $slot2["end"] > $slot2["start"]) {
+            $windows[] = ["start" => $slot2["start"], "end" => $slot2["end"]];
+        } else {
+            return ["ok" => false, "error" => "invalid_time_range"];
+        }
+    }
+
+    return ["ok" => true, "windows" => $windows];
+}
+
+/**
+ * @return array{ok: true, weekdays: list<int>}|array{ok: false, error: string}
+ */
+function experts_admin_resolve_template_apply(array $input): array
+{
+    $weekdays = experts_admin_parse_weekdays_from_input($input);
+    if ($weekdays === []) {
+        return ["ok" => false, "error" => "invalid_weekdays"];
+    }
+    $windows = experts_admin_resolve_template_windows($input);
+    if (!$windows["ok"]) {
+        return $windows;
+    }
+
+    return [
+        "ok" => true,
+        "weekdays" => $weekdays,
+        "windows" => $windows["windows"],
+    ];
 }
 
 /**
@@ -595,12 +673,12 @@ function experts_admin_set_mon_fri_window(mysqli $conn, int $expertId, array $in
         return ["ok" => false, "error" => (string)($exists["error"] ?? "not_found")];
     }
 
-    $times = experts_admin_resolve_mon_fri_times($input);
-    if (!$times["ok"]) {
-        return ["ok" => false, "error" => (string)($times["error"] ?? "invalid_time")];
+    $tpl = experts_admin_resolve_template_apply($input);
+    if (!$tpl["ok"]) {
+        return ["ok" => false, "error" => (string)($tpl["error"] ?? "invalid_time")];
     }
 
-    if (!agenda_replace_mon_fri_single_window($conn, $expertId, $times["start"], $times["end"])) {
+    if (!agenda_replace_weekdays_windows($conn, $expertId, $tpl["weekdays"], $tpl["windows"])) {
         return ["ok" => false, "error" => "update_failed"];
     }
 
@@ -612,9 +690,9 @@ function experts_admin_set_mon_fri_window(mysqli $conn, int $expertId, array $in
  */
 function experts_admin_bulk_mon_fri_all(mysqli $conn, array $input): array
 {
-    $times = experts_admin_resolve_mon_fri_times($input);
-    if (!$times["ok"]) {
-        return ["ok" => false, "error" => (string)($times["error"] ?? "invalid_time")];
+    $tpl = experts_admin_resolve_template_apply($input);
+    if (!$tpl["ok"]) {
+        return ["ok" => false, "error" => (string)($tpl["error"] ?? "invalid_time")];
     }
 
     $count = 0;
@@ -622,7 +700,7 @@ function experts_admin_bulk_mon_fri_all(mysqli $conn, array $input): array
     if ($allQ) {
         while ($erow = $allQ->fetch_assoc()) {
             $xid = (int)($erow["id"] ?? 0);
-            if ($xid > 0 && agenda_replace_mon_fri_single_window($conn, $xid, $times["start"], $times["end"])) {
+            if ($xid > 0 && agenda_replace_weekdays_windows($conn, $xid, $tpl["weekdays"], $tpl["windows"])) {
                 $count++;
             }
         }
@@ -742,13 +820,29 @@ function experts_admin_delete_date_exception(mysqli $conn, int $expertId, int $a
 }
 
 /**
- * @return array{ok: true, cancelled: bool}|array{ok: false, error: string}
+ * @return array{
+ *   ok: true,
+ *   cancelled: bool,
+ *   notifications: array{guest: bool, admin: bool, expert: bool, skipped_guest: bool}
+ * } | array{ok: false, error: string}
  */
 function experts_admin_cancel_appointment(mysqli $conn, int $expertId, int $appointmentId): array
 {
     if ($expertId <= 0 || $appointmentId <= 0) {
         return ["ok" => false, "error" => "invalid_request"];
     }
+
+    $snapshot = null;
+    require_once __DIR__ . "/agenda_notifications_lib.php";
+    $loaded = agenda_notifications_load_appointment($conn, $appointmentId);
+    if (
+        is_array($loaded)
+        && (int)($loaded["expert_id"] ?? 0) === $expertId
+        && (string)($loaded["status"] ?? "") === "confirmed"
+    ) {
+        $snapshot = $loaded;
+    }
+
     $upd = $conn->prepare(
         "UPDATE expert_appointments SET status = 'cancelled' WHERE id = ? AND expert_id = ? AND status = 'confirmed' LIMIT 1"
     );
@@ -760,7 +854,12 @@ function experts_admin_cancel_appointment(mysqli $conn, int $expertId, int $appo
     $cancelled = $upd->affected_rows > 0;
     $upd->close();
 
-    return ["ok" => true, "cancelled" => $cancelled];
+    $notifications = ["guest" => false, "admin" => false, "expert" => false, "skipped_guest" => false];
+    if ($cancelled && $snapshot !== null) {
+        $notifications = agenda_notifications_send_cancel($conn, $snapshot);
+    }
+
+    return ["ok" => true, "cancelled" => $cancelled, "notifications" => $notifications];
 }
 
 /**

@@ -63,9 +63,22 @@ if (!$result["ok"]) {
         "msg" => (string)($result["message"] ?? "No se pudo completar la reserva."),
     ];
 } else {
+    $notif = $result["notifications"] ?? [];
+    $guestSent = !empty($notif["guest"]);
+    $skippedGuest = !empty($notif["skipped_guest"]);
+    $inAppClient = !empty($notif["in_app_client"]);
+    if ($guestSent) {
+        $flashMsg = "Reserva registrada. Correo de confirmación enviado.";
+    } elseif ($inAppClient) {
+        $flashMsg = "Reserva registrada. Verás el aviso en tu área de clientes.";
+    } elseif ($skippedGuest) {
+        $flashMsg = "Reserva registrada. (Correo no enviado según tus preferencias de cuenta.)";
+    } else {
+        $flashMsg = "Reserva registrada. El sitio ha recibido el aviso en el panel de administración.";
+    }
     $_SESSION["agenda_flash"] = [
         "type" => "success",
-        "msg" => "Reserva registrada. Te contactaremos si hace falta confirmación adicional.",
+        "msg" => $flashMsg,
     ];
 }
 

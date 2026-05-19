@@ -290,10 +290,10 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $agendaSelectedDate)) {
             <label for="agenda_guest_name">Tu nombre</label>
             <input id="agenda_guest_name" name="guest_name" type="text" required maxlength="180" autocomplete="name" value="<?= htmlspecialchars($agGuestName) ?>">
 
-            <label for="agenda_guest_email">Correo</label>
-            <input id="agenda_guest_email" name="guest_email" type="email" required maxlength="180" autocomplete="email" value="<?= htmlspecialchars($agGuestEmail) ?>">
+            <label for="agenda_guest_email">Correo <span class="text-muted fw-normal">(correo o teléfono obligatorio)</span></label>
+            <input id="agenda_guest_email" name="guest_email" type="email" maxlength="180" autocomplete="email" value="<?= htmlspecialchars($agGuestEmail) ?>">
 
-            <label for="agenda_guest_phone">Teléfono <span class="contact-required-hint">(opcional)</span></label>
+            <label for="agenda_guest_phone">Teléfono <span class="text-muted fw-normal">(si no indicas correo, mín. 6 caracteres)</span></label>
             <input id="agenda_guest_phone" name="guest_phone" type="text" maxlength="48" autocomplete="tel" value="">
 
             <label for="agenda_notes">Notas <span class="contact-required-hint">(opcional)</span></label>

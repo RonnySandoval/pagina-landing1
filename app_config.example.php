@@ -39,12 +39,15 @@ return [
      * - admin_whatsapp_clicks: acordeón «Clics WhatsApp» en admin.
      * - expert_agenda: expertos, vínculo con servicios, franjas semanales y reservas (sección «Solicitar cita» en la landing).
      *   Las tablas se crean siempre; con false el código no debe exponer el módulo.
+     * - agenda_notifications: correos al reservar o cancelar una cita (visitante, contact_email del sitio y experto si tiene email).
+     *   Requiere mail_config.php y contact_email válido en site_settings; la reserva no falla si el correo no se envía.
      */
     "features" => [
         "contact_whatsapp" => true,
         "client_inbox" => true,
         "admin_inbox" => true,
         "admin_whatsapp_clicks" => true,
-        "expert_agenda" => false,
+        "expert_agenda" => true,
+        "agenda_notifications" => true,
     ],
 ];

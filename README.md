@@ -124,6 +124,7 @@ Opcional: copia `app_config.example.php` → `app_config.php` y ajusta. Si **no*
 | `features.admin_inbox` | Acordeón **Mensajes** en el admin (agrupación por cliente o por correo, respuestas, SMTP al visitante según configuración). |
 | `features.admin_whatsapp_clicks` | Acordeón **Clics WhatsApp** en el admin (registro de intenciones de contacto por WhatsApp). |
 | `features.expert_agenda` | Expertos, disponibilidad, citas: admin (**Expertos**), landing (`#agenda` / `agenda.php`) y POST `agenda_book.php`. Tablas `experts`, `expert_services`, `expert_availability`, `expert_availability_date`, `expert_appointments`. |
+| `features.agenda_notifications` | Correos al **confirmar** o **cancelar** una cita: visitante, `site_settings.contact_email` y correo del experto (si está en la ficha). Usa `mail_config.php` como el formulario de contacto. La reserva/cancelación en BD no depende del envío. |
 
 Los valores por defecto están en `app_config.example.php`. Cada landing provisionada **no** recibe tu `app_config.php` local (el script no lo copia); si la nueva instalación lo necesita, cópialo a mano desde el ejemplo.
 
@@ -415,6 +416,22 @@ Comportamiento público:
 - **Agenda semanal** (vista tipo cliente: filas = hora, columnas = días).
 - **Próximas citas** con opción de cancelar desde la ficha de horario.
 
+### Notificaciones de citas (panel + correo)
+
+Con `features.agenda_notifications` activo (por defecto si no se define la clave), cada reserva o cancelación genera registros en `agenda_notification_deliveries`:
+
+| Canal | Quién lo ve | Reserva / cancelación |
+| --- | --- | --- |
+| **Panel admin** (`in_app_admin`) | Acordeón «Avisos de agenda» en Expertos | Siempre (aunque el visitante no tenga cuenta) |
+| **Área cliente** (`in_app_client`) | Bloque «Avisos de citas» si hay `client_id` o cuenta con el mismo correo | Solo si la cita quedó vinculada a un cliente |
+| **Correo** | Visitante, `contact_email` del sitio, experto (si tiene email) | Según validez del correo y preferencias del cliente |
+
+Cada intento queda con **estado**: `delivered` (en panel o correo enviado), `skipped` (sin correo válido, sin cuenta, experto sin email, etc.) o `failed` (SMTP). En el admin, bajo cada cita aparece el desplegable **Registro de notificaciones**.
+
+La reserva exige **correo válido o teléfono** (mín. 6 caracteres) para no perder contacto. Si el visitante usa un correo ya registrado, la cita se enlaza al `client_id` y verá avisos al iniciar sesión.
+
+Lógica en `agenda_notifications_lib.php` (`agenda_service_create_booking()`, `experts_admin_cancel_appointment()`). Trazas: `contact_send_trace.log` (`agenda_notify:`).
+
 Lógica compartida en `agenda_lib.php`; UI pública en `partials/agenda_public_section.php` (incluida desde `index.php` y `agenda.php`).
 
 ## Cliente público, portal y mensajes
@@ -613,7 +630,7 @@ Con sesión de cliente (cookie del portal), la reserva puede asociar `client_id`
 
 `agenda_book.php` delega en `agenda_service_create_booking()` (mismo criterio que la API).
 
-Archivos: `agenda_service.php`, `agenda_lib.php`, `agenda_public_bootstrap.php`.
+Archivos: `agenda_service.php`, `agenda_lib.php`, `agenda_notifications_lib.php`, `agenda_public_bootstrap.php`.
 
 ### Portal de clientes (auth + bandeja)
 
@@ -833,6 +850,7 @@ pag-template/
 ├── agenda_book.php            Adaptador POST reserva → redirect (usa agenda_service).
 ├── agenda_service.php         Casos de uso agenda (huecos, reserva).
 ├── agenda_lib.php             Disponibilidad, huecos, tabla pública, grilla semanal admin.
+├── agenda_notifications_lib.php  Correos reserva/cancelación de citas (SMTP como contacto).
 ├── agenda_public_bootstrap.php  Datos de agenda para index/agenda (require).
 ├── send.php                   Adaptador POST contacto → redirect (usa contact_service).
 ├── contact_lib.php            Dominio contacto (BD, mail, validación).
