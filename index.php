@@ -6,6 +6,9 @@ require __DIR__ . "/db.php";
 require_once __DIR__ . "/client_portal_lib.php";
 require_once __DIR__ . "/app_urls.php";
 require_once __DIR__ . "/client_inbox_helpers.php";
+if (app_feature_enabled("expert_agenda") || app_feature_enabled("agenda_notifications")) {
+    require_once __DIR__ . "/agenda_notifications_lib.php";
+}
 
 client_session_start();
 
@@ -88,6 +91,39 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         client_register_retry_clear($conn);
         client_set_flash("info", "Vuelve a rellenar el registro con otro correo.");
         header("Location: " . app_public_base_url() . "/index.php?client_tab=register#area-cliente");
+        exit;
+    }
+    if ($postAction === "client_agenda_mark_notifications_read") {
+        if (!client_portal_resume_session($conn) || !agenda_notifications_enabled()) {
+            header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+            exit;
+        }
+        $cid = (int)($_SESSION["client_id"] ?? 0);
+        $deliveryId = (int)($_POST["delivery_id"] ?? 0);
+        agenda_notifications_mark_client_read($conn, $cid, $deliveryId > 0 ? $deliveryId : null);
+        client_set_flash("success", "Avisos de citas marcados como leídos.");
+        $notifyReturn = trim((string)($_POST["notify_return"] ?? ""));
+        header(
+            "Location: " . app_public_base_url() . "/index.php"
+            . ($notifyReturn === "top" ? "" : "#client-agenda-notifications")
+        );
+        exit;
+    }
+    if ($postAction === "client_notify_mark_all_read") {
+        if (!client_portal_resume_session($conn)) {
+            header("Location: " . app_public_base_url() . "/index.php?client_tab=login#area-cliente");
+            exit;
+        }
+        $cid = (int)($_SESSION["client_id"] ?? 0);
+        $emailNorm = strtolower(trim((string)($_SESSION["client_email"] ?? "")));
+        if (function_exists("agenda_notifications_enabled") && agenda_notifications_enabled()) {
+            agenda_notifications_mark_client_read($conn, $cid, null);
+        }
+        if (app_feature_enabled("client_inbox")) {
+            client_notify_mark_all_inbox_seen($conn, $cid, $emailNorm);
+        }
+        client_set_flash("success", "Notificaciones marcadas como leídas.");
+        header("Location: " . app_public_base_url() . "/index.php");
         exit;
     }
     if (
@@ -239,7 +275,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             ]);
             exit;
         }
-        header("Location: " . app_public_base_url() . "/index.php#area-cliente");
+        $notifyReturnTr = trim((string)($_POST["notify_return"] ?? ""));
+        header(
+            "Location: " . app_public_base_url() . "/index.php"
+            . ($notifyReturnTr === "top" ? "" : "#area-cliente")
+        );
         exit;
     }
     if ($postAction === "client_ack_thread_unseen") {
@@ -365,11 +405,18 @@ $clientMyMessages = [];
 $clientRepliesByMessageId = [];
 $clientSiteUnseenTotal = 0;
 $clientMaxReplyId = 0;
+$clientAgendaNotifications = [];
+$clientAgendaNotifyUnread = 0;
 if ($clientUser !== null) {
     $clientPrefillNombre = $clientUser["display_name"] !== ""
         ? $clientUser["display_name"]
         : (preg_match('/^([^@]+)/u', $clientUser["email"], $m) ? $m[1] : "");
     $clientPrefillEmail = $clientUser["email"];
+
+    if (function_exists("agenda_notifications_enabled") && agenda_notifications_enabled()) {
+        $clientAgendaNotifications = agenda_notifications_list_client($conn, (int)$clientUser["id"], 30);
+        $clientAgendaNotifyUnread = agenda_notifications_count_client_unread($conn, (int)$clientUser["id"]);
+    }
 
     if (app_feature_enabled("client_inbox")) {
         $clientIdForQuery = (int)$clientUser["id"];
@@ -508,6 +555,25 @@ function index_client_group_messages_threads(array $messages, array $repliesByMe
 $clientThreads = [];
 if ($clientUser !== null && count($clientMyMessages) > 0) {
     $clientThreads = index_client_group_messages_threads($clientMyMessages, $clientRepliesByMessageId);
+}
+
+$clientNotifyBellItems = [];
+$clientNotifyBellUnread = 0;
+$clientShowNotifyBell = false;
+if ($clientUser !== null) {
+    $clientAgendaBellOn = function_exists("agenda_notifications_enabled") && agenda_notifications_enabled();
+    $clientShowNotifyBell = $clientAgendaBellOn || app_feature_enabled("client_inbox");
+    if ($clientShowNotifyBell) {
+        $builtNotifyBell = client_notify_bell_build_items(
+            $clientAgendaNotifications,
+            (int)$clientAgendaNotifyUnread,
+            $clientMyMessages,
+            $clientRepliesByMessageId,
+            (int)$clientSiteUnseenTotal
+        );
+        $clientNotifyBellItems = $builtNotifyBell["items"];
+        $clientNotifyBellUnread = (int)$builtNotifyBell["unread"];
+    }
 }
 
 $settings = $defaultSettings;
@@ -661,6 +727,19 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <?php endif; ?>
       </nav>
       <div class="theme-controls">
+        <?php if ($clientShowNotifyBell): ?>
+          <?php
+            $notifyBellId = "client-notify-bell";
+            $notifyBellItems = $clientNotifyBellItems;
+            $notifyBellUnread = $clientNotifyBellUnread;
+            $notifyBellAgendaUnread = (int)($clientAgendaNotifyUnread ?? 0);
+            $notifyBellMarkAction = "client_notify_mark_all_read";
+            $notifyBellViewAllHref = "#area-cliente";
+            $notifyBellLabel = "Notificaciones";
+            $notifyBellEmptyText = "No tienes citas ni mensajes nuevos.";
+            require __DIR__ . "/partials/notify_bell.php";
+          ?>
+        <?php endif; ?>
         <?php require __DIR__ . "/palette_picker.php"; ?>
       </div>
     </div>
@@ -727,6 +806,9 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         <?php if ($clientUser !== null && !app_feature_enabled("client_inbox")): ?>
           <p class="client-auth-guest-hint mb-4">Bandeja de mensajes desactivada en esta web. Para contactar, usa el <a href="#contacto">formulario al pie</a>.</p>
         <?php elseif ($clientUser !== null): ?>
+          <?php if (agenda_notifications_enabled()): ?>
+            <?php require __DIR__ . "/partials/client_agenda_notifications_panel.php"; ?>
+          <?php endif; ?>
           <p class="lead mb-3 client-zone-intro">
             Aquí ves lo que has escrito a esta web y las respuestas que hayan dejado. Es tu copia del historial: puedes volver cuando quieras, seguir un tema abierto o abrir uno nuevo.
           </p>
@@ -824,7 +906,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
                         }
                     }
                   ?>
-                  <details class="client-msg-thread client-msg-conv-root<?= $threadSiteUnseen > 0 ? " client-msg-thread--site-unseen" : "" ?>" data-thread-id="<?= $threadConvId ?>">
+                  <details id="client-thread-<?= (int)$threadConvId ?>" class="client-msg-thread client-msg-conv-root<?= $threadSiteUnseen > 0 ? " client-msg-thread--site-unseen" : "" ?>" data-thread-id="<?= $threadConvId ?>">
                     <summary>
                       <span class="client-msg-summary-main">
                         <?php if ($threadConvId > 0): ?>
@@ -1313,6 +1395,8 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         siteUnseen: parseInt(String(root.getAttribute("data-init-site-unseen") || "0"), 10) || 0
       };
 
+      updateClientNotifyBellBadge(lastSnap.siteUnseen);
+
       function parseJsonSafe(r) {
         return r.text().then(function (txt) {
           try {
@@ -1328,6 +1412,29 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
         historyDetails.classList.toggle("client-inbox-history--has-site-unseen", (total || 0) > 0);
       }
 
+      function updateClientNotifyBellBadge(siteUnseen) {
+        var bell = document.getElementById("client-notify-bell");
+        if (!bell) return;
+        var agenda = parseInt(bell.getAttribute("data-agenda-unread") || "0", 10) || 0;
+        var inbox = Math.max(0, parseInt(String(siteUnseen), 10) || 0);
+        bell.setAttribute("data-inbox-unread", String(inbox));
+        var total = agenda + inbox;
+        var badge = bell.querySelector(".js-notify-bell-badge");
+        var sr = bell.querySelector(".js-notify-bell-badge-sr");
+        if (!badge) return;
+        if (total <= 0) {
+          badge.textContent = "";
+          badge.setAttribute("hidden", "");
+          if (sr) sr.textContent = "";
+        } else {
+          badge.removeAttribute("hidden");
+          badge.textContent = total > 99 ? "99+" : String(total);
+          if (sr) {
+            sr.textContent = total === 1 ? "1 notificación sin leer" : total + " notificaciones sin leer";
+          }
+        }
+      }
+
       function setOuterSiteBadge(total) {
         var el = document.querySelector(".js-client-inbox-history-site-badge");
         if (!el) return;
@@ -1341,6 +1448,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
           el.textContent = n + " novedad" + (n === 1 ? "" : "es");
           el.setAttribute("title", "Respuestas del sitio pendientes de revisar en el historial");
         }
+        updateClientNotifyBellBadge(n);
       }
 
       function setThreadSiteBadge(threadId, n) {

@@ -29,4 +29,5 @@ api_json_ok([
     "expert_id" => $expertId,
     "appointment_id" => $appointmentId,
     "cancelled" => (bool)($result["cancelled"] ?? false),
+    "notifications" => $result["notifications"] ?? [],
 ]);

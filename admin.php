@@ -27,30 +27,91 @@ $adminWhatsappClicksUi = app_feature_enabled("admin_whatsapp_clicks");
 $adminExpertAgendaUi = app_feature_enabled("expert_agenda");
 if ($adminExpertAgendaUi) {
     require_once __DIR__ . "/agenda_lib.php";
+    require_once __DIR__ . "/agenda_notifications_lib.php";
 }
 
 $adminAssetStylesVer = is_file(__DIR__ . "/styles.css") ? (string) filemtime(__DIR__ . "/styles.css") : "1";
 $adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DIR__ . "/script.js") : "1";
+$adminFilterTablesVer = is_file(__DIR__ . "/admin_filter_tables.js")
+    ? (string) filemtime(__DIR__ . "/admin_filter_tables.js")
+    : "1";
 
 function h(string $value): string {
     return htmlspecialchars($value, ENT_QUOTES, "UTF-8");
 }
 
-/** URL de ficha experto: edit = datos; schedule = horario y disponibilidad. */
+/** Clases Font Awesome completas (fa-solid / fa-brands + nombre). */
+function admin_nav_icon_class(string $icon): string
+{
+    $icon = trim($icon);
+    if ($icon === "") {
+        return "fa-solid fa-circle";
+    }
+    if (preg_match('/^fa-(solid|regular|brands)\s+/', $icon)) {
+        return $icon;
+    }
+    if (str_starts_with($icon, "fa-brands ")) {
+        return $icon;
+    }
+    if (str_starts_with($icon, "fa-")) {
+        return "fa-solid " . $icon;
+    }
+
+    return "fa-solid fa-" . $icon;
+}
+
+function admin_sync_layout_wide_session(): void
+{
+    if (!isset($_GET["wide"])) {
+        return;
+    }
+    if ((string)$_GET["wide"] === "1") {
+        $_SESSION["admin_layout_wide"] = 1;
+        return;
+    }
+    unset($_SESSION["admin_layout_wide"]);
+}
+
+function admin_layout_wide_from_request(): bool
+{
+    if (isset($_GET["wide"])) {
+        return (string)$_GET["wide"] === "1";
+    }
+
+    return !empty($_SESSION["admin_layout_wide"]);
+}
+
+/** URL de ficha experto en Expertos (solo datos y citas del listado). */
 function admin_expert_page_url(int $expertId, string $view = "edit", string $weekStart = "", string $section = ""): string
 {
     $view = $view === "schedule" ? "schedule" : "edit";
-    $q = "expert_id=" . $expertId . "&expert_view=" . rawurlencode($view);
+    if ($view === "schedule") {
+        return admin_agenda_expert_url($expertId, "schedule", $weekStart, $section);
+    }
+    $q = "expert_id=" . $expertId . "&expert_view=edit";
+
+    return "admin.php?" . $q . "#admin-expert-edit";
+}
+
+/** URL en la sección Agendas: horario o datos del experto. */
+function admin_agenda_expert_url(int $expertId, string $tab = "schedule", string $weekStart = "", string $section = ""): string
+{
+    $tab = $tab === "datos" ? "datos" : "schedule";
+    $q = "expert_id=" . $expertId . "&expert_view=schedule&expert_tab=" . rawurlencode($tab);
     if ($weekStart !== "") {
         $q .= "&expert_week=" . rawurlencode($weekStart);
     }
     $scheduleSections = ["appts", "week", "template", "daily", "dates"];
-    if ($view === "schedule" && $section !== "" && in_array($section, $scheduleSections, true)) {
+    if ($tab === "schedule" && $section !== "" && in_array($section, $scheduleSections, true)) {
         $q .= "&expert_section=" . rawurlencode($section);
     }
-    $hash = $view === "schedule" ? "admin-expert-schedule" : "admin-expert-edit";
 
-    return "admin.php?" . $q . "#" . $hash;
+    $url = "admin.php?" . $q . "&workspace=agendas";
+    if (admin_layout_wide_from_request()) {
+        $url .= "&wide=1";
+    }
+
+    return $url . "#admin-tools-agendas";
 }
 
 /** @return array{unread:int,total:int} */
@@ -77,9 +138,92 @@ function admin_consume_flash(): array
     return ["type" => "", "msg" => ""];
 }
 
-function admin_redirect_after_action(): void
+/** manage | inbox | agendas */
+function admin_resolve_workspace(bool $logged, bool $inboxUi, bool $agendaUi): string
 {
-    header("Location: admin.php");
+    if (!$logged) {
+        return "manage";
+    }
+    $requested = "";
+    if (isset($_GET["workspace"])) {
+        $requested = (string)$_GET["workspace"];
+    } elseif (isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1") {
+        $requested = "inbox";
+    } elseif (
+        $agendaUi
+        && isset($_GET["expert_view"])
+        && (string)$_GET["expert_view"] === "schedule"
+    ) {
+        return "agendas";
+    }
+    if ($requested === "inbox" && $inboxUi) {
+        return "inbox";
+    }
+    if ($requested === "agendas" && $agendaUi) {
+        return "agendas";
+    }
+
+    return "manage";
+}
+
+function admin_workspace_query_param(string $workspace): string
+{
+    if ($workspace === "manage") {
+        return "";
+    }
+
+    return "workspace=" . rawurlencode($workspace);
+}
+
+/** URL del panel con área de trabajo opcional (?workspace=…&wide=1). */
+function admin_workspace_url(string $workspace, string $query = "", string $hash = "", ?bool $wide = null): string
+{
+    $parts = [];
+    if ($query !== "") {
+        $parts[] = ltrim($query, "?&");
+    }
+    $wq = admin_workspace_query_param($workspace);
+    if ($wq !== "") {
+        $parts[] = $wq;
+    }
+    if ($wide === true) {
+        $parts[] = "wide=1";
+    } elseif ($wide === false) {
+        $parts[] = "wide=0";
+    } elseif ($wide === null && admin_layout_wide_from_request()) {
+        $parts[] = "wide=1";
+    }
+    $url = "admin.php";
+    if ($parts !== []) {
+        $url .= "?" . implode("&", $parts);
+    }
+    if ($hash !== "") {
+        $url .= str_starts_with($hash, "#") ? $hash : "#" . $hash;
+    }
+
+    return $url;
+}
+
+function admin_redirect_after_action(?string $hash = null): void
+{
+    $ws = trim((string)($_POST["admin_workspace"] ?? $_GET["workspace"] ?? ""));
+    $wide = isset($_POST["admin_layout_wide"])
+        || admin_layout_wide_from_request();
+    $url = "admin.php";
+    $q = [];
+    if (in_array($ws, ["inbox", "agendas"], true)) {
+        $q[] = "workspace=" . rawurlencode($ws);
+    }
+    if ($wide) {
+        $q[] = "wide=1";
+    }
+    if ($q !== []) {
+        $url .= "?" . implode("&", $q);
+    }
+    if ($hash !== null && $hash !== "") {
+        $url .= str_starts_with($hash, "#") ? $hash : "#" . $hash;
+    }
+    header("Location: " . $url);
     exit;
 }
 
@@ -175,8 +319,13 @@ if (isset($_GET["logout"])) {
 }
 
 $isLogged = admin_resume_session($conn);
+if ($isLogged) {
+    admin_sync_layout_wide_session();
+}
 
-$adminInboxWide = $isLogged && $adminInboxUi && isset($_GET["inbox"]) && (string)$_GET["inbox"] === "1";
+$adminWorkspace = admin_resolve_workspace($isLogged, $adminInboxUi, $adminExpertAgendaUi);
+$adminLayoutWide = $isLogged && admin_layout_wide_from_request();
+$adminInboxFocus = $isLogged && $adminWorkspace === "inbox";
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings") {
     $textResult = site_settings_update($conn, $_POST);
@@ -373,7 +522,7 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     } else {
         $newExpertId = (int)$created["expert_id"];
         admin_set_flash("success", "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.");
-        header("Location: " . admin_expert_page_url($newExpertId, "edit"));
+        header("Location: " . admin_agenda_expert_url($newExpertId, "datos"));
         exit;
     }
 }
@@ -398,7 +547,13 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
         }
     } else {
         admin_set_flash("success", "Experto actualizado.");
-        header("Location: " . admin_expert_page_url($eid, "edit"));
+        $returnTo = trim((string)($_POST["return_to"] ?? ""));
+        if ($returnTo === "agendas") {
+            $tab = trim((string)($_POST["expert_tab"] ?? "datos"));
+            header("Location: " . admin_agenda_expert_url($eid, $tab === "schedule" ? "schedule" : "datos"));
+        } else {
+            header("Location: " . admin_expert_page_url($eid, "edit"));
+        }
         exit;
     }
 }
@@ -408,7 +563,7 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $deleted = experts_admin_delete($conn, $expertId);
     if ($deleted["ok"]) {
         admin_set_flash("success", "Experto eliminado.");
-        header("Location: admin.php#admin-tools-experts");
+        header("Location: admin.php#admin-experts-list");
         exit;
     }
 }
@@ -437,7 +592,7 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
         }
     } else {
         admin_set_flash("success", "Franja de disponibilidad añadida.");
-        header("Location: " . admin_expert_page_url($eid, "schedule", "", "daily"));
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "template"));
         exit;
     }
 }
@@ -490,13 +645,15 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
             $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
         } elseif ($code === "invalid_time_range") {
             $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_weekdays") {
+            $error = "Marca al menos un día de la semana.";
         } elseif ($code === "invalid_time") {
             $error = "Indica hora inicio y fin en formato HH:MM.";
         } else {
-            $error = "No se pudo actualizar la jornada L–V.";
+            $error = "No se pudo actualizar la plantilla semanal.";
         }
     } else {
-        admin_set_flash("success", "Lunes a viernes actualizados (una sola franja; sábado y domingo no cambian).");
+        admin_set_flash("success", "Plantilla semanal actualizada para los días seleccionados.");
         header("Location: " . admin_expert_page_url($eid, "schedule", "", "template"));
         exit;
     }
@@ -514,7 +671,7 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
                 ? "La agenda pública mostrará el nombre de cada experto."
                 : "La agenda pública será anónima (solo servicio y horario)."
         );
-        header("Location: admin.php#admin-tools-experts");
+        header("Location: " . admin_workspace_url("agendas", "", "agenda_acc_public"));
         exit;
     }
 }
@@ -525,14 +682,17 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
         $code = (string)($bulk["error"] ?? "");
         if ($code === "invalid_time_range") {
             $error = "La hora de fin debe ser posterior a la de inicio.";
+        } elseif ($code === "invalid_weekdays") {
+            $error = "Marca al menos un día de la semana.";
         } elseif ($code === "invalid_time") {
             $error = "Indica hora inicio y fin (HH:MM).";
         } else {
-            $error = "No se pudo aplicar la jornada a todos los expertos.";
+            $error = "No se pudo aplicar la plantilla a todos los expertos.";
         }
     } else {
-        admin_set_flash("success", "Jornada L–V aplicada a todos los expertos.");
-        header("Location: admin.php#admin-tools-experts");
+        $n = (int)($bulk["experts_updated"] ?? 0);
+        admin_set_flash("success", "Plantilla aplicada a " . $n . " experto(s).");
+        header("Location: " . admin_workspace_url("agendas", "", "agenda_acc_bulk"));
         exit;
     }
 }
@@ -543,9 +703,20 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     if ($eid > 0 && $avid > 0) {
         experts_admin_delete_weekly_availability($conn, $eid, $avid);
         admin_set_flash("success", "Franja eliminada.");
-        header("Location: " . admin_expert_page_url($eid, "schedule", "", "daily"));
+        header("Location: " . admin_expert_page_url($eid, "schedule", "", "template"));
         exit;
     }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "agenda_mark_notifications_read") {
+    $deliveryId = (int)($_POST["delivery_id"] ?? 0);
+    agenda_notifications_mark_admin_read($conn, $deliveryId > 0 ? $deliveryId : null);
+    admin_set_flash("success", "Avisos de agenda marcados como leídos.");
+    $notifyReturn = trim((string)($_POST["notify_return"] ?? ""));
+    header(
+        "Location: " . ($notifyReturn === "top" ? "admin.php" : "admin.php#agenda_acc_notify")
+    );
+    exit;
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_cancel_appointment") {
@@ -757,6 +928,20 @@ $expertWeekGrid = [
 ];
 $expertView = "";
 $expertScheduleSection = "";
+$agendasExpertId = 0;
+$agendasExpert = null;
+$agendasExpertNotFound = false;
+$agendasExpertTab = "schedule";
+$agendasAvailabilityRows = [];
+$agendasAvailabilityDateRows = [];
+$agendasAppointmentsUpcoming = [];
+$agendasWeekGrid = [
+    "week_start" => "",
+    "week_end" => "",
+    "week_label" => "",
+    "days" => [],
+    "rows" => [],
+];
 if ($isLogged && $adminExpertAgendaUi) {
     $expertEditId = (int)($_GET["expert_id"] ?? 0);
     $expertView = trim((string)($_GET["expert_view"] ?? ""));
@@ -808,7 +993,170 @@ if ($isLogged && $adminExpertAgendaUi) {
     } elseif ($expertEditId > 0 && $expertEdit !== null && $expertView === "edit") {
         $expertAppointmentsUpcoming = experts_admin_fetch_upcoming_appointments_for_expert($conn, $expertEditId);
     }
-    $expertsPanelOpen = $expertEditId > 0 || $expertView !== "";
+    $expertsPanelOpen = $expertView === "edit" && $expertEditId > 0;
+
+    $agendasExpertId = $expertEditId > 0 ? $expertEditId : 0;
+    if ($agendasExpertId <= 0 && count($experts) > 0) {
+        $agendasExpertId = (int)($experts[0]["id"] ?? 0);
+    }
+    $agendasExpertTab = trim((string)($_GET["expert_tab"] ?? "schedule"));
+    if (!in_array($agendasExpertTab, ["schedule", "datos"], true)) {
+        $agendasExpertTab = "schedule";
+    }
+    if ($agendasExpertId > 0) {
+        foreach ($experts as $er) {
+            if ((int)($er["id"] ?? 0) === $agendasExpertId) {
+                $agendasExpert = $er;
+                break;
+            }
+        }
+        if ($agendasExpert === null) {
+            $gotAg = experts_admin_get($conn, $agendasExpertId);
+            if ($gotAg["ok"]) {
+                $agendasExpert = $gotAg["expert"];
+            } else {
+                $agendasExpertNotFound = true;
+            }
+        }
+    }
+    if ($agendasExpert !== null && $agendasExpertTab === "schedule") {
+        $agendasWeekParam = trim((string)($_GET["expert_week"] ?? ""));
+        $agSched = experts_admin_load_schedule($conn, $agendasExpertId, $agendasWeekParam);
+        if ($agSched["ok"]) {
+            $agendasAvailabilityRows = $agSched["schedule"]["weekly_availability"];
+            $agendasAvailabilityDateRows = $agSched["schedule"]["date_exceptions"];
+            $agendasAppointmentsUpcoming = $agSched["schedule"]["upcoming_appointments"];
+            $agendasWeekGrid = $agSched["schedule"]["week_grid"];
+        }
+        $secRawAg = trim((string)($_GET["expert_section"] ?? ""));
+        if (in_array($secRawAg, ["appts", "week", "template", "daily", "dates"], true)) {
+            $expertScheduleSection = $secRawAg;
+        }
+    }
+}
+
+$agendaAdminNotifications = [];
+$agendaAdminNotifyUnread = 0;
+$adminAgendaHistoryUi = false;
+$agendaAppointmentHistory = [];
+if ($isLogged && $adminExpertAgendaUi) {
+    $adminAgendaHistoryUi = true;
+    $agendaAppointmentHistory = agenda_appointment_history_timeline($conn, 50);
+}
+if ($isLogged && $adminExpertAgendaUi && agenda_notifications_enabled()) {
+    $agendaAdminNotifications = agenda_notifications_list_admin($conn, 60);
+    $agendaAdminNotifyUnread = agenda_notifications_count_admin_unread($conn);
+}
+
+$adminWorkspaceNavItems = [];
+$adminSidebarToolItems = [];
+$adminSidebarAgendaItems = [];
+$adminSidebarInboxItems = [];
+if ($isLogged) {
+    if ($adminExpertAgendaUi) {
+        $adminWorkspaceNavItems[] = [
+            "id" => "agendas",
+            "label" => "Agendas",
+            "icon" => "fa-calendar-days",
+            "href" => admin_workspace_url("agendas", "", "admin-tools-agendas"),
+        ];
+        $adminSidebarAgendaItems[] = [
+            "hash" => "admin-agendas-expert-workspace",
+            "collapse" => "",
+            "label" => "Horarios y citas",
+            "icon" => "fa-calendar-week",
+        ];
+        if (agenda_notifications_enabled()) {
+            $adminSidebarAgendaItems[] = [
+                "hash" => "agenda_acc_notify",
+                "collapse" => "agenda_acc_notify",
+                "label" => "Avisos de agenda",
+                "icon" => "fa-bell",
+            ];
+        }
+        $adminSidebarAgendaItems[] = [
+            "hash" => "agenda_acc_public",
+            "collapse" => "agenda_acc_public",
+            "label" => "Agenda pública",
+            "icon" => "fa-globe",
+        ];
+        if (count($experts) > 0) {
+            $adminSidebarAgendaItems[] = [
+                "hash" => "agenda_acc_bulk",
+                "collapse" => "agenda_acc_bulk",
+                "label" => "Horario masivo",
+                "icon" => "fa-clock",
+            ];
+        }
+    }
+    $adminWorkspaceNavItems[] = [
+        "id" => "manage",
+        "label" => "Gestión",
+        "icon" => "fa-screwdriver-wrench",
+        "href" => admin_workspace_url("manage"),
+    ];
+    if ($adminInboxUi) {
+        $adminWorkspaceNavItems[] = [
+            "id" => "inbox",
+            "label" => "Bandeja",
+            "icon" => "fa-inbox",
+            "href" => admin_workspace_url("inbox"),
+        ];
+    }
+    $adminSidebarToolItems = [
+        ["hash" => "admin-tool-config", "panel" => "tools_config_panel", "label" => "Configuración", "icon" => "fa-gear"],
+        ["hash" => "admin-tool-credentials", "panel" => "tools_credentials_panel", "label" => "Credenciales", "icon" => "fa-key"],
+        ["hash" => "admin-tool-routes", "panel" => "tools_routes_panel", "label" => "Rutas", "icon" => "fa-link"],
+        ["hash" => "admin-tool-service-edit", "panel" => "tools_edit_panel", "label" => "Servicios", "icon" => "fa-pen-to-square"],
+    ];
+    if ($adminExpertAgendaUi) {
+        $adminSidebarToolItems[] = [
+            "hash" => "admin-tools-experts",
+            "panel" => "tools_experts_panel",
+            "label" => "Expertos",
+            "icon" => "fa-user-tie",
+        ];
+    } else {
+        $adminSidebarToolItems[] = [
+            "hash" => "admin-tool-experts-off",
+            "panel" => "tools_expert_agenda_off_panel",
+            "label" => "Expertos",
+            "icon" => "fa-user-tie",
+        ];
+    }
+    $adminSidebarToolItems[] = [
+        "hash" => "admin-tool-clients",
+        "panel" => "tools_clients_panel",
+        "label" => "Clientes",
+        "icon" => "fa-users",
+    ];
+    if ($adminInboxUi) {
+        $adminSidebarInboxItems[] = [
+            "hash" => "side-inbox-messages",
+            "collapse" => "collapseSideMessages",
+            "scroll" => "headingSideMessages",
+            "label" => "Mensajes",
+            "icon" => "fa-inbox",
+        ];
+    }
+    if ($adminWhatsappClicksUi) {
+        $adminSidebarInboxItems[] = [
+            "hash" => "side-inbox-whatsapp",
+            "collapse" => "collapseSideWhatsapp",
+            "scroll" => "headingSideWhatsapp",
+            "label" => "WhatsApp",
+            "icon" => "fa-brands fa-whatsapp",
+        ];
+    }
+    if ($adminAgendaHistoryUi) {
+        $adminSidebarInboxItems[] = [
+            "hash" => "side-inbox-agenda-history",
+            "collapse" => "collapseSideAgendaHistory",
+            "scroll" => "headingSideAgendaHistory",
+            "label" => "Historial de citas",
+            "icon" => "fa-calendar-check",
+        ];
+    }
 }
 
 $portalClients = $isLogged ? clients_admin_list($conn) : [];
@@ -864,6 +1212,11 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-wrap {
       width: min(1280px, 96%);
       margin: 2rem auto;
+    }
+    .admin-app {
+      --admin-bar-height: 3.15rem;
+      min-height: 100vh;
+      background: var(--bg);
       color: var(--text);
       /* Bootstrap 5.3 usa variables propias; las alineamos al tema de la plantilla para herencia correcta */
       --bs-body-color: var(--text);
@@ -907,9 +1260,16 @@ $waSideCounterTitle = $waSideUnread > 0
     @media (min-width: 992px) {
       .admin-layout {
         grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+        grid-template-rows: auto auto;
         align-items: start;
       }
+      .admin-main {
+        grid-column: 1;
+        grid-row: 1;
+      }
       .admin-side {
+        grid-column: 2;
+        grid-row: 1;
         position: sticky;
         top: 1rem;
         align-self: start;
@@ -918,7 +1278,13 @@ $waSideCounterTitle = $waSideUnread > 0
         z-index: 0;
         isolation: isolate;
       }
+      .admin-agendas-section {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
     }
+    .admin-app .accordion-button:hover,
+    .admin-app .accordion-button:focus,
     .admin-wrap .accordion-button:hover,
     .admin-wrap .accordion-button:focus {
       z-index: auto !important;
@@ -1047,104 +1413,314 @@ $waSideCounterTitle = $waSideUnread > 0
       border-radius: 12px;
       font-size: .95rem;
     }
+    .admin-app .card,
     .admin-wrap .card {
       background: var(--bs-card-bg);
       border: 1px solid var(--border);
       color: var(--bs-card-color);
       border-radius: 14px;
     }
-    /* Barra superior compacta (nav), fija al scroll. */
-    .admin-wrap > .admin-header-card {
+    .admin-app-bar {
       position: sticky;
       top: 0;
-      z-index: 400;
-      margin-bottom: 0.65rem !important;
-      padding: 0 !important;
-      border-radius: 0 0 12px 12px;
-      border-top: none;
+      z-index: 420;
+      width: 100%;
+      border-bottom: 1px solid var(--border);
       backdrop-filter: blur(10px);
-      background: color-mix(in srgb, var(--surface) 96%, transparent);
-      box-shadow: 0 1px 0 var(--border);
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 42%),
+        color-mix(in srgb, var(--surface) 96%, transparent);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 80%, transparent);
     }
-    .admin-top-nav {
+    .admin-app-bar__inner {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 0.65rem 1rem;
+      min-height: var(--admin-bar-height);
+      padding: 0.35rem clamp(0.75rem, 2vw, 1.35rem);
+    }
+    .admin-app-bar__brand {
+      display: inline-flex;
+      align-items: center;
       gap: 0.5rem;
-      min-height: 3rem;
-      padding: 0.35rem 0.65rem;
-    }
-    .admin-top-nav__brand {
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
       min-width: 0;
-      flex: 1 1 auto;
+      flex: 0 1 auto;
     }
-    .admin-top-nav__brand > i {
+    .admin-app-bar__brand > i {
       flex-shrink: 0;
-      font-size: 1rem;
+      font-size: 1.05rem;
       color: var(--accent);
     }
-    .admin-top-nav__title {
-      font-size: 0.92rem;
-      font-weight: 700;
-      line-height: 1.2;
+    .admin-app-bar__title {
+      font-size: 0.95rem;
+      font-weight: 800;
+      line-height: 1.1;
       white-space: nowrap;
     }
-    .admin-top-nav__session {
-      font-size: 0.72rem;
+    .admin-app-bar__session {
+      font-size: 0.78rem;
       color: var(--muted);
-      max-width: 12rem;
+      max-width: 14rem;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      padding-left: 0.5rem;
+      border-left: 1px solid var(--border);
     }
-    .admin-top-nav__actions {
+    .admin-app-bar__workspaces {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 0.3rem;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .admin-app-bar__ws-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.32rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 600;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .admin-app-bar__ws-link:hover,
+    .admin-app-bar__ws-link:focus-visible {
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+    }
+    .admin-app-bar__ws-link.is-active {
+      color: var(--text);
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+    }
+    .admin-app-bar__actions {
       display: flex;
       align-items: center;
       gap: 0.35rem;
-      flex-shrink: 0;
+      flex: 0 0 auto;
+      margin-left: auto;
     }
-    .admin-top-nav__logout {
-      padding: 0.28rem 0.5rem;
+    .admin-app-bar__logout {
+      padding: 0.28rem 0.55rem;
       font-size: 0.82rem;
-      line-height: 1.2;
     }
-    .admin-top-nav__logout .admin-top-nav__logout-label {
-      display: none;
+    .admin-app-bar__alerts {
+      padding: 0  clamp(0.75rem, 2vw, 1.35rem) 0.45rem;
     }
-    .admin-header-alerts {
-      padding: 0 0.65rem 0.45rem;
-    }
-    .admin-header-alerts .alert {
+    .admin-app-bar__alerts .alert {
       font-size: 0.85rem;
       padding: 0.35rem 0.55rem;
       margin-bottom: 0.35rem;
     }
-    .admin-header-alerts .alert:last-child {
+    .admin-app-bar__alerts .alert:last-child {
       margin-bottom: 0;
     }
-    @media (min-width: 576px) {
-      .admin-top-nav {
-        min-height: 3.15rem;
-        padding: 0.4rem 0.85rem;
-      }
-      .admin-top-nav__session {
-        max-width: 18rem;
-      }
-      .admin-top-nav__logout .admin-top-nav__logout-label {
-        display: inline;
-      }
-      .admin-top-nav__logout {
-        padding: 0.3rem 0.65rem;
+    .admin-app-body {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: stretch;
+      width: 100%;
+      min-height: calc(100vh - var(--admin-bar-height));
+    }
+    .admin-app-sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      width: 3.35rem;
+      padding: 0.55rem 0.35rem 0.85rem;
+      border-right: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
+      position: sticky;
+      top: var(--admin-bar-height);
+      align-self: start;
+      max-height: calc(100vh - var(--admin-bar-height));
+      overflow-x: hidden;
+      overflow-y: auto;
+      z-index: 12;
+    }
+    .admin-app-sidebar__heading {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 0 0.45rem 0.25rem;
+    }
+    @media (max-width: 991.98px) {
+      .admin-app-sidebar__heading {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }
     }
+    .admin-app-sidebar__list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .admin-app-sidebar__link {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 0.5rem;
+      padding: 0.42rem 0.55rem;
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 600;
+      line-height: 1.25;
+      border: 1px solid transparent;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+    @media (max-width: 991.98px) {
+      .admin-app-sidebar__link {
+        position: relative;
+        justify-content: center;
+        width: 2.65rem;
+        height: 2.65rem;
+        padding: 0;
+        margin-inline: auto;
+      }
+      .admin-app-sidebar__link > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .admin-app-sidebar__link::after {
+        content: attr(data-label);
+        position: absolute;
+        left: calc(100% + 0.45rem);
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 500;
+        padding: 0.3rem 0.55rem;
+        border-radius: 6px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-size: 0.78rem;
+        font-weight: 600;
+        white-space: nowrap;
+        box-shadow: 0 4px 14px color-mix(in srgb, var(--bg) 55%, transparent);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.12s ease, visibility 0.12s ease;
+      }
+      .admin-app-sidebar__link:hover::after,
+      .admin-app-sidebar__link:focus-visible::after {
+        opacity: 1;
+        visibility: visible;
+      }
+      .admin-app-sidebar__hint {
+        display: none;
+      }
+    }
+    .admin-app-sidebar__link:hover,
+    .admin-app-sidebar__link:focus-visible {
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+      color: var(--text);
+    }
+    .admin-app-sidebar__link.is-active {
+      border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+      background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    }
+    .admin-app-sidebar__link i {
+      width: 1.15rem;
+      text-align: center;
+      flex-shrink: 0;
+      opacity: 0.92;
+      line-height: 1;
+    }
+    .admin-app-sidebar__link i.fa-brands {
+      font-family: var(--fa-style-family-brands, "Font Awesome 6 Brands");
+      font-weight: 400;
+    }
+    .admin-app-sidebar__hint {
+      padding: 0 0.45rem;
+      line-height: 1.45;
+    }
+    .admin-app-main {
+      min-width: 0;
+      padding: 0.75rem clamp(0.55rem, 2vw, 1.35rem) 1.5rem;
+      max-width: none;
+    }
+    @media (min-width: 768px) {
+      .admin-app-bar__workspaces {
+        display: flex;
+      }
+    }
+    @media (min-width: 992px) {
+      .admin-app-body {
+        grid-template-columns: 13.25rem minmax(0, 1fr);
+        min-height: calc(100vh - var(--admin-bar-height));
+      }
+      .admin-app-sidebar {
+        width: auto;
+        padding: 0.85rem 0.55rem 1.25rem;
+      }
+      .admin-app-sidebar__link {
+        width: auto;
+        height: auto;
+        padding: 0.42rem 0.55rem;
+        margin-inline: 0;
+        justify-content: flex-start;
+      }
+      .admin-app-sidebar__link > span {
+        position: static;
+        width: auto;
+        height: auto;
+        margin: 0;
+        overflow: visible;
+        clip: auto;
+        white-space: normal;
+      }
+      .admin-app-sidebar__link::after {
+        content: none;
+        display: none;
+      }
+      .admin-app-sidebar__list {
+        gap: 0.1rem;
+      }
+      .admin-app-main {
+        padding-top: 1rem;
+      }
+    }
+    @media (min-width: 576px) {
+      .admin-app-bar__session {
+        max-width: 22rem;
+      }
+    }
+    .admin-app .form-label,
     .admin-wrap .form-label {
       color: var(--text);
       font-weight: 600;
       margin-bottom: .35rem;
     }
+    .admin-app .form-control,
+    .admin-app .form-select,
     .admin-wrap .form-control,
     .admin-wrap .form-select {
       border-radius: 10px;
@@ -1152,9 +1728,12 @@ $waSideCounterTitle = $waSideUnread > 0
       background: var(--field-bg);
       color: var(--text);
     }
+    .admin-app .form-control::placeholder,
     .admin-wrap .form-control::placeholder {
       color: var(--muted);
     }
+    .admin-app .form-control:focus,
+    .admin-app .form-select:focus,
     .admin-wrap .form-control:focus,
     .admin-wrap .form-select:focus {
       border-color: var(--ring);
@@ -1162,22 +1741,110 @@ $waSideCounterTitle = $waSideUnread > 0
       background: var(--field-bg);
       color: var(--text);
     }
+    .admin-app .form-check-input,
     .admin-wrap .form-check-input {
       border-color: var(--border);
       background-color: var(--field-bg);
     }
+    .admin-app .form-check-input:checked,
     .admin-wrap .form-check-input:checked {
       background-color: var(--accent);
       border-color: var(--accent-strong);
     }
+    .admin-app .btn-outline-light,
     .admin-wrap .btn-outline-light {
       border-color: var(--border);
       color: var(--text);
     }
+    .admin-app .btn-outline-light:hover,
     .admin-wrap .btn-outline-light:hover {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
+      background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
+      border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+      color: var(--text);
+    }
+    .admin-app .text-light-emphasis {
+      color: var(--muted) !important;
+    }
+    .admin-app .link-light {
+      color: var(--accent);
+      text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    }
+    .admin-app .link-light:hover,
+    .admin-app .link-light:focus-visible {
+      color: var(--accent-strong);
+    }
+    .admin-app .border-secondary {
+      border-color: var(--border) !important;
+    }
+    .admin-app .admin-panel-surface,
+    .admin-app .admin-agendas-expert-datos,
+    .admin-app .admin-expert-subpanel {
+      background: var(--surface-2);
+      border-color: var(--border);
+      color: var(--text);
+    }
+    html[data-theme="light"] .admin-app .admin-panel-surface,
+    html[data-theme="light"] .admin-app .admin-agendas-expert-datos,
+    html[data-theme="light"] .admin-app .admin-expert-subpanel {
+      background: color-mix(in srgb, var(--surface) 92%, var(--palette-soft));
+    }
+    .admin-app .btn-outline-secondary {
+      --bs-btn-color: var(--text);
+      --bs-btn-border-color: var(--border);
+      --bs-btn-hover-color: var(--text);
+      --bs-btn-hover-bg: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+      --bs-btn-hover-border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      --bs-btn-active-color: var(--text);
+      --bs-btn-active-bg: color-mix(in srgb, var(--accent) 20%, var(--surface-2));
+    }
+    .admin-app .btn-outline-info {
+      --bs-btn-color: var(--accent);
+      --bs-btn-border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+      --bs-btn-hover-color: var(--text);
+      --bs-btn-hover-bg: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+    }
+    .admin-app .btn-outline-warning {
+      --bs-btn-color: color-mix(in srgb, var(--accent-strong) 70%, #e8a317);
+      --bs-btn-border-color: color-mix(in srgb, #e8a317 45%, var(--border));
+      --bs-btn-hover-color: var(--text);
+      --bs-btn-hover-bg: color-mix(in srgb, #e8a317 16%, var(--surface-2));
+      --bs-btn-hover-border-color: color-mix(in srgb, #e8a317 55%, var(--border));
+    }
+    .admin-app .form-text,
+    .admin-wrap .form-text {
+      color: var(--muted);
+    }
+    .admin-app.admin-wrap.admin-app--layout-wide {
+      width: 100%;
+      max-width: none;
+      margin: 0;
+    }
+    .admin-app-bar__layout-toggle {
+      display: none;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+    @media (min-width: 992px) {
+      .admin-app-bar__layout-toggle {
+        display: inline-flex;
+      }
+    }
+    .admin-app--layout-wide .admin-app-main {
+      max-width: none;
+    }
+    @media (min-width: 992px) {
+      .admin-app--layout-wide .admin-side-inbox-card {
+        max-width: none;
+        margin-left: 0;
+        margin-right: 0;
+      }
+      .admin-app--layout-wide .admin-layout--workspace-inbox .admin-side {
+        width: 100%;
+      }
+      .admin-app--layout-wide .admin-agendas-section {
+        width: 100%;
+      }
     }
     .icon-grid {
       display: grid;
@@ -1223,6 +1890,134 @@ $waSideCounterTitle = $waSideUnread > 0
     #adminToolsAccordion.admin-tools-ordered > #admin-tools-experts,
     #adminToolsAccordion.admin-tools-ordered > #admin-tool-experts-off { order: 5; }
     #adminToolsAccordion.admin-tools-ordered > #admin-tool-clients { order: 6; }
+    .admin-agendas-section {
+      grid-column: 1 / -1;
+      width: 100%;
+      margin-top: 0.25rem;
+      padding: 1.25rem 1.35rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--bs-border-radius-lg, 0.5rem);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent);
+    }
+    .admin-agendas-section .admin-agendas-inner-accordion .accordion-item {
+      background: var(--surface-2);
+      border-color: var(--border);
+    }
+    .admin-agendas-section .admin-expert-subpanel {
+      max-width: none;
+    }
+    .admin-agendas-schedule-block {
+      width: 100%;
+    }
+    .admin-agendas-expert-pills .nav-link {
+      font-size: 0.9rem;
+      padding: 0.35rem 0.75rem;
+    }
+    .admin-agendas-expert-tabs .nav-link {
+      font-size: 0.9rem;
+    }
+    .admin-agendas-quick-settings {
+      margin-top: 0.35rem;
+      padding-top: 0.85rem;
+    }
+    .admin-agendas-quick-settings__list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .admin-agendas-quick-item {
+      border: 1px solid var(--border);
+      border-radius: var(--bs-border-radius, 0.375rem);
+      background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+    }
+    .admin-agendas-quick-item__summary {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      list-style: none;
+      color: var(--text);
+    }
+    .admin-agendas-quick-item__summary::-webkit-details-marker {
+      display: none;
+    }
+    .admin-agendas-quick-item__summary::before {
+      content: "";
+      width: 0.45rem;
+      height: 0.45rem;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+    }
+    .admin-agendas-quick-item[open] > .admin-agendas-quick-item__summary::before {
+      transform: rotate(45deg);
+    }
+    .admin-agendas-quick-item__body {
+      padding: 0.55rem 0.65rem 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .expert-template-shortcut__day-picks .btn-check:checked + .btn {
+      background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+      border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+      color: var(--text);
+    }
+    .expert-template-block + .expert-template-block {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--border);
+    }
+    .admin-agendas-expert-nav .admin-agendas-expert-pills {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 0.15rem;
+      margin-bottom: 0;
+    }
+    .admin-agendas-expert-tabs {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .admin-agendas-expert-tabs .nav-item {
+      flex: 0 0 auto;
+    }
+    .admin-agendas-section__header .btn {
+      width: 100%;
+    }
+    @media (min-width: 576px) {
+      .admin-agendas-section__header .btn {
+        width: auto;
+      }
+    }
+    @media (max-width: 991.98px) {
+      .admin-agendas-section {
+        padding: 0.85rem 0.65rem;
+      }
+      .admin-agendas-section .admin-expert-subpanel {
+        padding: 0.65rem !important;
+      }
+      .admin-expert-week-toolbar {
+        gap: 0.35rem;
+      }
+      .admin-expert-week-toolbar .btn {
+        font-size: 0.78rem;
+        padding: 0.25rem 0.45rem;
+      }
+      .admin-expert-week-toolbar .fw-semibold {
+        flex: 1 1 100%;
+        text-align: center;
+        font-size: 0.82rem;
+      }
+      .admin-agendas-expert-datos {
+        padding: 0.65rem !important;
+      }
+    }
     .admin-portal-clients-body {
       padding-inline: 0.5rem;
       max-width: 100%;
@@ -1373,7 +2168,163 @@ $waSideCounterTitle = $waSideUnread > 0
         padding: 0.22rem 0.35rem;
       }
     }
-    .admin-experts-table.table-hover tbody tr {
+    /* Tablas filtrables (expertos, citas) */
+    .admin-filter-table {
+      --aft-border: color-mix(in srgb, var(--border) 88%, transparent);
+      --aft-bg: color-mix(in srgb, var(--surface) 96%, var(--surface-2));
+      --aft-bg-alt: color-mix(in srgb, var(--surface-2) 72%, var(--surface));
+      --aft-head-bg: color-mix(in srgb, var(--surface-2) 96%, var(--accent) 4%);
+      border: 1px solid var(--aft-border);
+      border-radius: 12px;
+      background: var(--aft-bg);
+      overflow: hidden;
+    }
+    .admin-filter-table__meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.35rem 0.65rem;
+      padding: 0.4rem 0.65rem;
+      border-bottom: 1px solid var(--aft-border);
+      background: var(--aft-head-bg);
+    }
+    .admin-filter-table__clear {
+      font-size: 0.78rem;
+      text-decoration: none;
+      color: var(--accent);
+    }
+    .admin-filter-table__clear:hover {
+      text-decoration: underline;
+    }
+    .admin-filter-table__count {
+      white-space: nowrap;
+    }
+    .admin-filter-table__scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background: var(--aft-bg);
+    }
+    .admin-filter-table__table {
+      margin: 0;
+      width: 100%;
+      min-width: 100%;
+      color: var(--text);
+      background-color: var(--aft-bg);
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .admin-filter-table__head-row th {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background-color: var(--aft-head-bg);
+      border-bottom: 1px solid var(--aft-border);
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      white-space: nowrap;
+      vertical-align: middle;
+      padding: 0.5rem 0.45rem;
+    }
+    .admin-filter-table__filter-row th {
+      position: sticky;
+      top: 2.05rem;
+      z-index: 2;
+      background-color: var(--aft-head-bg);
+      border-bottom: 1px solid var(--aft-border);
+      padding: 0.28rem 0.35rem;
+      vertical-align: middle;
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .admin-filter-table__col-input {
+      width: 100%;
+      min-width: 3.5rem;
+      border-radius: 6px;
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 400;
+      text-transform: none;
+    }
+    .admin-filter-table__col-input::placeholder {
+      color: var(--muted);
+      opacity: 0.85;
+    }
+    .admin-filter-table__table tbody td {
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+      padding: 0.45rem 0.45rem;
+      vertical-align: middle;
+      background-color: var(--aft-bg);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .admin-filter-table__text-2l {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      overflow: hidden;
+      white-space: normal;
+      line-height: 1.32;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .admin-filter-table__table code.admin-filter-table__text-2l {
+      display: -webkit-box;
+      white-space: normal;
+    }
+    .admin-filter-table__table tbody tr[data-filter-row].is-alt td {
+      background-color: var(--aft-bg-alt);
+    }
+    .admin-filter-table__table tbody tr[data-filter-row]:hover td {
+      background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg));
+    }
+    .admin-filter-table__table tbody tr[data-filter-row].is-alt:hover td {
+      background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg-alt));
+    }
+    .admin-filter-table__table tbody tr.admin-filter-table__detail-row td {
+      background-color: color-mix(in srgb, var(--aft-bg-alt) 85%, var(--surface-2));
+    }
+    .admin-filter-table__table tbody tr:last-child td,
+    .admin-filter-table__table tbody tr.admin-filter-table__empty td {
+      border-bottom: none;
+    }
+    .admin-filter-table__th-sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+    .admin-filter-table__th-sortable:hover {
+      color: var(--text);
+    }
+    .admin-filter-table__th-sortable.is-sorted-asc::after,
+    .admin-filter-table__th-sortable.is-sorted-desc::after {
+      font-family: "Font Awesome 6 Free";
+      font-weight: 900;
+      font-size: 0.62rem;
+      margin-left: 0.25rem;
+      opacity: 0.85;
+    }
+    .admin-filter-table__th-sortable.is-sorted-asc::after {
+      content: "\f0de";
+    }
+    .admin-filter-table__th-sortable.is-sorted-desc::after {
+      content: "\f0dd";
+    }
+    .admin-filter-table .adm-th-short {
+      display: none;
+    }
+    .admin-filter-table .adm-action-label {
+      display: none !important;
+    }
+    .admin-experts-table.table-hover tbody tr,
+    .admin-filter-table__table.table-hover tbody tr {
       transition: background-color 0.12s ease;
     }
     .admin-expert-row-actions {
@@ -1403,6 +2354,12 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-experts-table {
       table-layout: fixed;
       width: 100%;
+    }
+    .admin-experts-table .expert-col-name {
+      overflow: hidden;
+    }
+    .admin-experts-table .expert-row-name {
+      max-width: 100%;
     }
     .admin-experts-table th.expert-services-col,
     .admin-experts-table td.expert-services-col {
@@ -1449,7 +2406,8 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-experts-table .expert-svc-icon i {
       line-height: 1;
     }
-    .admin-experts-table .expert-th-short {
+    .admin-experts-table .expert-th-short,
+    .admin-experts-table .adm-th-short {
       display: none;
     }
     .admin-experts-table .expert-info-btn--mobile {
@@ -1462,18 +2420,183 @@ $waSideCounterTitle = $waSideUnread > 0
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
     }
+    .expert-appointments-table {
+      table-layout: fixed;
+      width: 100%;
+    }
+    .expert-appointments-table .appt-col-datetime {
+      width: 18%;
+      min-width: 7.5rem;
+    }
+    .expert-appointments-table .appt-col-expert {
+      width: 16%;
+      min-width: 0;
+    }
+    .expert-appointments-table .appt-col-service {
+      width: 20%;
+      min-width: 0;
+    }
+    .expert-appointments-table .appt-col-guest {
+      width: 28%;
+      min-width: 0;
+    }
+    .expert-appointments-table .appt-col-actions {
+      width: 10%;
+      white-space: nowrap;
+    }
+    .expert-appointments-table .appt-guest-email {
+      overflow-wrap: anywhere;
+    }
+    .expert-appointments-table .adm-mobile-only {
+      display: none !important;
+    }
+    .expert-appointments-table tr.appt-mobile-detail-row.adm-mobile-only {
+      display: none !important;
+    }
+    .expert-appointments-table .appt-mobile-stack {
+      display: none;
+    }
+    .expert-appointments-table .appt-datetime-cell {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: nowrap;
+      min-width: 0;
+    }
+    .expert-appointments-table .appt-mobile-svc-icon {
+      width: 1.85rem;
+      height: 1.85rem;
+      font-size: 0.88rem;
+      flex-shrink: 0;
+      cursor: help;
+    }
+    .expert-appointments-table .appt-datetime-full {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .expert-appointments-table .appt-col-service {
+      max-width: 8rem;
+    }
+    .expert-appointments-table .appt-svc-icon {
+      width: 1.75rem;
+      height: 1.75rem;
+      font-size: 0.82rem;
+      flex-shrink: 0;
+      cursor: help;
+    }
+    .expert-appointments-table .appt-svc-label {
+      max-width: 100%;
+      vertical-align: middle;
+      margin-left: 0.35rem;
+    }
+    .expert-appointments-table .appt-col-guest {
+      max-width: 12rem;
+    }
+    .expert-appointments-table .appt-col-expert {
+      max-width: 10rem;
+    }
+    .expert-appointments-table .appt-expand-btn {
+      flex-shrink: 0;
+      min-width: 1.75rem;
+      line-height: 1.1;
+    }
+    .expert-appointments-table .appt-expand-btn[aria-expanded="true"] .appt-expand-icon::before {
+      content: "\f068";
+    }
+    .expert-appointments-table .appt-mobile-detail-panel {
+      background: color-mix(in srgb, var(--surface-2) 90%, var(--surface));
+    }
+    .expert-appointments-table .appt-mobile-detail-list li + li {
+      margin-top: 0.35rem;
+    }
+    .expert-appointments-table .admin-appt-notify-log {
+      max-width: 100%;
+    }
     @media (max-width: 575.98px) {
       .admin-experts-table {
         table-layout: auto;
       }
-      .admin-experts-table thead .expert-th-full {
+      .admin-filter-table__filter-row th {
+        top: 1.85rem;
+      }
+      .admin-filter-table__meta {
+        padding: 0.35rem 0.5rem;
+      }
+      .admin-filter-table .adm-th-full,
+      .admin-experts-table thead .expert-th-full,
+      .admin-experts-table thead .adm-th-full,
+      .expert-appointments-table .adm-th-full {
         display: none;
       }
-      .admin-experts-table thead .expert-th-short {
+      .admin-filter-table .adm-th-short,
+      .admin-experts-table thead .expert-th-short,
+      .admin-experts-table thead .adm-th-short,
+      .expert-appointments-table .adm-th-short {
         display: inline;
       }
-      .admin-experts-table .expert-col-services {
+      .admin-experts-table .expert-col-services,
+      .admin-experts-table .expert-services-col {
         display: none !important;
+      }
+      .expert-appointments-filter-table .admin-filter-table__scroll {
+        overflow-x: visible;
+      }
+      .expert-appointments-table {
+        table-layout: auto;
+      }
+      .expert-appointments-table .appt-filter-row {
+        display: none;
+      }
+      .expert-appointments-table .adm-desktop-only {
+        display: none !important;
+      }
+      .expert-appointments-table .adm-mobile-only:not(tr) {
+        display: inline-flex !important;
+      }
+      .expert-appointments-table tr.appt-mobile-detail-row.adm-mobile-only {
+        display: table-row !important;
+      }
+      .expert-appointments-table tr.appt-mobile-detail-row .collapse:not(.show) {
+        display: none;
+      }
+      .expert-appointments-table .appt-mobile-stack {
+        display: flex !important;
+        flex-direction: column;
+        gap: 0.1rem;
+        line-height: 1.25;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .expert-appointments-table .appt-datetime-full {
+        display: none !important;
+      }
+      .expert-appointments-table .appt-datetime-cell {
+        justify-content: flex-start;
+        gap: 0.45rem;
+      }
+      .expert-appointments-table .appt-mobile-stack {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .expert-appointments-table .appt-expand-btn {
+        margin-left: auto;
+      }
+      .expert-appointments-table .appt-col-datetime {
+        width: auto;
+        min-width: 0;
+        max-width: none;
+      }
+      .expert-appointments-table .appt-mobile-when {
+        font-size: 0.82rem;
+      }
+      .expert-appointments-table .appt-mobile-guest {
+        font-size: 0.75rem;
+        max-width: 100%;
+      }
+      .expert-appointments-table .appt-col-actions {
+        width: 2.5rem;
+        white-space: nowrap;
+        padding-left: 0.15rem;
       }
       .admin-experts-table .expert-pill-label {
         position: absolute !important;
@@ -1584,6 +2707,20 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-experts-inner-accordion .accordion-body.p-0 .admin-expert-subpanel {
       border: none;
       margin: 0;
+    }
+    .admin-agenda-notify-item--unread {
+      border-left: 3px solid var(--accent, #0d6efd);
+      background: color-mix(in srgb, var(--accent, #0d6efd) 8%, transparent);
+    }
+    .admin-appt-notify-log summary {
+      cursor: pointer;
+    }
+    .admin-side-appt-history-list {
+      max-height: min(70vh, 28rem);
+      overflow-y: auto;
+    }
+    .admin-side-appt-history-row .appt-expand-btn {
+      align-self: flex-start;
     }
     .admin-services-accordion .accordion-header-service-title {
       flex: 1;
@@ -2048,27 +3185,54 @@ $waSideCounterTitle = $waSideUnread > 0
       flex: 1;
     }
 
-    .admin-layout--inbox-wide {
+    .admin-layout--workspace-manage .admin-agendas-section,
+    .admin-layout--workspace-manage .admin-side {
+      display: none !important;
+    }
+    .admin-layout--workspace-manage .admin-main {
+      grid-column: 1 / -1;
+    }
+    @media (min-width: 992px) {
+      .admin-layout--workspace-manage {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .admin-layout--workspace-inbox {
       display: flex !important;
       flex-direction: column;
       gap: 1rem;
     }
-    .admin-layout--inbox-wide .admin-main {
-      display: block !important;
-      order: 2;
-      width: 100%;
+    .admin-layout--workspace-inbox .admin-main,
+    .admin-layout--workspace-inbox .admin-agendas-section {
+      display: none !important;
     }
-    .admin-layout--inbox-wide .admin-side {
+    .admin-layout--workspace-inbox .admin-side {
       order: 1;
       position: static;
       max-height: none;
       overflow: visible;
       width: 100%;
     }
-    .admin-layout--inbox-wide .admin-side-inbox-card {
-      max-width: 960px;
+    .admin-layout--workspace-inbox .admin-side-inbox-card {
+      max-width: min(1100px, 100%);
       margin-left: auto;
       margin-right: auto;
+    }
+    .admin-layout--workspace-agendas .admin-main,
+    .admin-layout--workspace-agendas .admin-side {
+      display: none !important;
+    }
+    .admin-layout--workspace-agendas .admin-agendas-section {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      margin-top: 0;
+    }
+    @media (min-width: 992px) {
+      .admin-layout--workspace-agendas {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+      }
     }
 
     .admin-messages-accordion .message-delete-form,
@@ -2290,39 +3454,92 @@ $waSideCounterTitle = $waSideUnread > 0
       </div>
     </div>
   <?php else: ?>
-  <div class="admin-wrap">
-    <header class="card admin-header-card mb-3">
-      <div class="admin-top-nav">
-        <div class="admin-top-nav__brand">
+  <div class="admin-app admin-wrap<?= $adminLayoutWide ? " admin-app--layout-wide" : "" ?>">
+    <header class="admin-app-bar">
+      <div class="admin-app-bar__inner">
+        <div class="admin-app-bar__brand">
           <i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>
-          <div class="min-w-0">
-            <div class="admin-top-nav__title">Admin</div>
-            <div class="admin-top-nav__session" title="<?= h($_SESSION["admin_email"] ?? "") ?>"><?= h($_SESSION["admin_email"] ?? "") ?></div>
-          </div>
+          <span class="admin-app-bar__title">Admin</span>
+          <span class="admin-app-bar__session" title="<?= h($_SESSION["admin_email"] ?? "") ?>"><?= h($_SESSION["admin_email"] ?? "") ?></span>
         </div>
-        <div class="admin-top-nav__actions">
+        <?php if (count($adminWorkspaceNavItems) > 1): ?>
+          <nav class="admin-app-bar__workspaces" aria-label="Área de trabajo">
+            <?php foreach ($adminWorkspaceNavItems as $wsItem): ?>
+              <a
+                href="<?= h($wsItem["href"]) ?>"
+                class="admin-app-bar__ws-link<?= $adminWorkspace === $wsItem["id"] ? " is-active" : "" ?>"
+                <?= $adminWorkspace === $wsItem["id"] ? ' aria-current="page"' : "" ?>
+              >
+                <i class="<?= h(admin_nav_icon_class($wsItem["icon"])) ?>" aria-hidden="true"></i>
+                <span><?= h($wsItem["label"]) ?></span>
+              </a>
+            <?php endforeach; ?>
+          </nav>
+        <?php endif; ?>
+        <div class="admin-app-bar__actions">
+          <?php if ($isLogged): ?>
+            <?php if ($adminLayoutWide): ?>
+              <a
+                href="<?= h(admin_workspace_url($adminWorkspace, "", "", false)) ?>"
+                class="btn btn-outline-secondary btn-sm admin-app-bar__layout-toggle"
+                title="Volver al ancho habitual del panel"
+              >
+                <i class="fa-solid fa-compress" aria-hidden="true"></i>
+                <span>Vista normal</span>
+              </a>
+            <?php else: ?>
+              <a
+                href="<?= h(admin_workspace_url($adminWorkspace, "", "", true)) ?>"
+                class="btn btn-outline-secondary btn-sm admin-app-bar__layout-toggle"
+                title="Usar todo el ancho disponible"
+              >
+                <i class="fa-solid fa-expand" aria-hidden="true"></i>
+                <span>Vista completa</span>
+              </a>
+            <?php endif; ?>
+          <?php endif; ?>
+          <?php if (agenda_notifications_enabled()): ?>
+            <?php
+              $notifyBellId = "admin-agenda-notify";
+              $notifyBellItems = $agendaAdminNotifications ?? [];
+              $notifyBellUnread = (int)($agendaAdminNotifyUnread ?? 0);
+              $notifyBellMarkAction = "agenda_mark_notifications_read";
+              $notifyBellViewAllHref = admin_workspace_url("agendas", "", "agenda_acc_notify");
+              $notifyBellLabel = "Avisos de agenda";
+              require __DIR__ . "/partials/notify_bell.php";
+            ?>
+          <?php endif; ?>
           <?php require __DIR__ . "/palette_picker.php"; ?>
-          <a href="admin.php?logout=1" class="btn btn-outline-secondary btn-sm admin-top-nav__logout" title="Cerrar sesión">
+          <a href="admin.php?logout=1" class="btn btn-outline-secondary btn-sm admin-app-bar__logout" title="Cerrar sesión">
             <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
-            <span class="admin-top-nav__logout-label ms-1">Salir</span>
+            <span class="ms-1">Salir</span>
           </a>
         </div>
       </div>
       <?php if ($message !== "" || $error !== ""): ?>
-        <div class="admin-header-alerts">
+        <div class="admin-app-bar__alerts">
           <?php if ($message !== ""): ?><div class="alert <?= h($messageAlertClass) ?> mb-0"><?= h($message) ?></div><?php endif; ?>
           <?php if ($error !== ""): ?><div class="alert alert-danger mb-0"><?= h($error) ?></div><?php endif; ?>
         </div>
       <?php endif; ?>
     </header>
 
-    <div class="admin-layout<?= $adminInboxWide ? " admin-layout--inbox-wide" : "" ?>">
-      <?php if ($adminInboxWide): ?>
-      <div class="alert alert-info py-2 px-3 mb-0 order-0" style="width:100%;">
-        <strong>Vista amplia de mensajes</strong> (<code>?inbox=1</code>): la bandeja va primero; el panel de herramientas (servicios, expertos, configuración) sigue debajo.
-        <a href="admin.php" class="alert-link ms-1">Quitar vista amplia</a>
-      </div>
-      <?php endif; ?>
+    <div class="admin-app-body">
+      <?php require __DIR__ . "/partials/admin_app_sidebar.php"; ?>
+      <main class="admin-app-main">
+        <?php if ($adminWorkspace === "inbox"): ?>
+        <div class="alert alert-info py-2 px-3 mb-3">
+          <strong>Bandeja</strong>: mensajes, WhatsApp e historial de citas.
+          <a href="<?= h(admin_workspace_url("manage")) ?>" class="alert-link ms-2">Ir a gestión</a>
+        </div>
+        <?php elseif ($adminWorkspace === "agendas"): ?>
+        <div class="alert alert-info py-2 px-3 mb-3">
+          <strong>Agendas</strong>: horarios y citas.
+          <a href="<?= h(admin_workspace_url("manage")) ?>" class="alert-link ms-2">Ir a gestión</a>
+        </div>
+        <?php endif; ?>
+
+    <div class="admin-layout admin-layout--workspace-<?= h($adminWorkspace) ?>">
       <div class="admin-main">
         <div class="accordion admin-tools-accordion admin-tools-ordered mb-3" id="adminToolsAccordion">
 
@@ -2878,9 +4095,6 @@ $waSideCounterTitle = $waSideUnread > 0
             </h2>
             <div id="tools_experts_panel" class="accordion-collapse collapse <?= $expertsPanelOpen ? "show" : "" ?>" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
-                <?php
-                  $agendaShowExpertNamesAdmin = (int)($settings["agenda_show_expert_names"] ?? 0) === 1;
-                ?>
                 <?php if ($expertEditNotFound): ?>
                   <div class="alert alert-warning mb-3">No hay ningún experto con ese identificador.</div>
                   <a href="admin.php#admin-experts-list" class="btn btn-outline-light btn-sm mb-3">Volver al listado</a>
@@ -2893,9 +4107,10 @@ $waSideCounterTitle = $waSideUnread > 0
                 <?php endif; ?>
 
                 <?php require __DIR__ . "/partials/admin_experts_accordions.php"; ?>
-                </div>
               </div>
             </div>
+          </div>
+
           <?php else: ?>
           <div class="accordion-item" id="admin-tool-experts-off">
             <h2 class="accordion-header m-0">
@@ -2917,11 +4132,19 @@ $waSideCounterTitle = $waSideUnread > 0
           <?php endif; ?>
 
         </div>
+
       </div>
 
+      <?php if ($adminExpertAgendaUi): ?>
+        <?php
+          $agendaShowExpertNamesAdmin = (int)($settings["agenda_show_expert_names"] ?? 0) === 1;
+          require __DIR__ . "/partials/admin_agendas_section.php";
+        ?>
+      <?php endif; ?>
+
       <aside class="admin-side">
-        <?php if (!$adminInboxUi && !$adminWhatsappClicksUi): ?>
-        <p class="small text-light-emphasis mb-0 px-1">Módulos de bandeja del panel desactivados en <code class="small">app_config.php</code> (<code>features.admin_inbox</code>, <code>features.admin_whatsapp_clicks</code>). Los datos en la base de datos no se borran.</p>
+        <?php if (!$adminInboxUi && !$adminWhatsappClicksUi && !$adminAgendaHistoryUi): ?>
+        <p class="small text-light-emphasis mb-0 px-1">Módulos de bandeja del panel desactivados en <code class="small">app_config.php</code> (<code>features.admin_inbox</code>, <code>features.admin_whatsapp_clicks</code>, agenda con notificaciones). Los datos en la base de datos no se borran.</p>
         <?php else: ?>
         <div class="card admin-side-inbox-card overflow-hidden">
           <div class="accordion accordion-flush admin-side-inbox-accordion" id="adminSideInboxAccordion">
@@ -2937,11 +4160,11 @@ $waSideCounterTitle = $waSideUnread > 0
             <div class="accordion-item border-0 border-bottom">
               <h2 class="accordion-header m-0" id="headingSideMessages">
                 <button
-                  class="accordion-button collapsed py-3 px-3"
+                  class="accordion-button<?= $adminInboxFocus ? "" : " collapsed" ?> py-3 px-3"
                   type="button"
                   data-bs-toggle="collapse"
                   data-bs-target="#collapseSideMessages"
-                  aria-expanded="false"
+                  aria-expanded="<?= $adminInboxFocus ? "true" : "false" ?>"
                   aria-controls="collapseSideMessages"
                 >
                   <span class="d-flex flex-wrap align-items-center gap-2 me-auto">
@@ -2956,18 +4179,13 @@ $waSideCounterTitle = $waSideUnread > 0
               </h2>
               <div
                 id="collapseSideMessages"
-                class="accordion-collapse collapse"
+                class="accordion-collapse collapse<?= $adminInboxFocus ? " show" : "" ?>"
                 aria-labelledby="headingSideMessages"
               >
                 <div class="accordion-body pt-0 px-3 pb-3">
                   <?php if ($sideInboxTotal > 0): ?>
                     <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2 pb-2 border-bottom border-secondary">
                       <span class="small text-light-emphasis">Agrupado por cuenta de cliente o por correo del visitante.</span>
-                      <?php if ($adminInboxWide): ?>
-                        <a href="admin.php" class="btn btn-outline-secondary btn-sm"><i class="fa-solid fa-compress me-1"></i>Vista normal</a>
-                      <?php else: ?>
-                        <a href="admin.php?inbox=1" class="btn btn-outline-info btn-sm"><i class="fa-solid fa-expand me-1"></i>Vista amplia</a>
-                      <?php endif; ?>
                     </div>
                   <?php endif; ?>
                   <?php if ($sideInboxUnread > 0 || $sideInboxTotal > 0): ?>
@@ -3244,8 +4462,11 @@ $waSideCounterTitle = $waSideUnread > 0
               </div>
             </div>
             <?php endif; ?>
+            <?php if ($adminWhatsappClicksUi || $adminAgendaHistoryUi): ?>
+            <div class="admin-side-secondary">
+            <?php endif; ?>
             <?php if ($adminWhatsappClicksUi): ?>
-            <div class="accordion-item border-0">
+            <div class="accordion-item border-0<?= $adminAgendaHistoryUi ? " border-bottom" : "" ?>">
               <h2 class="accordion-header m-0" id="headingSideWhatsapp">
                 <button
                   class="accordion-button collapsed py-3 px-3"
@@ -3366,10 +4587,18 @@ $waSideCounterTitle = $waSideUnread > 0
               </div>
             </div>
             <?php endif; ?>
+            <?php if ($adminAgendaHistoryUi): ?>
+              <?php require __DIR__ . "/partials/admin_side_appointment_history_accordion.php"; ?>
+            <?php endif; ?>
+            <?php if ($adminWhatsappClicksUi || $adminAgendaHistoryUi): ?>
+            </div>
+            <?php endif; ?>
           </div>
         </div>
         <?php endif; ?>
       </aside>
+    </div>
+      </main>
     </div>
   </div>
   <?php endif; ?>
@@ -3421,93 +4650,231 @@ $waSideCounterTitle = $waSideUnread > 0
         });
       });
 
-      document.addEventListener("DOMContentLoaded", function () {
+      function adminCollapseShowIfNeeded(el) {
+        if (!el || !window.bootstrap || !bootstrap.Collapse) {
+          return;
+        }
+        if (el.classList.contains("show")) {
+          return;
+        }
+        try {
+          bootstrap.Collapse.getOrCreateInstance(el).show();
+        } catch (e) {}
+      }
+
+      function adminScrollTo(el) {
+        if (!el) return;
+        setTimeout(function () {
+          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }, 160);
+      }
+
+      var adminNavSchLegacySection = null;
+
+      function adminApplyLocationHash() {
         var hash = (window.location.hash || "").trim();
-        var schLegacySection = null;
         var legacySchMatch = /^#expert_sch_acc_(appts|week|template|daily|dates)$/.exec(hash);
         if (legacySchMatch) {
-          schLegacySection = legacySchMatch[1];
+          adminNavSchLegacySection = legacySchMatch[1] === "daily" ? "template" : legacySchMatch[1];
           try {
             history.replaceState(
               null,
               "",
-              window.location.pathname + window.location.search + "#admin-expert-schedule"
+              window.location.pathname + window.location.search + "#admin-tools-agendas"
             );
           } catch (e) {}
-          hash = "#admin-expert-schedule";
-        }
-
-        function collapseShowIfNeeded(el) {
-          if (!el || !window.bootstrap || !bootstrap.Collapse) {
-            return;
-          }
-          if (el.classList.contains("show")) {
-            return;
-          }
-          try {
-            bootstrap.Collapse.getOrCreateInstance(el).show();
-          } catch (e) {}
-        }
-
-        if (hash === "#admin-tool-clients" || hash === "#tools_clients_panel") {
-          collapseShowIfNeeded(document.getElementById("tools_clients_panel"));
-          var item = document.getElementById("admin-tool-clients");
-          if (item) {
-            setTimeout(function () {
-              item.scrollIntoView({ block: "nearest", behavior: "smooth" });
-            }, 120);
-          }
-          return;
+          hash = "#admin-tools-agendas";
         }
 
         var urlParams = null;
         try {
           urlParams = new URLSearchParams(window.location.search);
         } catch (e) {}
+
+        var agendaHashAliases = {
+          "#expert_acc_bulk": "agenda_acc_bulk",
+          "#expert_acc_agenda_notify": "agenda_acc_notify",
+          "#expert_acc_public": "agenda_acc_public",
+          "#expert_acc_schedule": "agenda_acc_schedule"
+        };
+        if (agendaHashAliases[hash]) {
+          hash = "#" + agendaHashAliases[hash];
+        }
+
+        var inboxHashTargets = {
+          "#side-inbox-messages": { collapse: "collapseSideMessages", scroll: "headingSideMessages" },
+          "#side-inbox-whatsapp": { collapse: "collapseSideWhatsapp", scroll: "headingSideWhatsapp" },
+          "#side-inbox-agenda-history": { collapse: "collapseSideAgendaHistory", scroll: "headingSideAgendaHistory" }
+        };
+        if (inboxHashTargets[hash]) {
+          adminCollapseShowIfNeeded(document.getElementById(inboxHashTargets[hash].collapse));
+          adminScrollTo(document.getElementById(inboxHashTargets[hash].scroll));
+          return;
+        }
+
         var isExpertSchedule =
           hash === "#admin-expert-schedule" ||
+          hash === "#admin-agendas-expert-workspace" ||
           (urlParams &&
             urlParams.get("expert_view") === "schedule" &&
             urlParams.get("expert_id"));
 
-        if (
-          hash === "#expert_acc_bulk" ||
-          hash === "#expert_acc_appointments" ||
-          hash === "#admin-experts-list" ||
-          isExpertSchedule
-        ) {
-          collapseShowIfNeeded(document.getElementById("tools_experts_panel"));
-          if (hash === "#expert_acc_bulk" || hash === "#expert_acc_appointments") {
-            var innerTarget = hash === "#expert_acc_bulk" ? "expert_acc_bulk" : "expert_acc_appointments";
-            collapseShowIfNeeded(document.getElementById(innerTarget));
+        var isAgendasArea =
+          hash === "#admin-tools-agendas" ||
+          hash === "#admin-agendas-intro" ||
+          hash === "#admin-agendas-expert-workspace" ||
+          hash.indexOf("#agenda_acc_") === 0 ||
+          isExpertSchedule;
+
+        if (isAgendasArea) {
+          if (hash === "#agenda_acc_bulk" || hash === "#agenda_acc_notify" || hash === "#agenda_acc_public") {
+            var quickId = hash.slice(1);
+            var quickDetails =
+              document.getElementById(quickId + "_wrap") ||
+              document.getElementById(quickId + "_item");
+            if (quickDetails && quickDetails.tagName === "DETAILS") {
+              quickDetails.open = true;
+            }
           }
           if (isExpertSchedule) {
-            collapseShowIfNeeded(document.getElementById("expert_acc_schedule"));
-            var schSec = schLegacySection;
+            var schSec = adminNavSchLegacySection;
             if (!schSec && urlParams) {
               schSec = urlParams.get("expert_section");
             }
+            if (schSec === "daily") {
+              schSec = "template";
+            }
             if (schSec) {
-              collapseShowIfNeeded(document.getElementById("expert_sch_acc_" + schSec));
+              adminCollapseShowIfNeeded(document.getElementById("expert_sch_acc_" + schSec));
             }
           }
-          var scrollEl = null;
-          if (isExpertSchedule) {
-            scrollEl = document.getElementById("admin-expert-schedule");
-          } else if (hash === "#admin-experts-list") {
-            scrollEl = document.getElementById("admin-experts-list");
-          } else if (hash === "#expert_acc_bulk" || hash === "#expert_acc_appointments") {
-            scrollEl = document.getElementById(hash.slice(1));
-          } else if (hash) {
-            scrollEl = document.querySelector(hash);
+          var scrollAgendas = document.getElementById("admin-tools-agendas");
+          if (hash === "#admin-tools-agendas" || hash === "#admin-agendas-expert-workspace" || isExpertSchedule) {
+            scrollAgendas =
+              document.getElementById("admin-agendas-expert-workspace") ||
+              document.getElementById("admin-expert-schedule") ||
+              scrollAgendas;
+          } else if (hash.indexOf("#agenda_acc_") === 0) {
+            var innerAg = document.getElementById(hash.slice(1));
+            scrollAgendas = innerAg || scrollAgendas;
+          } else if (hash === "#admin-agendas-intro" || hash === "#admin-agendas-heading") {
+            scrollAgendas = document.getElementById(hash.slice(1)) || scrollAgendas;
+          } else if (hash && hash !== "#admin-tools-agendas") {
+            scrollAgendas = document.querySelector(hash) || scrollAgendas;
           }
-          if (scrollEl) {
-            setTimeout(function () {
-              scrollEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
-            }, 160);
-          }
+          adminScrollTo(scrollAgendas);
           return;
         }
+
+        if (hash === "#expert_acc_appointments" || hash === "#admin-experts-list" || hash === "#admin-expert-edit") {
+          adminCollapseShowIfNeeded(document.getElementById("tools_experts_panel"));
+          if (hash === "#expert_acc_appointments") {
+            adminCollapseShowIfNeeded(document.getElementById("expert_acc_appointments"));
+          }
+          var scrollExperts = null;
+          if (hash === "#admin-experts-list") {
+            scrollExperts = document.getElementById("admin-experts-list");
+          } else if (hash === "#admin-expert-edit") {
+            scrollExperts = document.getElementById("admin-expert-edit");
+          } else if (hash === "#expert_acc_appointments") {
+            scrollExperts = document.getElementById("expert_acc_appointments");
+          }
+          adminScrollTo(scrollExperts);
+          return;
+        }
+
+        var adminToolHashPanels = {
+          "#admin-tool-config": "tools_config_panel",
+          "#admin-tool-credentials": "tools_credentials_panel",
+          "#admin-tool-routes": "tools_routes_panel",
+          "#admin-tool-service-edit": "tools_edit_panel",
+          "#admin-tools-experts": "tools_experts_panel",
+          "#admin-tool-experts-off": "tools_expert_agenda_off_panel",
+          "#admin-tool-clients": "tools_clients_panel"
+        };
+        if (adminToolHashPanels[hash]) {
+          adminCollapseShowIfNeeded(document.getElementById(adminToolHashPanels[hash]));
+          adminScrollTo(document.getElementById(hash.slice(1)));
+        }
+      }
+
+      function adminSidebarNavigate(ev, link) {
+        var href = link.getAttribute("href") || "";
+        var url;
+        try {
+          url = new URL(href, window.location.href);
+        } catch (e) {
+          return;
+        }
+        var samePage =
+          url.pathname === window.location.pathname &&
+          url.search === window.location.search;
+        if (!samePage || !url.hash) {
+          return;
+        }
+        ev.preventDefault();
+        var target = url.pathname + url.search + url.hash;
+        if (window.location.pathname + window.location.search + window.location.hash !== target) {
+          try {
+            history.pushState(null, "", target);
+          } catch (e2) {
+            window.location.hash = url.hash;
+          }
+        }
+        adminApplyLocationHash();
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        adminApplyLocationHash();
+        window.addEventListener("hashchange", adminApplyLocationHash);
+
+        document.querySelectorAll(".js-expert-sch-goto-dates").forEach(function (link) {
+          link.addEventListener("click", function (ev) {
+            var target = document.getElementById("expert_sch_acc_dates");
+            if (!target) {
+              return;
+            }
+            ev.preventDefault();
+            adminCollapseShowIfNeeded(target);
+            adminScrollTo(target);
+            try {
+              history.replaceState(null, "", "#expert_sch_acc_dates");
+            } catch (e) {}
+          });
+        });
+
+        document.querySelectorAll(".js-admin-sidebar-tool").forEach(function (link) {
+          link.addEventListener("click", function (ev) {
+            adminSidebarNavigate(ev, link);
+            var panelId = link.getAttribute("data-admin-panel");
+            if (!panelId) return;
+            adminCollapseShowIfNeeded(document.getElementById(panelId));
+          });
+        });
+
+        document.querySelectorAll(".js-admin-sidebar-agenda").forEach(function (link) {
+          link.addEventListener("click", function (ev) {
+            adminSidebarNavigate(ev, link);
+            var collapseId = link.getAttribute("data-admin-collapse");
+            if (collapseId) {
+              adminCollapseShowIfNeeded(document.getElementById(collapseId));
+            }
+          });
+        });
+
+        document.querySelectorAll(".js-admin-sidebar-inbox").forEach(function (link) {
+          link.addEventListener("click", function (ev) {
+            adminSidebarNavigate(ev, link);
+            var collapseId = link.getAttribute("data-admin-collapse");
+            if (collapseId) {
+              adminCollapseShowIfNeeded(document.getElementById(collapseId));
+            }
+            var scrollId = link.getAttribute("data-admin-scroll");
+            if (scrollId) {
+              adminScrollTo(document.getElementById(scrollId));
+            }
+          });
+        });
       });
     })();
   </script>
@@ -3660,6 +5027,7 @@ $waSideCounterTitle = $waSideUnread > 0
         function fitAllExpertServiceRows() {
           document.querySelectorAll(".expert-row-services.js-expert-svc-fit").forEach(fitExpertServiceRow);
         }
+        window.fitAllExpertServiceRows = fitAllExpertServiceRows;
         var ro = new ResizeObserver(function () {
           window.requestAnimationFrame(fitAllExpertServiceRows);
         });
@@ -4115,5 +5483,6 @@ $waSideCounterTitle = $waSideUnread > 0
     })();
   </script>
   <script src="script.js?v=<?= h($adminAssetScriptVer) ?>"></script>
+  <script src="admin_filter_tables.js?v=<?= h($adminFilterTablesVer) ?>"></script>
 </body>
 </html>

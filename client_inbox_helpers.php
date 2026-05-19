@@ -248,6 +248,128 @@ function client_inbox_load_full(mysqli $conn, int $clientId, string $emailNorm, 
 /**
  * @return array{site_unseen_total: int, max_reply_id: int, threads_site_unseen: array<string, int>}
  */
+/**
+ * Ítems unificados para la campana del cliente (citas + respuestas del sitio en mensajes).
+ *
+ * @param list<array<string, mixed>> $agendaRows
+ * @param list<array<string, mixed>> $messages
+ * @param array<int, list<array<string, mixed>>> $repliesByMessageId
+ * @return array{items: list<array<string, mixed>>, unread: int}
+ */
+function client_notify_bell_build_items(
+    array $agendaRows,
+    int $agendaUnread,
+    array $messages,
+    array $repliesByMessageId,
+    int $siteUnseenTotal
+): array {
+    $items = [];
+
+    foreach ($agendaRows as $row) {
+        $evt = (string)($row["event_type"] ?? "");
+        $isCancel = $evt === "appointment_cancelled";
+        $apptId = (int)($row["appointment_id"] ?? 0);
+        $items[] = [
+            "kind" => "agenda",
+            "is_unread" => (int)($row["is_read"] ?? 0) === 0,
+            "tag" => $isCancel ? "Cancelada" : "Cita",
+            "tag_muted" => $isCancel,
+            "title" => trim((string)($row["title"] ?? "")),
+            "body" => trim((string)($row["body"] ?? "")),
+            "created_at" => (string)($row["created_at"] ?? ""),
+            "meta_extra" => $apptId > 0 ? "#" . $apptId : "",
+            "href" => "#client-agenda-notifications",
+            "mark" => [
+                "action" => "client_agenda_mark_notifications_read",
+                "delivery_id" => (int)($row["id"] ?? 0),
+            ],
+        ];
+    }
+
+    if ($siteUnseenTotal > 0 && count($messages) > 0) {
+        $threads = client_inbox_group_threads($messages, $repliesByMessageId);
+        foreach ($threads as $thread) {
+            $tMsgs = $thread["messages"] ?? [];
+            $threadSiteUnseen = 0;
+            $latestReplyAt = "";
+            $latestReplyBody = "";
+            foreach ($tMsgs as $tm) {
+                if ((int)($tm["client_has_unseen_reply"] ?? 0) !== 1) {
+                    continue;
+                }
+                $threadSiteUnseen++;
+                $mid = (int)($tm["id"] ?? 0);
+                $reps = $repliesByMessageId[$mid] ?? [];
+                if (count($reps) > 0) {
+                    $last = $reps[count($reps) - 1];
+                    $latestReplyAt = (string)($last["created_at"] ?? $latestReplyAt);
+                    $latestReplyBody = trim((string)($last["body"] ?? ""));
+                }
+            }
+            if ($threadSiteUnseen <= 0) {
+                continue;
+            }
+            $rootRow = $tMsgs[0] ?? [];
+            $rootId = (int)($thread["root_id"] ?? 0);
+            $subject = trim((string)($rootRow["subject"] ?? ""));
+            if ($subject === "") {
+                $subject = "Sin asunto";
+            }
+            $bodyPreview = $latestReplyBody !== ""
+                ? $latestReplyBody
+                : "Nueva respuesta del sitio en esta conversación.";
+            $created = $latestReplyAt !== "" ? $latestReplyAt : (string)($rootRow["created_at"] ?? "");
+            $items[] = [
+                "kind" => "inbox",
+                "is_unread" => true,
+                "tag" => "Mensaje",
+                "tag_muted" => false,
+                "title" => $subject,
+                "body" => $bodyPreview,
+                "created_at" => $created,
+                "meta_extra" => $threadSiteUnseen > 1
+                    ? $threadSiteUnseen . " respuestas nuevas"
+                    : "",
+                "href" => $rootId > 0 ? "#client-thread-" . $rootId : "#area-cliente",
+                "mark" => [
+                    "action" => "client_mark_thread_read",
+                    "thread_root_id" => $rootId,
+                ],
+            ];
+        }
+    }
+
+    usort($items, static function (array $a, array $b): int {
+        return strcmp((string)($b["created_at"] ?? ""), (string)($a["created_at"] ?? ""));
+    });
+
+    return [
+        "items" => $items,
+        "unread" => max(0, $agendaUnread) + max(0, $siteUnseenTotal),
+    ];
+}
+
+/**
+ * Quita el indicador de respuesta nueva del sitio en todos los mensajes del cliente.
+ */
+function client_notify_mark_all_inbox_seen(mysqli $conn, int $clientId, string $emailNorm): void
+{
+    if ($clientId <= 0 || $emailNorm === "") {
+        return;
+    }
+    $st = $conn->prepare(
+        "UPDATE contact_messages SET client_has_unseen_reply = 0
+         WHERE client_has_unseen_reply = 1
+           AND (client_id = ? OR (client_id IS NULL AND LOWER(TRIM(email)) = ?))"
+    );
+    if ($st === false) {
+        return;
+    }
+    $st->bind_param("is", $clientId, $emailNorm);
+    $st->execute();
+    $st->close();
+}
+
 function client_inbox_poll_snapshot(mysqli $conn, int $clientId, string $emailNorm): array
 {
     $minimal = index_client_inbox_messages_minimal($conn, $clientId, $emailNorm);

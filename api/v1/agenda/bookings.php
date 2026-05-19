@@ -45,4 +45,5 @@ api_json_ok([
     "starts_at" => (string)$result["starts_at"],
     "ends_at" => (string)$result["ends_at"],
     "slot_units" => (int)$result["slot_units"],
+    "notifications" => $result["notifications"] ?? [],
 ], 201);

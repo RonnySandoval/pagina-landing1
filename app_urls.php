@@ -364,7 +364,7 @@ function app_admin_whatsapp_clicks_read_all_api_url(): string
 /**
  * Una sola URL en pie de correo (texto plano).
  *
- * @param "admin_notify"|"visitor_reply"
+ * @param "admin_notify"|"visitor_reply"|"agenda_guest"
  */
 function app_mail_plain_text_links_footer(string $kind): string
 {
@@ -374,6 +374,9 @@ function app_mail_plain_text_links_footer(string $kind): string
     }
     if ($kind === "visitor_reply") {
         return "---\nTu área de clientes y mensajes: " . app_client_portal_url() . "\n";
+    }
+    if ($kind === "agenda_guest") {
+        return "---\nAgenda y citas: " . app_public_base_url() . "/agenda.php\n";
     }
 
     return "";

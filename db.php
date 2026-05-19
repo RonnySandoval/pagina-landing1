@@ -567,6 +567,33 @@ CREATE TABLE IF NOT EXISTS expert_appointments (
 )");
 
 $conn->query("
+CREATE TABLE IF NOT EXISTS agenda_notification_deliveries (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  appointment_id INT NOT NULL,
+  event_type VARCHAR(32) NOT NULL,
+  channel VARCHAR(24) NOT NULL,
+  recipient_role VARCHAR(16) NOT NULL,
+  client_id INT NULL,
+  recipient_email VARCHAR(180) NULL,
+  title VARCHAR(220) NOT NULL,
+  body TEXT NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  status_detail VARCHAR(255) NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  read_at TIMESTAMP NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_agenda_notify_appt (appointment_id, created_at),
+  INDEX idx_agenda_notify_admin (recipient_role, channel, is_read, created_at),
+  INDEX idx_agenda_notify_client (client_id, channel, is_read, created_at),
+  CONSTRAINT fk_agenda_notify_appt
+    FOREIGN KEY (appointment_id) REFERENCES expert_appointments(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_agenda_notify_client
+    FOREIGN KEY (client_id) REFERENCES clients(id)
+    ON DELETE SET NULL
+)");
+
+$conn->query("
 INSERT IGNORE INTO site_settings (
   id, person_name, brand_name, hero_title, hero_intro, about_text, contact_intro, contact_email, footer_text
 ) VALUES (

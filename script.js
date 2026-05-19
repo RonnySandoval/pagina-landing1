@@ -443,3 +443,76 @@ if (revealItems.length) {
 
 window.addEventListener("hashchange", revealSectionForHash);
 
+/** Campana de avisos de agenda: abrir/cerrar panel y cerrar al pulsar fuera o Escape. */
+function initNotifyBells() {
+  const bells = document.querySelectorAll("[data-notify-bell]");
+  if (!bells.length) return;
+
+  const closeAll = function (except) {
+    bells.forEach(function (root) {
+      if (except && root === except) return;
+      root.classList.remove("is-open");
+      const panel = root.querySelector("[data-notify-bell-panel]");
+      const trigger = root.querySelector("[data-notify-bell-trigger]");
+      if (panel) panel.hidden = true;
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+    });
+  };
+
+  bells.forEach(function (root) {
+    const trigger = root.querySelector("[data-notify-bell-trigger]");
+    const panel = root.querySelector("[data-notify-bell-panel]");
+    if (!trigger || !panel) return;
+
+    trigger.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const willOpen = panel.hidden;
+      closeAll(willOpen ? root : null);
+      panel.hidden = !willOpen;
+      root.classList.toggle("is-open", willOpen);
+      trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+
+    panel.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+    });
+  });
+
+  document.addEventListener("click", function () {
+    closeAll(null);
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") closeAll(null);
+  });
+}
+
+initNotifyBells();
+
+/** Abre el hilo de mensajes si la URL trae #client-thread-{id}. */
+function openClientThreadFromHash() {
+  const raw = (window.location.hash || "").replace(/^#/, "");
+  const m = /^client-thread-(\d+)$/.exec(raw);
+  if (!m) return;
+  const hist = document.querySelector("details.client-inbox-history");
+  if (hist) {
+    hist.open = true;
+  }
+  const det = document.getElementById("client-thread-" + m[1]);
+  if (det) {
+    det.open = true;
+  }
+  const area = document.getElementById("area-cliente");
+  if (area && typeof area.scrollIntoView === "function") {
+    area.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+window.addEventListener("hashchange", openClientThreadFromHash);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", openClientThreadFromHash);
+} else {
+  openClientThreadFromHash();
+}
+

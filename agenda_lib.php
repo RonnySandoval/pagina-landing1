@@ -356,40 +356,82 @@ function agenda_expert_day_windows(mysqli $conn, int $expertId, string $dateYmd,
 }
 
 /**
- * Sustituye la plantilla de lunes a viernes (weekday 1–5) por una sola franja horaria.
- * No modifica sábado ni domingo.
+ * Sustituye la plantilla de los días indicados (0=Dom … 6=Sáb) por las franjas dadas.
+ * Cada día recibe exactamente las mismas franjas (sustituye las anteriores de esos días).
+ *
+ * @param list<int> $weekdays
+ * @param list<array{start: string, end: string}> $windows
  */
-function agenda_replace_mon_fri_single_window(mysqli $conn, int $expertId, string $startSql, string $endSql): bool
+function agenda_replace_weekdays_windows(mysqli $conn, int $expertId, array $weekdays, array $windows): bool
 {
-    if ($expertId <= 0) {
+    if ($expertId <= 0 || $weekdays === [] || $windows === []) {
         return false;
     }
-    $del = $conn->prepare("DELETE FROM expert_availability WHERE expert_id = ? AND weekday IN (1,2,3,4,5)");
+    $wdList = [];
+    foreach ($weekdays as $wd) {
+        $wd = (int)$wd;
+        if ($wd >= 0 && $wd <= 6) {
+            $wdList[$wd] = true;
+        }
+    }
+    $wdList = array_keys($wdList);
+    sort($wdList);
+    if ($wdList === []) {
+        return false;
+    }
+
+    $placeholders = implode(",", array_fill(0, count($wdList), "?"));
+    $delSql = "DELETE FROM expert_availability WHERE expert_id = ? AND weekday IN ($placeholders)";
+    $del = $conn->prepare($delSql);
     if ($del === false) {
         return false;
     }
-    $del->bind_param("i", $expertId);
+    $delTypes = "i" . str_repeat("i", count($wdList));
+    $delParams = array_merge([$expertId], $wdList);
+    $del->bind_param($delTypes, ...$delParams);
     if (!$del->execute()) {
         $del->close();
         return false;
     }
     $del->close();
+
     $ins = $conn->prepare(
         "INSERT INTO expert_availability (expert_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)"
     );
     if ($ins === false) {
         return false;
     }
-    for ($wd = 1; $wd <= 5; $wd++) {
-        $ins->bind_param("iiss", $expertId, $wd, $startSql, $endSql);
-        if (!$ins->execute()) {
-            $ins->close();
-            return false;
+    foreach ($wdList as $wd) {
+        foreach ($windows as $win) {
+            $startSql = (string)($win["start"] ?? "");
+            $endSql = (string)($win["end"] ?? "");
+            if ($startSql === "" || $endSql === "") {
+                continue;
+            }
+            $ins->bind_param("iiss", $expertId, $wd, $startSql, $endSql);
+            if (!$ins->execute()) {
+                $ins->close();
+                return false;
+            }
         }
     }
     $ins->close();
 
     return true;
+}
+
+/**
+ * Sustituye la plantilla de lunes a viernes (weekday 1–5) por una sola franja horaria.
+ * No modifica sábado ni domingo.
+ */
+function agenda_replace_mon_fri_single_window(mysqli $conn, int $expertId, string $startSql, string $endSql): bool
+{
+    return agenda_replace_weekdays_windows(
+        $conn,
+        $expertId,
+        [1, 2, 3, 4, 5],
+        [["start" => $startSql, "end" => $endSql]]
+    );
 }
 
 /**
@@ -757,8 +799,13 @@ function agenda_try_insert_booking(
     if ($guestName === "" || mb_strlen($guestName, "UTF-8") > 180) {
         return "Indica un nombre válido.";
     }
-    if ($guestEmail === "" || !filter_var($guestEmail, FILTER_VALIDATE_EMAIL)) {
-        return "Indica un correo válido.";
+    $guestEmailValid = $guestEmail !== "" && filter_var($guestEmail, FILTER_VALIDATE_EMAIL);
+    $guestPhoneOk = mb_strlen($guestPhone, "UTF-8") >= 6;
+    if (!$guestEmailValid && !$guestPhoneOk) {
+        return "Indica un correo válido o un teléfono de contacto (mín. 6 caracteres).";
+    }
+    if (!$guestEmailValid) {
+        $guestEmail = "";
     }
     if (mb_strlen($guestPhone, "UTF-8") > 48) {
         $guestPhone = mb_substr($guestPhone, 0, 48, "UTF-8");

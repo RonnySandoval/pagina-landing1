@@ -17,6 +17,9 @@ $schSections = ["appts", "week", "template", "daily", "dates"];
 if (!in_array($expertScheduleSection, $schSections, true)) {
     $expertScheduleSection = "";
 }
+if ($expertScheduleSection === "daily") {
+    $expertScheduleSection = "template";
+}
 
 $wdLabelsExpert = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 $availByWd = [[], [], [], [], [], [], []];
@@ -64,12 +67,14 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
     return $expertScheduleSection === $id ? "true" : "false";
 };
 ?>
-<div id="admin-expert-schedule" class="admin-expert-subpanel scroll-margin-admin p-3">
-  <nav class="mb-3 d-flex flex-wrap gap-2 align-items-center expert-schedule-nav">
-    <a href="admin.php#admin-experts-list" class="link-light"><i class="fa-solid fa-arrow-left me-1"></i>Listado</a>
-    <span class="text-secondary" aria-hidden="true">·</span>
-    <a href="<?= h(admin_expert_page_url($eid, "edit")) ?>" class="link-light"><i class="fa-solid fa-pen-to-square me-1"></i>Editar datos</a>
-  </nav>
+<div id="admin-expert-schedule" class="admin-expert-subpanel scroll-margin-admin p-3 border border-secondary rounded">
+  <?php if (empty($agendaScheduleContext)): ?>
+    <nav class="mb-3 d-flex flex-wrap gap-2 align-items-center expert-schedule-nav">
+      <a href="admin.php#admin-experts-list" class="link-light"><i class="fa-solid fa-arrow-left me-1"></i>Listado</a>
+      <span class="text-secondary" aria-hidden="true">·</span>
+      <a href="<?= h(admin_agenda_expert_url($eid, "datos")) ?>" class="link-light"><i class="fa-solid fa-pen-to-square me-1"></i>Datos en Agendas</a>
+    </nav>
+  <?php endif; ?>
 
   <header class="mb-3">
     <h3 class="h5 mb-1">Horario y disponibilidad · <?= h($expertName) ?></h3>
@@ -154,101 +159,63 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
             </div>
           <?php endif; ?>
 
-          <div class="card border-secondary mb-3 expert-lvf-card">
-            <div class="card-body py-3">
-              <p class="small fw-semibold mb-2 mb-md-1">
-                <i class="fa-solid fa-bolt me-1 text-warning" aria-hidden="true"></i>
-                Atajo: poner el mismo horario de lunes a viernes
-              </p>
-              <p class="small text-muted mb-3">
-                Sustituye <strong>solo</strong> lun–vie de este experto por una franja única. Sábado y domingo no cambian.
-              </p>
-              <div class="row g-2 g-md-3">
-                <div class="col-md-6">
-                  <form method="post" class="expert-lvf-option h-100" onsubmit="return confirm('¿Aplicar 9:00–18:00 de lunes a viernes a este experto?');">
-                    <input type="hidden" name="action" value="expert_set_mon_fri_window">
-                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
-                    <input type="hidden" name="use_defaults" value="1">
-                    <button type="submit" class="btn btn-outline-light w-100 expert-lvf-option__btn">
-                      <span class="expert-lvf-option__label">Horario estándar</span>
-                      <span class="expert-lvf-option__time">9:00 – 18:00</span>
-                      <span class="expert-lvf-option__hint small">Lun · Mar · Mié · Jue · Vie</span>
-                    </button>
-                  </form>
-                </div>
-                <div class="col-md-6">
-                  <form method="post" class="expert-lvf-option expert-lvf-option--custom h-100" onsubmit="return confirm('¿Aplicar este horario de lunes a viernes a este experto?');">
-                    <input type="hidden" name="action" value="expert_set_mon_fri_window">
-                    <input type="hidden" name="expert_id" value="<?= $eid ?>">
-                    <div class="expert-lvf-option__custom-inner">
-                      <span class="expert-lvf-option__label">Otro horario</span>
-                      <div class="d-flex align-items-center gap-2 flex-wrap justify-content-center my-2">
-                        <input type="time" name="mon_fri_start" class="form-control form-control-sm expert-lvf-time" value="09:00" required aria-label="Hora inicio">
-                        <span class="small text-secondary">a</span>
-                        <input type="time" name="mon_fri_end" class="form-control form-control-sm expert-lvf-time" value="18:00" required aria-label="Hora fin">
-                      </div>
-                      <button type="submit" class="btn btn-primary btn-sm w-100">Aplicar a lun–vie</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-              <p class="small text-muted mb-0 mt-3">
-                <i class="fa-solid fa-users me-1" aria-hidden="true"></i>
-                Para aplicar un horario a <strong>todos</strong> los expertos,
-                <a href="admin.php#expert_acc_bulk" class="link-light">«Horario para todos»</a> en el listado.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+          <section class="expert-template-block mb-4" aria-labelledby="expert-template-shortcut-heading">
+            <h5 class="h6 mb-2" id="expert-template-shortcut-heading">
+              <i class="fa-solid fa-bolt me-1 text-warning" aria-hidden="true"></i>Atajo rápido
+            </h5>
+            <p class="small text-muted mb-2">
+              Marca los días y una o dos franjas; se sustituye la plantilla de esos días. Para festivos o un solo día concreto, usa
+              <a href="#expert_sch_acc_dates" class="link-light js-expert-sch-goto-dates">excepciones por fecha</a>.
+            </p>
+            <?php
+              $templateShortcutAction = "expert_set_mon_fri_window";
+              $templateShortcutExpertId = $eid;
+              $templateShortcutCompact = false;
+              require __DIR__ . "/admin_expert_template_shortcut.php";
+            ?>
+            <p class="small text-muted mb-0 mt-2">
+              <i class="fa-solid fa-users me-1" aria-hidden="true"></i>
+              Mismo atajo para <strong>todos</strong> los expertos:
+              <a href="admin.php?workspace=agendas#agenda_acc_bulk" class="link-light">Horario para todos</a> (abajo en Ajustes).
+            </p>
+          </section>
 
-    <div class="accordion-item">
-      <h4 class="accordion-header m-0">
-        <button
-          class="accordion-button<?= $schAccBtnCollapsed("daily") ?>"
-          type="button"
-          data-bs-toggle="collapse"
-          data-bs-target="#expert_sch_acc_daily"
-          aria-expanded="<?= $schAccExpanded("daily") ?>"
-          aria-controls="expert_sch_acc_daily"
-        >
-          <i class="fa-solid fa-calendar-day me-2" aria-hidden="true"></i>Ajuste día a día
-        </button>
-      </h4>
-      <div id="expert_sch_acc_daily" class="accordion-collapse collapse<?= $schAccOpen("daily") ?>">
-        <div class="accordion-body">
-          <p class="small text-muted mb-2">
-            Ajusta cada día si necesitas horarios distintos. Usa «Añadir franja» en cada columna para varias franjas el mismo día.
-          </p>
-          <div class="expert-days-section">
-            <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Días laborables</p>
-            <div class="expert-week-grid expert-week-grid--weekdays">
-              <?php foreach ($weekColWeekdays as $wd): ?>
-                <?php
-                  $dayRows = $availByWd[$wd];
-                  $isWeekend = false;
-                  $defaultStart = "09:00";
-                  $defaultEnd = "18:00";
-                  include __DIR__ . "/admin_expert_day_card.php";
-                ?>
-              <?php endforeach; ?>
+          <section class="expert-template-block" aria-labelledby="expert-template-days-heading">
+            <h5 class="h6 mb-2" id="expert-template-days-heading">
+              <i class="fa-solid fa-calendar-day me-1" aria-hidden="true"></i>Por día de la semana
+            </h5>
+            <p class="small text-muted mb-2">
+              Ajusta un día distinto o añade varias franjas el mismo día con «Añadir franja».
+            </p>
+            <div class="expert-days-section">
+              <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Lunes a viernes</p>
+              <div class="expert-week-grid expert-week-grid--weekdays">
+                <?php foreach ($weekColWeekdays as $wd): ?>
+                  <?php
+                    $dayRows = $availByWd[$wd];
+                    $isWeekend = false;
+                    $defaultStart = "09:00";
+                    $defaultEnd = "18:00";
+                    include __DIR__ . "/admin_expert_day_card.php";
+                  ?>
+                <?php endforeach; ?>
+              </div>
             </div>
-          </div>
-          <div class="expert-days-section mt-3">
-            <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Fin de semana <span class="fw-normal">(opcional)</span></p>
-            <div class="expert-week-grid expert-week-grid--weekend">
-              <?php foreach ($weekColWeekend as $wd): ?>
-                <?php
-                  $dayRows = $availByWd[$wd];
-                  $isWeekend = true;
-                  $defaultStart = "10:00";
-                  $defaultEnd = "14:00";
-                  include __DIR__ . "/admin_expert_day_card.php";
-                ?>
-              <?php endforeach; ?>
+            <div class="expert-days-section mt-3">
+              <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Fin de semana <span class="fw-normal">(opcional)</span></p>
+              <div class="expert-week-grid expert-week-grid--weekend">
+                <?php foreach ($weekColWeekend as $wd): ?>
+                  <?php
+                    $dayRows = $availByWd[$wd];
+                    $isWeekend = true;
+                    $defaultStart = "10:00";
+                    $defaultEnd = "14:00";
+                    include __DIR__ . "/admin_expert_day_card.php";
+                  ?>
+                <?php endforeach; ?>
+              </div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
@@ -272,7 +239,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
       <div id="expert_sch_acc_dates" class="accordion-collapse collapse<?= $schAccOpen("dates") ?>">
         <div class="accordion-body">
           <p class="small text-muted mb-3">
-            Para un día concreto puedes <strong>cerrar</strong> la agenda o usar <strong>franjas distintas</strong> a la plantilla (sustituyen ese día; no se mezclan con la semana).
+            <strong>Festivos y días puntuales:</strong> cierra la agenda o define franjas distintas a la plantilla (sustituyen ese día; no se mezclan con la semana).
           </p>
           <?php if ($nDateEx > 0): ?>
             <div class="table-responsive mb-3">
@@ -319,26 +286,26 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
           <form method="post" class="row g-2 align-items-end expert-av-date-form">
             <input type="hidden" name="action" value="expert_add_availability_date">
             <input type="hidden" name="expert_id" value="<?= $eid ?>">
-            <div class="col-md-3">
+            <div class="col-12 col-sm-6 col-md-3">
               <label class="form-label small mb-0">Fecha</label>
               <input class="form-control form-control-sm" type="date" name="calendar_date" required min="<?= h($exAvDateMin) ?>" max="<?= h($exAvDateMax) ?>" value="<?= h($exAvDateMin) ?>">
             </div>
-            <div class="col-md-3">
+            <div class="col-12 col-sm-6 col-md-3">
               <label class="form-label small mb-0">Tipo</label>
               <select class="form-select form-select-sm" name="date_av_mode" required>
                 <option value="window">Franjas distintas (sustituye ese día)</option>
                 <option value="closed">Día cerrado</option>
               </select>
             </div>
-            <div class="col-md-2">
+            <div class="col-6 col-md-2">
               <label class="form-label small mb-0">Desde</label>
               <input class="form-control form-control-sm" type="time" name="date_start_time" value="10:00">
             </div>
-            <div class="col-md-2">
+            <div class="col-6 col-md-2">
               <label class="form-label small mb-0">Hasta</label>
               <input class="form-control form-control-sm" type="time" name="date_end_time" value="14:00">
             </div>
-            <div class="col-md-2">
+            <div class="col-12 col-md-2">
               <button type="submit" class="btn btn-outline-primary btn-sm w-100">Aplicar</button>
             </div>
           </form>
