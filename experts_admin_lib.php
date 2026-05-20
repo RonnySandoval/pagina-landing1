@@ -230,8 +230,59 @@ function experts_admin_get(mysqli $conn, int $expertId): array
     ];
 }
 
+/** Estados de cita en panel admin. */
+const EXPERT_APPT_STATUS_CONFIRMED = "confirmed";
+const EXPERT_APPT_STATUS_POSTPONED = "postponed";
+const EXPERT_APPT_STATUS_COMPLETED = "completed";
+const EXPERT_APPT_STATUS_CANCELLED = "cancelled";
+
+/** @return list<string> */
+function experts_admin_appointment_active_statuses(): array
+{
+    return [EXPERT_APPT_STATUS_CONFIRMED, EXPERT_APPT_STATUS_POSTPONED];
+}
+
+function experts_admin_appointment_status_label(string $status): string
+{
+    return match ($status) {
+        EXPERT_APPT_STATUS_CONFIRMED => "Confirmada",
+        EXPERT_APPT_STATUS_POSTPONED => "Pospuesta",
+        EXPERT_APPT_STATUS_COMPLETED => "Terminada",
+        EXPERT_APPT_STATUS_CANCELLED => "Cancelada",
+        default => ucfirst($status),
+    };
+}
+
+function experts_admin_appointment_status_badge_class(string $status): string
+{
+    return match ($status) {
+        EXPERT_APPT_STATUS_CONFIRMED => "text-bg-primary",
+        EXPERT_APPT_STATUS_POSTPONED => "text-bg-warning text-dark",
+        EXPERT_APPT_STATUS_COMPLETED => "text-bg-success",
+        EXPERT_APPT_STATUS_CANCELLED => "text-bg-secondary",
+        default => "text-bg-secondary",
+    };
+}
+
+function experts_admin_appointment_status_is_actionable(string $status): bool
+{
+    return in_array($status, experts_admin_appointment_active_statuses(), true);
+}
+
 /**
- * Citas confirmadas próximas de un experto.
+ * @return list<array<string, mixed>>
+ */
+function experts_admin_fetch_appointments_list_sql(): string
+{
+    return "(
+            a.status IN ('confirmed', 'postponed') AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
+        ) OR (
+            a.status IN ('completed', 'cancelled') AND a.starts_at >= (NOW() - INTERVAL 30 DAY)
+        )";
+}
+
+/**
+ * Citas del experto (próximas y recientes con estado).
  *
  * @return list<array<string, mixed>>
  */
@@ -241,13 +292,14 @@ function experts_admin_fetch_upcoming_appointments_for_expert(mysqli $conn, int 
     if ($expertId <= 0 || $limit <= 0) {
         return $rows;
     }
+    $whereList = experts_admin_fetch_appointments_list_sql();
     $apStmt = $conn->prepare(
         "SELECT a.id, a.expert_id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone,
                 s.title AS service_title, s.icon_class AS service_icon_class
          FROM expert_appointments a
          INNER JOIN services s ON s.id = a.service_id
-         WHERE a.expert_id = ? AND a.status = 'confirmed' AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
-         ORDER BY a.starts_at ASC
+         WHERE a.expert_id = ? AND ({$whereList})
+         ORDER BY FIELD(a.status, 'confirmed', 'postponed', 'completed', 'cancelled'), a.starts_at ASC
          LIMIT ?"
     );
     if ($apStmt === false) {
@@ -267,7 +319,7 @@ function experts_admin_fetch_upcoming_appointments_for_expert(mysqli $conn, int 
 }
 
 /**
- * Citas confirmadas próximas de todos los expertos (orden global fecha+hora).
+ * Citas de todos los expertos (próximas y recientes con estado).
  *
  * @return list<array<string, mixed>>
  */
@@ -277,14 +329,15 @@ function experts_admin_fetch_all_upcoming_appointments(mysqli $conn, int $limit 
     if ($limit <= 0) {
         return $rows;
     }
+    $whereList = experts_admin_fetch_appointments_list_sql();
     $apStmt = $conn->prepare(
         "SELECT a.id, a.expert_id, a.starts_at, a.ends_at, a.status, a.guest_name, a.guest_email, a.guest_phone,
                 s.title AS service_title, s.icon_class AS service_icon_class, e.display_name AS expert_name
          FROM expert_appointments a
          INNER JOIN services s ON s.id = a.service_id
          INNER JOIN experts e ON e.id = a.expert_id
-         WHERE a.status = 'confirmed' AND a.ends_at >= (NOW() - INTERVAL 1 HOUR)
-         ORDER BY a.starts_at ASC
+         WHERE ({$whereList})
+         ORDER BY a.starts_at ASC, FIELD(a.status, 'confirmed', 'postponed', 'completed', 'cancelled')
          LIMIT ?"
     );
     if ($apStmt === false) {
@@ -686,6 +739,147 @@ function experts_admin_set_mon_fri_window(mysqli $conn, int $expertId, array $in
 }
 
 /**
+ * @return list<array<string, mixed>>
+ */
+function experts_admin_list_weekly_availability(mysqli $conn, int $expertId): array
+{
+    if ($expertId <= 0) {
+        return [];
+    }
+    $rows = [];
+    $stmt = $conn->prepare(
+        "SELECT id, weekday, start_time, end_time
+         FROM expert_availability
+         WHERE expert_id = ?
+         ORDER BY weekday ASC, start_time ASC"
+    );
+    if ($stmt === false) {
+        return [];
+    }
+    $stmt->bind_param("i", $expertId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $rows[] = $row;
+        }
+    }
+    $stmt->close();
+
+    return $rows;
+}
+
+/**
+ * @param list<array<string, mixed>> $availabilityRows
+ * @return array<int, list<array<string, mixed>>>
+ */
+function experts_admin_group_availability_by_weekday(array $availabilityRows): array
+{
+    $availByWd = [[], [], [], [], [], [], []];
+    foreach ($availabilityRows as $arow) {
+        $awi = (int)($arow["weekday"] ?? -1);
+        if ($awi >= 0 && $awi <= 6) {
+            $availByWd[$awi][] = $arow;
+        }
+    }
+
+    return $availByWd;
+}
+
+/**
+ * @param array<int, list<array<string, mixed>>> $availByWd
+ */
+function experts_admin_mon_fri_summary_from_grouped(array $availByWd): ?string
+{
+    $monFriSlots = [];
+    for ($wd = 1; $wd <= 5; $wd++) {
+        if (count($availByWd[$wd] ?? []) !== 1) {
+            return null;
+        }
+        $monFriSlots[] = agenda_format_time_range_24(
+            (string)($availByWd[$wd][0]["start_time"] ?? ""),
+            (string)($availByWd[$wd][0]["end_time"] ?? "")
+        );
+    }
+    if (count($monFriSlots) === 5 && count(array_unique($monFriSlots)) === 1) {
+        return $monFriSlots[0];
+    }
+
+    return null;
+}
+
+/**
+ * @param array<int, list<array<string, mixed>>> $availByWd
+ * @return array{slot1_start: string, slot1_end: string, slot2_start: string, slot2_end: string}
+ */
+function experts_admin_template_prefill_from_grouped(array $availByWd): array
+{
+    $prefill = [
+        "slot1_start" => AGENDA_DEFAULT_MON_FRI_START,
+        "slot1_end" => AGENDA_DEFAULT_MON_FRI_END,
+        "slot2_start" => "",
+        "slot2_end" => "",
+    ];
+    $sourceWd = null;
+    foreach ([1, 2, 3, 4, 5, 6, 0] as $wd) {
+        if (count($availByWd[$wd] ?? []) > 0) {
+            $sourceWd = $wd;
+            break;
+        }
+    }
+    if ($sourceWd === null) {
+        return $prefill;
+    }
+    $rows = $availByWd[$sourceWd];
+    usort(
+        $rows,
+        static fn(array $a, array $b): int => strcmp(
+            (string)($a["start_time"] ?? ""),
+            (string)($b["start_time"] ?? "")
+        )
+    );
+    if (isset($rows[0])) {
+        $prefill["slot1_start"] = agenda_format_time_24((string)($rows[0]["start_time"] ?? ""));
+        $prefill["slot1_end"] = agenda_format_time_24((string)($rows[0]["end_time"] ?? ""));
+    }
+    if (isset($rows[1])) {
+        $prefill["slot2_start"] = agenda_format_time_24((string)($rows[1]["start_time"] ?? ""));
+        $prefill["slot2_end"] = agenda_format_time_24((string)($rows[1]["end_time"] ?? ""));
+    }
+
+    return $prefill;
+}
+
+/**
+ * @param list<array<string, mixed>> $availabilityRows
+ * @return array{
+ *   by_weekday: array<int, list<array{id: int, start: string, end: string}>>,
+ *   prefill: array{slot1_start: string, slot1_end: string, slot2_start: string, slot2_end: string},
+ *   mon_fri_summary: ?string
+ * }
+ */
+function experts_admin_weekly_schedule_client_payload(array $availabilityRows): array
+{
+    $availByWd = experts_admin_group_availability_by_weekday($availabilityRows);
+    $clientByWd = [[], [], [], [], [], [], []];
+    for ($wd = 0; $wd <= 6; $wd++) {
+        foreach ($availByWd[$wd] as $arow) {
+            $clientByWd[$wd][] = [
+                "id" => (int)($arow["id"] ?? 0),
+                "start" => agenda_format_time_24((string)($arow["start_time"] ?? "")),
+                "end" => agenda_format_time_24((string)($arow["end_time"] ?? "")),
+            ];
+        }
+    }
+
+    return [
+        "by_weekday" => $clientByWd,
+        "prefill" => experts_admin_template_prefill_from_grouped($availByWd),
+        "mon_fri_summary" => experts_admin_mon_fri_summary_from_grouped($availByWd),
+    ];
+}
+
+/**
  * @return array{ok: true, experts_updated: int}|array{ok: false, error: string}
  */
 function experts_admin_bulk_mon_fri_all(mysqli $conn, array $input): array
@@ -820,6 +1014,171 @@ function experts_admin_delete_date_exception(mysqli $conn, int $expertId, int $a
 }
 
 /**
+ * @return array{ok: true, appointment: array<string, mixed>}|array{ok: false, error: string}
+ */
+function experts_admin_load_appointment_for_expert(mysqli $conn, int $expertId, int $appointmentId): array
+{
+    if ($expertId <= 0 || $appointmentId <= 0) {
+        return ["ok" => false, "error" => "invalid_request"];
+    }
+    $stmt = $conn->prepare(
+        "SELECT id, expert_id, service_id, starts_at, ends_at, status
+         FROM expert_appointments
+         WHERE id = ? AND expert_id = ?
+         LIMIT 1"
+    );
+    if ($stmt === false) {
+        return ["ok" => false, "error" => "load_failed"];
+    }
+    $stmt->bind_param("ii", $appointmentId, $expertId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $stmt->close();
+    if (!is_array($row)) {
+        return ["ok" => false, "error" => "not_found"];
+    }
+
+    return ["ok" => true, "appointment" => $row];
+}
+
+function experts_admin_datetime_local_value(string $sqlDatetime): string
+{
+    $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+    $dt = DateTimeImmutable::createFromFormat("Y-m-d H:i:s", trim($sqlDatetime), $tz);
+    if ($dt === false) {
+        $dt = DateTimeImmutable::createFromFormat("Y-m-d H:i", trim($sqlDatetime), $tz);
+    }
+    if ($dt === false) {
+        return "";
+    }
+
+    return $dt->format("Y-m-d\TH:i");
+}
+
+/**
+ * @return DateTimeImmutable|null
+ */
+function experts_admin_parse_datetime_local_input(string $raw): ?DateTimeImmutable
+{
+    $raw = trim(str_replace("T", " ", $raw));
+    if ($raw === "") {
+        return null;
+    }
+    $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+    foreach (["Y-m-d H:i:s", "Y-m-d H:i"] as $fmt) {
+        $dt = DateTimeImmutable::createFromFormat($fmt, $raw, $tz);
+        if ($dt !== false) {
+            return $dt;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * @return array{ok: true, updated: bool}|array{ok: false, error: string}
+ */
+function experts_admin_complete_appointment(mysqli $conn, int $expertId, int $appointmentId): array
+{
+    if ($expertId <= 0 || $appointmentId <= 0) {
+        return ["ok" => false, "error" => "invalid_request"];
+    }
+    $active = implode("','", experts_admin_appointment_active_statuses());
+    $upd = $conn->prepare(
+        "UPDATE expert_appointments SET status = 'completed'
+         WHERE id = ? AND expert_id = ? AND status IN ('{$active}') LIMIT 1"
+    );
+    if ($upd === false) {
+        return ["ok" => false, "error" => "update_failed"];
+    }
+    $upd->bind_param("ii", $appointmentId, $expertId);
+    $upd->execute();
+    $updated = $upd->affected_rows > 0;
+    $upd->close();
+
+    return ["ok" => true, "updated" => $updated];
+}
+
+/**
+ * @return array{ok: true, updated: bool, starts_at: string, ends_at: string}|array{ok: false, error: string}
+ */
+function experts_admin_postpone_appointment(
+    mysqli $conn,
+    int $expertId,
+    int $appointmentId,
+    string $newStartsRaw
+): array {
+    if ($expertId <= 0 || $appointmentId <= 0) {
+        return ["ok" => false, "error" => "invalid_request"];
+    }
+    $loaded = experts_admin_load_appointment_for_expert($conn, $expertId, $appointmentId);
+    if (!$loaded["ok"]) {
+        return ["ok" => false, "error" => (string)($loaded["error"] ?? "not_found")];
+    }
+    $appt = $loaded["appointment"];
+    $status = (string)($appt["status"] ?? "");
+    if (!experts_admin_appointment_status_is_actionable($status)) {
+        return ["ok" => false, "error" => "invalid_status"];
+    }
+
+    $newStart = experts_admin_parse_datetime_local_input($newStartsRaw);
+    if ($newStart === null) {
+        return ["ok" => false, "error" => "invalid_datetime"];
+    }
+
+    $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+    $oldStart = DateTimeImmutable::createFromFormat("Y-m-d H:i:s", (string)($appt["starts_at"] ?? ""), $tz);
+    $oldEnd = DateTimeImmutable::createFromFormat("Y-m-d H:i:s", (string)($appt["ends_at"] ?? ""), $tz);
+    if ($oldStart === false || $oldEnd === false) {
+        return ["ok" => false, "error" => "invalid_datetime"];
+    }
+    $durationSec = $oldEnd->getTimestamp() - $oldStart->getTimestamp();
+    if ($durationSec <= 0) {
+        $durationSec = AGENDA_SLOT_MINUTES * 60;
+    }
+    $newEnd = $newStart->modify("+" . $durationSec . " seconds");
+    $startsAt = $newStart->format("Y-m-d H:i:s");
+    $endsAt = $newEnd->format("Y-m-d H:i:s");
+
+    $overlap = $conn->prepare(
+        "SELECT COUNT(*) AS c FROM expert_appointments
+         WHERE expert_id = ? AND id <> ? AND status IN ('confirmed', 'postponed')
+           AND starts_at < ? AND ends_at > ?"
+    );
+    if ($overlap === false) {
+        return ["ok" => false, "error" => "check_failed"];
+    }
+    $overlap->bind_param("iiss", $expertId, $appointmentId, $endsAt, $startsAt);
+    $overlap->execute();
+    $or = $overlap->get_result();
+    $crow = $or ? $or->fetch_assoc() : null;
+    $overlap->close();
+    if ((int)($crow["c"] ?? 0) > 0) {
+        return ["ok" => false, "error" => "slot_taken"];
+    }
+
+    $upd = $conn->prepare(
+        "UPDATE expert_appointments
+         SET starts_at = ?, ends_at = ?, status = 'postponed'
+         WHERE id = ? AND expert_id = ? AND status IN ('confirmed', 'postponed')
+         LIMIT 1"
+    );
+    if ($upd === false) {
+        return ["ok" => false, "error" => "update_failed"];
+    }
+    $upd->bind_param("ssii", $startsAt, $endsAt, $appointmentId, $expertId);
+    $upd->execute();
+    $updated = $upd->affected_rows > 0;
+    $upd->close();
+    if (!$updated) {
+        return ["ok" => false, "error" => "update_failed"];
+    }
+
+    return ["ok" => true, "updated" => true, "starts_at" => $startsAt, "ends_at" => $endsAt];
+}
+
+/**
  * @return array{
  *   ok: true,
  *   cancelled: bool,
@@ -838,13 +1197,15 @@ function experts_admin_cancel_appointment(mysqli $conn, int $expertId, int $appo
     if (
         is_array($loaded)
         && (int)($loaded["expert_id"] ?? 0) === $expertId
-        && (string)($loaded["status"] ?? "") === "confirmed"
+        && experts_admin_appointment_status_is_actionable((string)($loaded["status"] ?? ""))
     ) {
         $snapshot = $loaded;
     }
 
+    $active = implode("','", experts_admin_appointment_active_statuses());
     $upd = $conn->prepare(
-        "UPDATE expert_appointments SET status = 'cancelled' WHERE id = ? AND expert_id = ? AND status = 'confirmed' LIMIT 1"
+        "UPDATE expert_appointments SET status = 'cancelled'
+         WHERE id = ? AND expert_id = ? AND status IN ('{$active}') LIMIT 1"
     );
     if ($upd === false) {
         return ["ok" => false, "error" => "update_failed"];

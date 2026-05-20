@@ -208,17 +208,18 @@ function services_update(
     }
     $imagePath = $upload["path"] ?? null;
     if ($imagePath === null) {
-        $imagePath = $currentImagePath !== "" ? $currentImagePath : null;
+        $imagePath = $currentImagePath !== "" ? $currentImagePath : "";
     }
+    $imagePathDb = $imagePath !== "" ? (string)$imagePath : "";
 
     $activeInt = $isActive ? 1 : 0;
     $stmt = $conn->prepare(
-        "UPDATE services SET title = ?, description = ?, icon_class = ?, image_path = ?, sort_order = ?, is_active = ? WHERE id = ?"
+        "UPDATE services SET title = ?, description = ?, icon_class = ?, image_path = NULLIF(?, ''), sort_order = ?, is_active = ? WHERE id = ?"
     );
     if ($stmt === false) {
         return ["ok" => false, "error" => "update_failed"];
     }
-    $stmt->bind_param("ssssiii", $title, $description, $iconClass, $imagePath, $sortOrder, $activeInt, $serviceId);
+    $stmt->bind_param("ssssiii", $title, $description, $iconClass, $imagePathDb, $sortOrder, $activeInt, $serviceId);
     if (!$stmt->execute()) {
         $stmt->close();
         return ["ok" => false, "error" => "update_failed"];
@@ -464,16 +465,44 @@ function services_delete_gallery_item(mysqli $conn, int $galleryId): array
  *
  * @return array{ok: true, message: string}|array{ok: false, error: string, message?: string}
  */
-function services_save_batch_from_post(mysqli $conn, array $post, array $files, ?string $projectRoot = null): array
-{
+function services_save_batch_from_post(
+    mysqli $conn,
+    array $post,
+    array $files,
+    ?string $projectRoot = null,
+    ?int $onlyServiceId = null
+): array {
     if (!isset($post["services"]) || !is_array($post["services"])) {
         return ["ok" => false, "error" => "missing_services"];
+    }
+
+    if ($onlyServiceId !== null && $onlyServiceId <= 0) {
+        $onlyServiceId = null;
     }
 
     $removeGalleryIds = array_values(array_filter(
         array_map("intval", $post["remove_gallery_ids"] ?? []),
         static fn(int $id): bool => $id > 0
     ));
+    if ($onlyServiceId !== null && count($removeGalleryIds) > 0) {
+        $allowedGalleryIds = [];
+        $gstmt = $conn->prepare("SELECT id FROM service_gallery WHERE service_id = ?");
+        if ($gstmt !== false) {
+            $gstmt->bind_param("i", $onlyServiceId);
+            $gstmt->execute();
+            $gres = $gstmt->get_result();
+            if ($gres) {
+                while ($grow = $gres->fetch_assoc()) {
+                    $allowedGalleryIds[(int)($grow["id"] ?? 0)] = true;
+                }
+            }
+            $gstmt->close();
+        }
+        $removeGalleryIds = array_values(array_filter(
+            $removeGalleryIds,
+            static fn(int $gid): bool => isset($allowedGalleryIds[$gid])
+        ));
+    }
     service_gallery_delete_ids($conn, $removeGalleryIds);
 
     if (isset($post["gallery_image_titles"]) && is_array($post["gallery_image_titles"])) {
@@ -481,6 +510,20 @@ function services_save_batch_from_post(mysqli $conn, array $post, array $files, 
             $galleryId = (int)$galleryIdRaw;
             if ($galleryId <= 0 || in_array($galleryId, $removeGalleryIds, true)) {
                 continue;
+            }
+            if ($onlyServiceId !== null) {
+                $ownerStmt = $conn->prepare("SELECT service_id FROM service_gallery WHERE id = ? LIMIT 1");
+                if ($ownerStmt === false) {
+                    continue;
+                }
+                $ownerStmt->bind_param("i", $galleryId);
+                $ownerStmt->execute();
+                $ownerRes = $ownerStmt->get_result();
+                $ownerRow = $ownerRes ? $ownerRes->fetch_assoc() : null;
+                $ownerStmt->close();
+                if ((int)($ownerRow["service_id"] ?? 0) !== $onlyServiceId) {
+                    continue;
+                }
             }
             $imgDesc = trim((string)($post["gallery_image_descriptions"][$galleryIdRaw] ?? ""));
             service_gallery_update_meta($conn, $galleryId, trim((string)$titleRaw), $imgDesc);
@@ -495,6 +538,9 @@ function services_save_batch_from_post(mysqli $conn, array $post, array $files, 
         }
         $serviceId = (int)$id;
         if ($serviceId <= 0) {
+            continue;
+        }
+        if ($onlyServiceId !== null && $serviceId !== $onlyServiceId) {
             continue;
         }
 
@@ -556,6 +602,16 @@ function services_save_batch_from_post(mysqli $conn, array $post, array $files, 
                 }
             }
         }
+    }
+
+    if ($onlyServiceId !== null) {
+        $out = ["ok" => true, "message" => "Servicio actualizado."];
+        $got = services_get_with_gallery($conn, $onlyServiceId);
+        if ($got["ok"]) {
+            $out["service"] = services_format_for_api($got["service"], $got["gallery"]);
+        }
+
+        return $out;
     }
 
     return ["ok" => true, "message" => "Servicios actualizados."];

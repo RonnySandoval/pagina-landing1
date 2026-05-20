@@ -30,19 +30,8 @@ foreach ($expertAvailabilityRows as $arow) {
     }
 }
 
-$monFriSummary = null;
-$monFriSlots = [];
-for ($wd = 1; $wd <= 5; $wd++) {
-    if (count($availByWd[$wd]) !== 1) {
-        $monFriSlots = [];
-        break;
-    }
-    $monFriSlots[] = substr((string)($availByWd[$wd][0]["start_time"] ?? ""), 0, 5)
-        . "–" . substr((string)($availByWd[$wd][0]["end_time"] ?? ""), 0, 5);
-}
-if (count($monFriSlots) === 5 && count(array_unique($monFriSlots)) === 1) {
-    $monFriSummary = $monFriSlots[0];
-}
+$monFriSummary = experts_admin_mon_fri_summary_from_grouped($availByWd);
+$templateShortcutPrefill = experts_admin_template_prefill_from_grouped($availByWd);
 
 $weekColWeekdays = [1, 2, 3, 4, 5];
 $weekColWeekend = [6, 0];
@@ -94,7 +83,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
           aria-expanded="<?= $schAccExpanded("appts") ?>"
           aria-controls="expert_sch_acc_appts"
         >
-          <i class="fa-solid fa-clock me-2" aria-hidden="true"></i>Próximas citas
+          <i class="fa-solid fa-clock me-2 admin-icon-clock" aria-hidden="true"></i>Citas
           <?php if ($nAppts > 0): ?>
             <span class="badge rounded-pill text-bg-primary ms-2"><?= (int)$nAppts ?></span>
           <?php endif; ?>
@@ -107,7 +96,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
             $showExpertColumn = false;
             $cancelExpertId = $eid;
             $appointmentReturnView = "schedule";
-            $emptyMessage = "No hay citas confirmadas próximas.";
+            $emptyMessage = "No hay citas en el listado.";
             require __DIR__ . "/admin_expert_appointments_table.php";
           ?>
         </div>
@@ -150,7 +139,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
       <div id="expert_sch_acc_template" class="accordion-collapse collapse<?= $schAccOpen("template") ?>">
         <div class="accordion-body">
           <?php if ($monFriSummary !== null): ?>
-            <div class="alert alert-secondary py-2 px-3 small mb-3 expert-schedule-summary" role="status">
+            <div class="alert alert-secondary py-2 px-3 small mb-3 expert-schedule-summary" id="expert-template-summary" role="status">
               <i class="fa-solid fa-circle-check me-1 text-success" aria-hidden="true"></i>
               <strong>Lunes a viernes:</strong> <?= h($monFriSummary) ?> (misma franja cada día laborable).
               <?php if (count($availByWd[6]) === 0 && count($availByWd[0]) === 0): ?>
@@ -187,33 +176,31 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
             <p class="small text-muted mb-2">
               Ajusta un día distinto o añade varias franjas el mismo día con «Añadir franja».
             </p>
-            <div class="expert-days-section">
-              <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Lunes a viernes</p>
-              <div class="expert-week-grid expert-week-grid--weekdays">
-                <?php foreach ($weekColWeekdays as $wd): ?>
-                  <?php
-                    $dayRows = $availByWd[$wd];
-                    $isWeekend = false;
-                    $defaultStart = "09:00";
-                    $defaultEnd = "18:00";
-                    include __DIR__ . "/admin_expert_day_card.php";
-                  ?>
-                <?php endforeach; ?>
-              </div>
-            </div>
-            <div class="expert-days-section mt-3">
-              <p class="small text-uppercase text-secondary fw-semibold mb-2 expert-days-section__label">Fin de semana <span class="fw-normal">(opcional)</span></p>
-              <div class="expert-week-grid expert-week-grid--weekend">
-                <?php foreach ($weekColWeekend as $wd): ?>
-                  <?php
-                    $dayRows = $availByWd[$wd];
-                    $isWeekend = true;
-                    $defaultStart = "10:00";
-                    $defaultEnd = "14:00";
-                    include __DIR__ . "/admin_expert_day_card.php";
-                  ?>
-                <?php endforeach; ?>
-              </div>
+            <div class="expert-week-grid expert-week-grid--days" id="expert-template-days-grid" role="list">
+              <p class="expert-week-grid__section-label small text-uppercase text-secondary fw-semibold mb-0" role="presentation">
+                Lunes a viernes
+              </p>
+              <?php foreach ($weekColWeekdays as $wd): ?>
+                <?php
+                  $dayRows = $availByWd[$wd];
+                  $isWeekend = false;
+                  $defaultStart = "09:00";
+                  $defaultEnd = "18:00";
+                  include __DIR__ . "/admin_expert_day_card.php";
+                ?>
+              <?php endforeach; ?>
+              <p class="expert-week-grid__section-label small text-uppercase text-secondary fw-semibold mb-0" role="presentation">
+                Fin de semana <span class="fw-normal">(opcional)</span>
+              </p>
+              <?php foreach ($weekColWeekend as $wd): ?>
+                <?php
+                  $dayRows = $availByWd[$wd];
+                  $isWeekend = true;
+                  $defaultStart = "10:00";
+                  $defaultEnd = "14:00";
+                  include __DIR__ . "/admin_expert_day_card.php";
+                ?>
+              <?php endforeach; ?>
             </div>
           </section>
         </div>
@@ -264,7 +251,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
                         <?php if ($dclosed): ?>
                           <span class="badge text-bg-secondary">Cerrado</span>
                         <?php else: ?>
-                          <span class="badge text-bg-info text-dark"><?= h(substr((string)($drow["start_time"] ?? ""), 0, 5)) ?>–<?= h(substr((string)($drow["end_time"] ?? ""), 0, 5)) ?></span>
+                          <span class="badge text-bg-info text-dark"><?= h(agenda_format_time_range_24((string)($drow["start_time"] ?? ""), (string)($drow["end_time"] ?? ""))) ?></span>
                         <?php endif; ?>
                       </td>
                       <td class="text-end">
@@ -283,7 +270,7 @@ $schAccExpanded = static function (string $id) use ($expertScheduleSection): str
           <?php else: ?>
             <p class="small text-muted mb-3">No hay excepciones por fecha en el rango mostrado.</p>
           <?php endif; ?>
-          <form method="post" class="row g-2 align-items-end expert-av-date-form">
+          <form method="post" lang="es" class="row g-2 align-items-end expert-av-date-form">
             <input type="hidden" name="action" value="expert_add_availability_date">
             <input type="hidden" name="expert_id" value="<?= $eid ?>">
             <div class="col-12 col-sm-6 col-md-3">

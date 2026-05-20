@@ -114,7 +114,7 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $agendaSelectedDate)) {
                   <?php if ($agendaByTime): ?>
                     <th scope="col" class="agenda-slot-table-avail-col">
                       <span class="agenda-col-head-text">Disponibilidad</span>
-                      <i class="fa-solid fa-clock agenda-col-head-icon" aria-hidden="true" title="Disponibilidad"></i>
+                      <i class="fa-solid fa-clock agenda-col-head-icon admin-icon-clock" aria-hidden="true" title="Disponibilidad"></i>
                     </th>
                   <?php elseif ($colCount === 0): ?>
                     <th scope="col">—</th>

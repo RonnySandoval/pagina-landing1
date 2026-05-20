@@ -198,7 +198,7 @@ function agenda_expert_admin_week_grid(mysqli $conn, int $expertId, string $week
         "SELECT a.id, a.starts_at, a.ends_at, a.guest_name, s.title AS service_title
          FROM expert_appointments a
          INNER JOIN services s ON s.id = a.service_id
-         WHERE a.expert_id = ? AND a.status <> 'cancelled'
+         WHERE a.expert_id = ? AND a.status IN ('confirmed', 'postponed')
            AND a.starts_at < ? AND a.ends_at > ?"
     );
     if ($apStmt !== false) {
@@ -586,7 +586,7 @@ function agenda_slots_for_service_day(mysqli $conn, int $serviceId, string $date
 
         $apStmt = $conn->prepare(
             "SELECT starts_at, ends_at FROM expert_appointments
-             WHERE expert_id = ? AND status <> 'cancelled'
+             WHERE expert_id = ? AND status IN ('confirmed', 'postponed')
                AND starts_at < ? AND ends_at > ?"
         );
         $dayEnd = $dayStart->modify("+1 day");
@@ -661,6 +661,76 @@ function agenda_slots_for_service_day(mysqli $conn, int $serviceId, string $date
 
 /** Máximo de franjas de AGENDA_SLOT_MINUTES en una sola reserva (p. ej. 8 h). */
 const AGENDA_MAX_SLOT_UNITS = 16;
+
+/**
+ * Hora en formato 24 h (HH:MM) desde TIME, datetime SQL o fragmento con hora.
+ */
+function agenda_format_time_24(string $value): string
+{
+    $value = trim($value);
+    if ($value === "") {
+        return "";
+    }
+    if (preg_match('/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/', $value, $m)) {
+        $h = (int)$m[1];
+        $min = (int)$m[2];
+        if ($h >= 0 && $h <= 23 && $min >= 0 && $min <= 59) {
+            return sprintf("%02d:%02d", $h, $min);
+        }
+    }
+
+    return substr($value, 0, 5);
+}
+
+/**
+ * Fecha y hora en formato 24 h: dd/mm/aaaa HH:MM
+ */
+function agenda_format_datetime_24(string $value): string
+{
+    $value = trim($value);
+    if ($value === "") {
+        return "";
+    }
+    $tz = new DateTimeZone(date_default_timezone_get() ?: "UTC");
+    foreach (["Y-m-d H:i:s", "Y-m-d H:i", "d/m/Y H:i", "d/m/Y H:i:s"] as $fmt) {
+        $dt = DateTimeImmutable::createFromFormat($fmt, $value, $tz);
+        if ($dt !== false) {
+            return $dt->format("d/m/Y H:i");
+        }
+    }
+    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}:\d{2})/', $value, $m)) {
+        return $m[3] . "/" . $m[2] . "/" . $m[1] . " " . agenda_format_time_24($m[4]);
+    }
+
+    return $value;
+}
+
+/**
+ * Fecha corta + hora 24 h: dd/mm · HH:MM
+ */
+function agenda_format_datetime_short_24(string $value): string
+{
+    $full = agenda_format_datetime_24($value);
+    if (preg_match('/^(\d{2}\/\d{2})\/\d{4}\s+(\d{2}:\d{2})$/', $full, $m)) {
+        return $m[1] . " · " . $m[2];
+    }
+
+    return $full;
+}
+
+/**
+ * Rango horario 24 h: HH:MM–HH:MM
+ */
+function agenda_format_time_range_24(string $start, string $end): string
+{
+    $s = agenda_format_time_24($start);
+    $e = agenda_format_time_24($end);
+    if ($s === "" && $e === "") {
+        return "";
+    }
+
+    return $s . "–" . $e;
+}
 
 function agenda_format_booking_label(string $startsAt, string $endsAt): string
 {
@@ -832,7 +902,7 @@ function agenda_try_insert_booking(
 
         $lock = $conn->prepare(
             "SELECT COUNT(*) AS c FROM expert_appointments
-             WHERE expert_id = ? AND status <> 'cancelled' AND starts_at < ? AND ends_at > ? FOR UPDATE"
+             WHERE expert_id = ? AND status IN ('confirmed', 'postponed') AND starts_at < ? AND ends_at > ? FOR UPDATE"
         );
         if ($lock === false) {
             throw new RuntimeException("prepare");
