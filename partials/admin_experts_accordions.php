@@ -30,7 +30,7 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
       class="accordion-collapse collapse <?= $expertAccAddOpen ? "show" : "" ?>"
     >
       <div class="accordion-body">
-        <form method="post" class="row g-3" id="form-add-expert">
+        <form method="post" class="row g-3 js-admin-ajax-form" id="form-add-expert" data-ajax-scope="expert-add">
           <input type="hidden" name="action" value="add_expert">
           <div class="col-md-8">
             <label class="form-label" for="new_expert_display_name">Nombre visible</label>
@@ -107,7 +107,7 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
           aria-expanded="<?= $expertAccAppointmentsOpen && !$expertAccEditOpen ? "true" : "false" ?>"
           aria-controls="expert_acc_appointments"
         >
-          <i class="fa-solid fa-calendar-check me-2" aria-hidden="true"></i>Citas programadas
+          <i class="fa-solid fa-calendar-check me-2" aria-hidden="true"></i>Citas
           <span class="badge rounded-pill text-bg-primary ms-2"><?= (int)$nAllAppointments ?></span>
         </button>
       </h3>
@@ -117,7 +117,7 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
       >
         <div class="accordion-body">
           <p class="small text-muted mb-3">
-            Todas las citas confirmadas próximas. Para horarios y disponibilidad, abre <strong>Agendas</strong> desde el icono de calendario en el listado.
+            Próximas citas y las de los últimos 30 días, con estado (confirmada, pospuesta, terminada, cancelada). Horarios en <strong>Agendas</strong>.
           </p>
           <?php
             $appointments = $allExpertsAppointmentsUpcoming;
@@ -125,7 +125,7 @@ $expertEditDisplayName = is_array($expertEdit) ? (string)($expertEdit["display_n
             $cancelExpertId = null;
             $expertWeekHidden = "";
             $appointmentReturnView = "list";
-            $emptyMessage = "No hay citas confirmadas próximas.";
+            $emptyMessage = "No hay citas en el listado.";
             require __DIR__ . "/admin_expert_appointments_table.php";
           ?>
         </div>

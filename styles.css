@@ -2625,6 +2625,13 @@ h3 i {
 
 .agenda-col-head-icon {
   display: none;
+  color: var(--text, currentColor);
+  opacity: 0.92;
+}
+
+html[data-theme="dark"] .agenda-col-head-icon {
+  color: var(--text);
+  opacity: 1;
 }
 
 .agenda-slot-cell-icon-pick {
@@ -2815,7 +2822,6 @@ h3 i {
   cursor: not-allowed;
 }
 
-.expert-week-grid,
 .admin-week-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2823,7 +2829,6 @@ h3 i {
 }
 
 @media (max-width: 900px) {
-  .expert-week-grid,
   .admin-week-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2931,18 +2936,58 @@ html[data-theme="light"] .admin-wrap .expert-lvf-option--custom {
   letter-spacing: 0.06em;
 }
 
-.admin-wrap .expert-week-grid--weekdays {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+/* Plantilla semanal: 1–7 columnas según ancho de pantalla */
+.admin-wrap .expert-week-grid--days {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.admin-wrap .expert-week-grid--weekend {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  max-width: 28rem;
+.admin-wrap .expert-week-grid__section-label {
+  grid-column: 1 / -1;
+  letter-spacing: 0.06em;
+  padding-top: 0.15rem;
 }
 
-@media (max-width: 900px) {
-  .admin-wrap .expert-week-grid--weekdays {
+.admin-wrap .expert-week-grid__section-label:not(:first-child) {
+  margin-top: 0.35rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+@media (min-width: 420px) {
+  .admin-wrap .expert-week-grid--days {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 560px) {
+  .admin-wrap .expert-week-grid--days {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 720px) {
+  .admin-wrap .expert-week-grid--days {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 900px) {
+  .admin-wrap .expert-week-grid--days {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1080px) {
+  .admin-wrap .expert-week-grid--days {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .admin-wrap .expert-week-grid--days {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 }
 
@@ -2970,14 +3015,6 @@ html[data-theme="light"] .admin-wrap .expert-day-card--weekend {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.35rem 0.5rem;
-}
-
-.admin-wrap .expert-day-card__abbr {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent);
 }
 
 .admin-wrap .expert-day-card__name {
@@ -3035,12 +3072,74 @@ html[data-theme="light"] .admin-wrap .expert-day-card__slot {
   border: 1px solid var(--border);
 }
 
+.admin-wrap .expert-appointments-table .appt-status-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.admin-wrap .expert-appointments-table tr.appt-row--completed {
+  opacity: 0.88;
+}
+
+.admin-wrap .expert-appointments-table tr.appt-row--cancelled {
+  opacity: 0.72;
+}
+
+.admin-wrap .expert-appointments-table .appt-col-status {
+  min-width: 5.5rem;
+}
+
+.admin-wrap .expert-appointments-table .appt-actions-group .btn {
+  min-width: 1.65rem;
+}
+
+.admin-wrap .appt-postpone-form {
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--surface));
+}
+
 .admin-wrap .admin-filter-table__detail-row td {
   background: color-mix(in srgb, var(--surface-2) 50%, transparent);
 }
 
 .admin-wrap .expert-day-card__time code {
   font-size: 0.78rem;
+  color: var(--text) !important;
+  background: color-mix(in srgb, var(--border) 28%, var(--surface));
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+/* Iconos reloj y horas 24 h — horario / plantilla experto */
+.admin-wrap .admin-icon-clock,
+.admin-expert-schedule-accordion .accordion-button .admin-icon-clock,
+.admin-expert-schedule-accordion .adm-th-short .admin-icon-clock,
+.admin-expert-schedule-accordion .appt-mobile-detail-when .admin-icon-clock {
+  color: var(--text) !important;
+  opacity: 0.95;
+}
+
+.admin-expert-schedule-accordion .appt-mobile-detail-when {
+  color: var(--text);
+}
+
+.admin-wrap .admin-expert-week-table .agenda-slot-table-time-col {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-wrap input[type="time"].expert-lvf-time,
+.admin-wrap .expert-day-card input[type="time"] {
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-theme="dark"] .admin-wrap input[type="time"] {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] .admin-wrap input[type="time"] {
+  color-scheme: light;
 }
 
 .admin-wrap .expert-day-card__empty {
@@ -3311,6 +3410,7 @@ html[data-theme="light"] .admin-wrap .expert-day-card__slot {
   .agenda-col-head-icon {
     display: inline-block;
     font-size: 0.75rem;
+    color: var(--text, currentColor);
   }
 
   .agenda-slot-table-time-col {

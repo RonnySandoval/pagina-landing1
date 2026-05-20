@@ -1,0 +1,291 @@
+/**
+ * Tablas admin filtrables: altura mínima, filas expandibles, columnas redimensionables.
+ */
+
+.admin-filter-table {
+  --aft-row-h: 2.85rem;
+  --aft-head-h: 2.35rem;
+  --aft-filter-h: 2.15rem;
+}
+
+/* Citas: un solo umbral — ancho del contenedor >= --appt-wide-min → tabla PC; si no → 2 columnas + */
+.expert-appointments-filter-table {
+  --appt-wide-min: 1100;
+}
+
+.admin-filter-table__scroll {
+  min-height: calc(var(--aft-head-h) + var(--aft-filter-h) + var(--aft-row-h));
+}
+
+.admin-filter-table--empty-static .admin-filter-table__scroll {
+  min-height: calc(var(--aft-head-h) + var(--aft-row-h));
+}
+
+.admin-filter-table tbody {
+  min-height: var(--aft-row-h);
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].has-row-overflow {
+  cursor: pointer;
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].has-row-overflow:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].is-row-expanded .admin-filter-table__text-2l,
+.admin-filter-table__table tbody tr[data-filter-row].is-row-expanded code.admin-filter-table__text-2l {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+  overflow: visible;
+  max-height: none;
+  white-space: normal;
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].is-row-expanded td {
+  height: auto;
+  vertical-align: top;
+}
+
+.admin-filter-table__th-resizable {
+  position: relative;
+  padding-right: 0.65rem;
+}
+
+.admin-filter-table__col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0.45rem;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 4;
+}
+
+.admin-filter-table__col-resize::after {
+  content: "";
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  right: 0.15rem;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--border) 70%, var(--muted));
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.admin-filter-table__th-resizable:hover .admin-filter-table__col-resize::after,
+.admin-filter-table.is-col-resizing .admin-filter-table__col-resize::after {
+  opacity: 1;
+  background: var(--accent);
+}
+
+.admin-filter-table.is-col-resizing {
+  user-select: none;
+}
+
+.admin-filter-table.is-col-resizing .admin-filter-table__table {
+  cursor: col-resize;
+}
+
+.expert-appointments-filter-table {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.expert-appointments-filter-table .admin-filter-table__scroll,
+.expert-appointments-filter-table .expert-appointments-table-wrap {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.expert-appointments-filter-table td[data-cell-label]::before {
+  display: none !important;
+}
+
+.expert-appointments-filter-table .adm-compact-only,
+.expert-appointments-filter-table .appt-filter-status-mobile {
+  display: none;
+}
+
+/* Panel estrecho (ancho del contenedor, no solo viewport) */
+.expert-appointments-filter-table.is-appt-compact {
+  --aft-row-h: 2.45rem;
+  --aft-filter-h: 2.15rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact .admin-filter-table__scroll,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table-wrap {
+  overflow-x: hidden !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  table-layout: fixed;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-hidden {
+  width: 0 !important;
+  min-width: 0 !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-main {
+  width: auto;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-actions {
+  width: 7rem !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .adm-desktop-only {
+  visibility: collapse !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+}
+
+.expert-appointments-filter-table.is-appt-compact .adm-th-full {
+  display: none;
+}
+
+.expert-appointments-filter-table.is-appt-compact .adm-th-short {
+  display: inline;
+}
+
+.expert-appointments-filter-table.is-appt-compact .adm-compact-only {
+  display: inline-flex !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact tr.appt-mobile-detail-row.adm-compact-only {
+  display: table-row !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-mobile-when.adm-compact-only {
+  display: inline !important;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-datetime-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-datetime,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-expert,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-service,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-guest,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-status,
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-actions {
+  width: auto !important;
+  max-width: none !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-datetime {
+  min-width: 0 !important;
+  padding: 0.28rem 0.35rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-actions {
+  width: 7rem !important;
+  min-width: 7rem !important;
+  max-width: 7rem !important;
+  padding: 0.28rem 0.2rem;
+  white-space: nowrap;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-col-datetime .admin-filter-table__col-input,
+.expert-appointments-filter-table.is-appt-compact .appt-col-actions .admin-filter-table__col-input,
+.expert-appointments-filter-table.is-appt-compact .appt-filter-status-mobile {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-mobile-svc-icon {
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 0.78rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-expand-btn {
+  flex-shrink: 0;
+  min-width: 1.5rem;
+  padding: 0.1rem 0.28rem !important;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-actions-group {
+  flex-wrap: nowrap;
+  gap: 0.15rem !important;
+  justify-content: flex-end;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-actions-group .btn {
+  padding: 0.1rem 0.28rem;
+  min-width: 1.35rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-filter-status-mobile {
+  display: block !important;
+  width: 100%;
+  min-width: 0;
+  font-size: 0.7rem;
+  padding: 0.12rem 0.25rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact .admin-filter-table__head-row th,
+.expert-appointments-filter-table.is-appt-compact .appt-filter-row th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.expert-appointments-filter-table.is-appt-compact .appt-filter-row th {
+  top: var(--aft-head-h, 2.35rem);
+  z-index: 2;
+}
+
+.expert-appointments-filter-table.is-appt-compact tr.appt-postpone-row > td {
+  white-space: normal;
+  padding: 0.5rem;
+}
+
+.expert-appointments-filter-table.is-appt-compact tbody tr[data-filter-row].has-row-overflow {
+  cursor: default;
+}
+
+@media (max-height: 520px) {
+  .expert-appointments-filter-table.is-appt-compact {
+    --aft-row-h: 2.2rem;
+    --aft-head-h: 2rem;
+    --aft-filter-h: 0px;
+  }
+
+  .expert-appointments-filter-table.is-appt-compact .appt-filter-row {
+    display: none;
+  }
+
+  .expert-appointments-filter-table.is-appt-compact .admin-filter-table__scroll {
+    min-height: calc(var(--aft-head-h) + var(--aft-row-h));
+  }
+}

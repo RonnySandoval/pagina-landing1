@@ -35,6 +35,12 @@ $adminAssetScriptVer = is_file(__DIR__ . "/script.js") ? (string) filemtime(__DI
 $adminFilterTablesVer = is_file(__DIR__ . "/admin_filter_tables.js")
     ? (string) filemtime(__DIR__ . "/admin_filter_tables.js")
     : "1";
+$adminFilterTablesCssVer = is_file(__DIR__ . "/admin_filter_tables.css")
+    ? (string) filemtime(__DIR__ . "/admin_filter_tables.css")
+    : "1";
+$adminAjaxVer = is_file(__DIR__ . "/admin_ajax.js")
+    ? (string) filemtime(__DIR__ . "/admin_ajax.js")
+    : "1";
 
 function h(string $value): string {
     return htmlspecialchars($value, ENT_QUOTES, "UTF-8");
@@ -111,7 +117,42 @@ function admin_agenda_expert_url(int $expertId, string $tab = "schedule", string
         $url .= "&wide=1";
     }
 
-    return $url . "#admin-tools-agendas";
+    $hash = "#admin-tools-agendas";
+    if ($tab === "schedule" && $section !== "") {
+        $sectionHashes = [
+            "appts" => "#expert_sch_acc_appts",
+            "week" => "#expert_sch_acc_week",
+            "template" => "#expert_sch_acc_template",
+            "daily" => "#expert_sch_acc_template",
+            "dates" => "#expert_sch_acc_dates",
+        ];
+        if (isset($sectionHashes[$section])) {
+            $hash = $sectionHashes[$section];
+        }
+    }
+
+    return $url . $hash;
+}
+
+/** Mensaje de error legible al aplicar plantilla semanal. */
+function admin_expert_template_error_message(string $code, bool $bulk = false): string
+{
+    if ($code === "not_found" || $code === "invalid_expert") {
+        return $bulk ? "No hay expertos válidos." : "Ese experto no existe.";
+    }
+    if ($code === "invalid_time_range") {
+        return "La hora de fin debe ser posterior a la de inicio.";
+    }
+    if ($code === "invalid_weekdays") {
+        return "Marca al menos un día de la semana.";
+    }
+    if ($code === "invalid_time") {
+        return "Indica hora inicio y fin en formato HH:MM.";
+    }
+
+    return $bulk
+        ? "No se pudo aplicar la plantilla a todos los expertos."
+        : "No se pudo actualizar la plantilla semanal.";
 }
 
 /** @return array{unread:int,total:int} */
@@ -202,6 +243,32 @@ function admin_workspace_url(string $workspace, string $query = "", string $hash
     }
 
     return $url;
+}
+
+function admin_wants_json_response(): bool
+{
+    if (isset($_POST["ajax"]) && (string)$_POST["ajax"] === "1") {
+        return true;
+    }
+
+    return isset($_SERVER["HTTP_X_REQUESTED_WITH"])
+        && strtolower((string)$_SERVER["HTTP_X_REQUESTED_WITH"]) === "xmlhttprequest";
+}
+
+/** @param array<string, mixed> $payload */
+function admin_json_response(array $payload, int $status = 200): void
+{
+    if (!headers_sent()) {
+        http_response_code($status);
+        header("Content-Type: application/json; charset=UTF-8");
+        header("Cache-Control: no-store");
+    }
+    $flags = JSON_UNESCAPED_UNICODE;
+    if (defined("JSON_INVALID_UTF8_SUBSTITUTE")) {
+        $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
+    }
+    echo json_encode($payload, $flags);
+    exit;
 }
 
 function admin_redirect_after_action(?string $hash = null): void
@@ -328,15 +395,16 @@ $adminLayoutWide = $isLogged && admin_layout_wide_from_request();
 $adminInboxFocus = $isLogged && $adminWorkspace === "inbox";
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings") {
+    $settingsErrMsg = "";
     $textResult = site_settings_update($conn, $_POST);
     if (!$textResult["ok"]) {
         $code = (string)($textResult["error"] ?? "");
         if ($code === "invalid_contact_email") {
-            $error = "Ingresa un correo de contacto válido.";
+            $settingsErrMsg = "Ingresa un correo de contacto válido.";
         } elseif (str_starts_with($code, "missing_")) {
-            $error = "Completa todos los campos obligatorios de configuración general.";
+            $settingsErrMsg = "Completa todos los campos obligatorios de configuración general.";
         } else {
-            $error = "No se pudo guardar la configuración general.";
+            $settingsErrMsg = "No se pudo guardar la configuración general.";
         }
     } else {
         $currentLogoPath = trim((string)($_POST["current_logo_image_path"] ?? ""));
@@ -348,17 +416,34 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_settings"
         if ($hasLogoFile || $removeLogo) {
             $logoResult = site_settings_update_logo($conn, is_array($logoFile) ? $logoFile : [], $currentLogoPath, $removeLogo, __DIR__);
             if (!$logoResult["ok"]) {
-                $error = (string)($logoResult["message"] ?? "No se pudo actualizar el logo.");
-            } else {
-                $message = "Configuración general actualizada.";
+                $settingsErrMsg = (string)($logoResult["message"] ?? "No se pudo actualizar el logo.");
             }
-        } else {
-            $message = "Configuración general actualizada.";
         }
+    }
+    if (admin_wants_json_response()) {
+        if ($settingsErrMsg !== "") {
+            admin_json_response(["ok" => false, "message" => $settingsErrMsg], 400);
+        }
+        $fresh = site_settings_get($conn) ?? site_settings_defaults();
+        admin_json_response([
+            "ok" => true,
+            "message" => "Configuración general actualizada.",
+            "title" => "Configuración guardada",
+            "settings" => [
+                "logo_image_path" => (string)($fresh["logo_image_path"] ?? ""),
+            ],
+        ]);
+    }
+    if ($settingsErrMsg !== "") {
+        $error = $settingsErrMsg;
+    } else {
+        $message = "Configuración general actualizada.";
     }
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_credentials") {
+    $credErr = "";
+    $credOk = "";
     $currentSessionEmail = (string)($_SESSION["admin_email"] ?? "");
     $newEmail = trim((string)($_POST["new_admin_email"] ?? ""));
     $currentPassword = (string)($_POST["current_admin_password"] ?? "");
@@ -366,21 +451,21 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
     $confirmPassword = (string)($_POST["confirm_admin_password"] ?? "");
 
     if ($currentSessionEmail === "") {
-        $error = "Sesion invalida. Vuelve a iniciar sesion.";
+        $credErr = "Sesion invalida. Vuelve a iniciar sesion.";
     } elseif (!filter_var($newEmail, FILTER_VALIDATE_EMAIL)) {
-        $error = "Ingresa un correo valido para el admin.";
+        $credErr = "Ingresa un correo valido para el admin.";
     } elseif ($currentPassword === "" || $newPassword === "" || $confirmPassword === "") {
-        $error = "Completa todos los campos para cambiar credenciales.";
+        $credErr = "Completa todos los campos para cambiar credenciales.";
     } elseif ($newPassword !== $confirmPassword) {
-        $error = "La nueva clave y su confirmacion no coinciden.";
+        $credErr = "La nueva clave y su confirmacion no coinciden.";
     } elseif (strlen($newPassword) < 10) {
-        $error = "La nueva clave debe tener al menos 10 caracteres.";
+        $credErr = "La nueva clave debe tener al menos 10 caracteres.";
     } elseif (!preg_match('/[a-z]/', $newPassword) || !preg_match('/[A-Z]/', $newPassword) || !preg_match('/\d/', $newPassword)) {
-        $error = "La nueva clave debe incluir mayuscula, minuscula y numero.";
+        $credErr = "La nueva clave debe incluir mayuscula, minuscula y numero.";
     } else {
         $stmt = $conn->prepare("SELECT id, password FROM admins WHERE email = ? LIMIT 1");
         if ($stmt === false) {
-            $error = "No se pudo validar el usuario admin.";
+            $credErr = "No se pudo validar el usuario admin.";
         } else {
             $stmt->bind_param("s", $currentSessionEmail);
             $stmt->execute();
@@ -388,7 +473,7 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
             $stmt->close();
 
             if (!$adminResult || $adminResult->num_rows !== 1) {
-                $error = "No se encontro la cuenta admin actual.";
+                $credErr = "No se encontro la cuenta admin actual.";
             } else {
                 $adminRow = $adminResult->fetch_assoc();
                 $adminId = (int)($adminRow["id"] ?? 0);
@@ -400,11 +485,11 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
                 }
 
                 if (!$validCurrentPassword) {
-                    $error = "La clave actual no es correcta.";
+                    $credErr = "La clave actual no es correcta.";
                 } else {
                     $emailCheckStmt = $conn->prepare("SELECT id FROM admins WHERE email = ? AND id <> ? LIMIT 1");
                     if ($emailCheckStmt === false) {
-                        $error = "No se pudo validar el nuevo correo.";
+                        $credErr = "No se pudo validar el nuevo correo.";
                     } else {
                         $emailCheckStmt->bind_param("si", $newEmail, $adminId);
                         $emailCheckStmt->execute();
@@ -412,24 +497,24 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
                         $emailCheckStmt->close();
 
                         if ($emailExistsResult && $emailExistsResult->num_rows > 0) {
-                            $error = "Ese correo ya esta en uso por otro admin.";
+                            $credErr = "Ese correo ya esta en uso por otro admin.";
                         } else {
                             $newHashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
                             if ($newHashedPassword === false) {
-                                $error = "No se pudo asegurar la nueva clave.";
+                                $credErr = "No se pudo asegurar la nueva clave.";
                             } else {
                                 $updateStmt = $conn->prepare("UPDATE admins SET email = ?, password = ? WHERE id = ?");
                                 if ($updateStmt === false) {
-                                    $error = "No se pudieron actualizar las credenciales.";
+                                    $credErr = "No se pudieron actualizar las credenciales.";
                                 } else {
                                     $updateStmt->bind_param("ssi", $newEmail, $newHashedPassword, $adminId);
                                     $updated = $updateStmt->execute();
                                     $updateStmt->close();
                                     if ($updated) {
                                         $_SESSION["admin_email"] = $newEmail;
-                                        $message = "Credenciales de admin actualizadas correctamente.";
+                                        $credOk = "Credenciales de admin actualizadas correctamente.";
                                     } else {
-                                        $error = "No se pudieron guardar las nuevas credenciales.";
+                                        $credErr = "No se pudieron guardar las nuevas credenciales.";
                                     }
                                 }
                             }
@@ -439,14 +524,45 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "change_admin_c
             }
         }
     }
+    if (admin_wants_json_response()) {
+        if ($credErr !== "") {
+            admin_json_response(["ok" => false, "message" => $credErr], 400);
+        }
+        if ($credOk !== "") {
+            admin_json_response([
+                "ok" => true,
+                "message" => $credOk,
+                "title" => "Credenciales actualizadas",
+                "admin_email" => $newEmail,
+            ]);
+        }
+        admin_json_response(["ok" => false, "message" => "No se procesó el formulario."], 400);
+    }
+    if ($credErr !== "") {
+        $error = $credErr;
+    } elseif ($credOk !== "") {
+        $message = $credOk;
+    }
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_delete") {
     $cid = (int)($_POST["client_id"] ?? 0);
     $deleted = clients_admin_delete($conn, $cid);
     if (!$deleted["ok"]) {
-        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo eliminar el cliente.");
+        $errMsg = $cid <= 0 ? "Cliente no válido." : "No se pudo eliminar el cliente.";
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        admin_set_flash("error", $errMsg);
     } else {
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Cliente eliminado.",
+                "title" => "Cliente eliminado",
+                "client_id" => $cid,
+            ]);
+        }
         admin_set_flash("success", "Cliente eliminado.");
     }
     header("Location: admin.php#admin-tool-clients");
@@ -457,8 +573,21 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_
     $cid = (int)($_POST["client_id"] ?? 0);
     $toggled = clients_admin_toggle_active($conn, $cid);
     if (!$toggled["ok"]) {
-        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la cuenta.");
+        $errMsg = $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la cuenta.";
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        admin_set_flash("error", $errMsg);
     } else {
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Estado de la cuenta actualizado.",
+                "title" => "Cuenta actualizada",
+                "toggle" => "active",
+                "client" => $toggled["client"] ?? null,
+            ]);
+        }
         admin_set_flash("success", "Estado de la cuenta actualizado.");
     }
     header("Location: admin.php#admin-tool-clients");
@@ -476,30 +605,110 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "add_service") 
     if (!$created["ok"]) {
         $code = (string)($created["error"] ?? "");
         if ($code === "missing_fields") {
-            $error = "Título y descripción son obligatorios.";
+            $errMsg = "Título y descripción son obligatorios.";
         } else {
-            $error = (string)($created["message"] ?? "No se pudo agregar el servicio.");
+            $errMsg = (string)($created["message"] ?? "No se pudo agregar el servicio.");
         }
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "error" => $code, "message" => $errMsg], 400);
+        }
+        $error = $errMsg;
     } else {
+        $newId = (int)($created["service_id"] ?? 0);
+        if (admin_wants_json_response()) {
+            $svcPayload = null;
+            if ($newId > 0) {
+                $got = services_get_with_gallery($conn, $newId);
+                if ($got["ok"]) {
+                    $svcPayload = services_format_for_api($got["service"], $got["gallery"]);
+                }
+            }
+            admin_json_response([
+                "ok" => true,
+                "message" => "Servicio agregado.",
+                "title" => "Servicio creado",
+                "service_id" => $newId,
+                "service" => $svcPayload,
+            ]);
+        }
         $message = "Servicio agregado.";
     }
 }
 
-if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services" && isset($_POST["services"])) {
-    $batch = services_save_batch_from_post($conn, $_POST, $_FILES, __DIR__);
-    if (!$batch["ok"]) {
-        $error = (string)($batch["message"] ?? "No se pudieron actualizar los servicios.");
-    } else {
-        $message = (string)($batch["message"] ?? "Servicios actualizados.");
+if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "save_services") {
+    $servicesRedirect = admin_workspace_url("manage", "", "admin-tool-service-edit");
+    if (!isset($_POST["services"]) || !is_array($_POST["services"])) {
+        $errMsg = "No se recibieron los datos del formulario. Si hay muchas imágenes en la galería, revisa max_input_vars en PHP.";
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        admin_set_flash("error", $errMsg);
+        header("Location: " . $servicesRedirect);
+        exit;
     }
+    $onlyServiceId = isset($_POST["save_service_id"]) ? (int)$_POST["save_service_id"] : null;
+    if ($onlyServiceId !== null && $onlyServiceId <= 0) {
+        $onlyServiceId = null;
+    }
+    $batch = services_save_batch_from_post($conn, $_POST, $_FILES, __DIR__, $onlyServiceId);
+    if (!$batch["ok"]) {
+        $errMsg = trim((string)($batch["message"] ?? ""));
+        if ($errMsg === "") {
+            $errMsg = "No se pudieron actualizar los servicios.";
+        }
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => false,
+                "error" => (string)($batch["error"] ?? "update_failed"),
+                "message" => $errMsg,
+            ], 400);
+        }
+        admin_set_flash("error", $errMsg);
+    } else {
+        $okMsg = (string)($batch["message"] ?? "Servicios actualizados.");
+        if (admin_wants_json_response()) {
+            $payload = [
+                "ok" => true,
+                "message" => $okMsg,
+                "title" => $onlyServiceId !== null ? "Servicio actualizado" : "Servicios actualizados",
+                "service_id" => $onlyServiceId,
+            ];
+            if (!empty($batch["service"]) && is_array($batch["service"])) {
+                $payload["service"] = $batch["service"];
+            }
+            admin_json_response($payload);
+        }
+        admin_set_flash("success", $okMsg);
+    }
+    header("Location: " . $servicesRedirect);
+    exit;
 }
 
 if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "delete_service") {
     $serviceId = (int)($_POST["service_id"] ?? 0);
     $deleted = services_delete($conn, $serviceId);
     if ($deleted["ok"]) {
-        $message = "Servicio eliminado.";
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Servicio eliminado.",
+                "title" => "Servicio eliminado",
+                "service_id" => $serviceId,
+            ]);
+        }
+        admin_set_flash("success", "Servicio eliminado.");
+    } else {
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => false,
+                "message" => "No se pudo eliminar el servicio.",
+                "error" => (string)($deleted["error"] ?? "delete_failed"),
+            ], 400);
+        }
+        admin_set_flash("error", "No se pudo eliminar el servicio.");
     }
+    header("Location: " . admin_workspace_url("manage", "", "admin-tool-service-edit"));
+    exit;
 }
 
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "add_expert") {
@@ -511,18 +720,33 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     if (!$created["ok"]) {
         $code = (string)($created["error"] ?? "");
         if ($code === "missing_display_name") {
-            $error = "Indica el nombre visible del experto.";
+            $errMsg = "Indica el nombre visible del experto.";
         } elseif ($code === "invalid_email") {
-            $error = "El correo del experto no es válido.";
+            $errMsg = "El correo del experto no es válido.";
         } elseif ($code === "services_link_failed") {
-            $error = "No se pudo vincular servicios al experto.";
+            $errMsg = "No se pudo vincular servicios al experto.";
         } else {
-            $error = "No se pudo crear el experto.";
+            $errMsg = "No se pudo crear el experto.";
         }
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        $error = $errMsg;
     } else {
         $newExpertId = (int)$created["expert_id"];
-        admin_set_flash("success", "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.");
-        header("Location: " . admin_agenda_expert_url($newExpertId, "datos"));
+        $okMsg = "Experto creado con jornada L–V por defecto (9:00–18:00). Ajusta en su ficha si hace falta.";
+        $redirectUrl = admin_agenda_expert_url($newExpertId, "datos");
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => $okMsg,
+                "title" => "Experto creado",
+                "expert_id" => $newExpertId,
+                "redirect" => $redirectUrl,
+            ]);
+        }
+        admin_set_flash("success", $okMsg);
+        header("Location: " . $redirectUrl);
         exit;
     }
 }
@@ -537,15 +761,34 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     if (!$updated["ok"]) {
         $code = (string)($updated["error"] ?? "");
         if ($code === "not_found" || $code === "invalid_expert") {
-            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
+            $errMsg = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
         } elseif ($code === "invalid_email") {
-            $error = "El correo del experto no es válido.";
+            $errMsg = "El correo del experto no es válido.";
         } elseif ($code === "services_link_failed") {
-            $error = "No se pudo actualizar los servicios del experto.";
+            $errMsg = "No se pudo actualizar los servicios del experto.";
         } else {
-            $error = "No se pudo guardar el experto.";
+            $errMsg = "No se pudo guardar el experto.";
         }
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        $error = $errMsg;
     } else {
+        $expertPayload = null;
+        $got = experts_admin_get($conn, $eid);
+        if ($got["ok"]) {
+            $svcByExpert = experts_admin_service_ids_by_expert($conn, [$eid]);
+            $expertPayload = experts_admin_format_expert($got["expert"], $svcByExpert[$eid] ?? []);
+        }
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Experto actualizado.",
+                "title" => "Experto guardado",
+                "expert_id" => $eid,
+                "expert" => $expertPayload,
+            ]);
+        }
         admin_set_flash("success", "Experto actualizado.");
         $returnTo = trim((string)($_POST["return_to"] ?? ""));
         if ($returnTo === "agendas") {
@@ -562,9 +805,20 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $expertId = (int)($_POST["expert_id"] ?? 0);
     $deleted = experts_admin_delete($conn, $expertId);
     if ($deleted["ok"]) {
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Experto eliminado.",
+                "title" => "Experto eliminado",
+                "expert_id" => $expertId,
+            ]);
+        }
         admin_set_flash("success", "Experto eliminado.");
         header("Location: admin.php#admin-experts-list");
         exit;
+    }
+    if (admin_wants_json_response()) {
+        admin_json_response(["ok" => false, "message" => "No se pudo eliminar el experto."], 400);
     }
 }
 
@@ -641,19 +895,26 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $set = experts_admin_set_mon_fri_window($conn, $eid, $_POST);
     if (!$set["ok"]) {
         $code = (string)($set["error"] ?? "");
-        if ($code === "not_found" || $code === "invalid_expert") {
-            $error = $eid <= 0 ? "Experto no válido." : "Ese experto no existe.";
-        } elseif ($code === "invalid_time_range") {
-            $error = "La hora de fin debe ser posterior a la de inicio.";
-        } elseif ($code === "invalid_weekdays") {
-            $error = "Marca al menos un día de la semana.";
-        } elseif ($code === "invalid_time") {
-            $error = "Indica hora inicio y fin en formato HH:MM.";
-        } else {
-            $error = "No se pudo actualizar la plantilla semanal.";
+        $errMsg = $eid <= 0 && ($code === "not_found" || $code === "invalid_expert")
+            ? "Experto no válido."
+            : admin_expert_template_error_message($code, false);
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
         }
+        $error = $errMsg;
     } else {
-        admin_set_flash("success", "Plantilla semanal actualizada para los días seleccionados.");
+        $successMsg = "Plantilla semanal actualizada para los días seleccionados.";
+        if (admin_wants_json_response()) {
+            $weeklyRows = experts_admin_list_weekly_availability($conn, $eid);
+            admin_json_response([
+                "ok" => true,
+                "message" => $successMsg,
+                "title" => "Plantilla guardada",
+                "weekly" => experts_admin_weekly_schedule_client_payload($weeklyRows),
+                "expert_id" => $eid,
+            ]);
+        }
+        admin_set_flash("success", $successMsg);
         header("Location: " . admin_expert_page_url($eid, "schedule", "", "template"));
         exit;
     }
@@ -680,15 +941,11 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     $bulk = experts_admin_bulk_mon_fri_all($conn, $_POST);
     if (!$bulk["ok"]) {
         $code = (string)($bulk["error"] ?? "");
-        if ($code === "invalid_time_range") {
-            $error = "La hora de fin debe ser posterior a la de inicio.";
-        } elseif ($code === "invalid_weekdays") {
-            $error = "Marca al menos un día de la semana.";
-        } elseif ($code === "invalid_time") {
-            $error = "Indica hora inicio y fin (HH:MM).";
-        } else {
-            $error = "No se pudo aplicar la plantilla a todos los expertos.";
+        $errMsg = admin_expert_template_error_message($code, true);
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
         }
+        $error = $errMsg;
     } else {
         $n = (int)($bulk["experts_updated"] ?? 0);
         admin_set_flash("success", "Plantilla aplicada a " . $n . " experto(s).");
@@ -719,23 +976,81 @@ if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["acti
     exit;
 }
 
+/** Redirección tras cambiar estado de una cita. */
+function admin_expert_appointment_redirect(int $expertId, string $returnView, string $weekBack = ""): void
+{
+    if ($returnView === "edit") {
+        header("Location: " . admin_expert_page_url($expertId, "edit"));
+        exit;
+    }
+    if ($returnView === "list") {
+        header("Location: admin.php#expert_acc_appointments");
+        exit;
+    }
+    $schSec = $weekBack !== "" ? "week" : "appts";
+    header("Location: " . admin_expert_page_url($expertId, "schedule", $weekBack, $schSec));
+    exit;
+}
+
 if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_cancel_appointment") {
     $eid = (int)($_POST["expert_id"] ?? 0);
     $apid = (int)($_POST["appointment_id"] ?? 0);
     if ($eid > 0 && $apid > 0) {
         experts_admin_cancel_appointment($conn, $eid, $apid);
         admin_set_flash("success", "Cita cancelada.");
-        $weekBack = trim((string)($_POST["expert_week"] ?? ""));
-        $returnView = trim((string)($_POST["expert_return_view"] ?? "schedule"));
-        if ($returnView === "edit") {
-            header("Location: " . admin_expert_page_url($eid, "edit"));
-        } elseif ($returnView === "list") {
-            header("Location: admin.php#expert_acc_appointments");
+        admin_expert_appointment_redirect(
+            $eid,
+            trim((string)($_POST["expert_return_view"] ?? "schedule")),
+            trim((string)($_POST["expert_week"] ?? ""))
+        );
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_complete_appointment") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $apid = (int)($_POST["appointment_id"] ?? 0);
+    if ($eid > 0 && $apid > 0) {
+        $done = experts_admin_complete_appointment($conn, $eid, $apid);
+        if (!$done["ok"]) {
+            admin_set_flash("error", "No se pudo marcar la cita como terminada.");
+        } elseif (!($done["updated"] ?? false)) {
+            admin_set_flash("warning", "La cita ya no admite ese cambio de estado.");
         } else {
-            $schSec = $weekBack !== "" ? "week" : "appts";
-            header("Location: " . admin_expert_page_url($eid, "schedule", $weekBack, $schSec));
+            admin_set_flash("success", "Cita marcada como terminada.");
         }
-        exit;
+        admin_expert_appointment_redirect(
+            $eid,
+            trim((string)($_POST["expert_return_view"] ?? "schedule")),
+            trim((string)($_POST["expert_week"] ?? ""))
+        );
+    }
+}
+
+if ($isLogged && $adminExpertAgendaUi && isset($_POST["action"]) && $_POST["action"] === "expert_postpone_appointment") {
+    $eid = (int)($_POST["expert_id"] ?? 0);
+    $apid = (int)($_POST["appointment_id"] ?? 0);
+    $newStarts = trim((string)($_POST["new_starts_at"] ?? ""));
+    if ($eid > 0 && $apid > 0) {
+        $postpone = experts_admin_postpone_appointment($conn, $eid, $apid, $newStarts);
+        if (!$postpone["ok"]) {
+            $code = (string)($postpone["error"] ?? "");
+            if ($code === "invalid_datetime") {
+                admin_set_flash("error", "Indica fecha y hora válidas para la nueva cita.");
+            } elseif ($code === "slot_taken") {
+                admin_set_flash("error", "Ese hueco ya está ocupado. Elige otra fecha u hora.");
+            } elseif ($code === "invalid_status") {
+                admin_set_flash("warning", "La cita ya no se puede posponer.");
+            } else {
+                admin_set_flash("error", "No se pudo posponer la cita.");
+            }
+        } else {
+            admin_set_flash("success", "Cita pospuesta al nuevo horario.");
+        }
+        admin_expert_appointment_redirect(
+            $eid,
+            trim((string)($_POST["expert_return_view"] ?? "schedule")),
+            trim((string)($_POST["expert_week"] ?? ""))
+        );
     }
 }
 
@@ -880,8 +1195,21 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_
     $cid = (int)($_POST["client_id"] ?? 0);
     $toggled = clients_admin_toggle_email_notify($conn, $cid);
     if (!$toggled["ok"]) {
-        admin_set_flash("error", $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la preferencia de correo.");
+        $errMsg = $cid <= 0 ? "Cliente no válido." : "No se pudo actualizar la preferencia de correo.";
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        admin_set_flash("error", $errMsg);
     } else {
+        if (admin_wants_json_response()) {
+            admin_json_response([
+                "ok" => true,
+                "message" => "Preferencia de envío por SMTP actualizada.",
+                "title" => "Correo SMTP",
+                "toggle" => "email_notify",
+                "client" => $toggled["client"] ?? null,
+            ]);
+        }
         admin_set_flash("success", "Preferencia de envío por SMTP al cliente actualizada.");
     }
     header("Location: admin.php#admin-tool-clients");
@@ -889,17 +1217,36 @@ if ($isLogged && isset($_POST["action"]) && $_POST["action"] === "client_toggle_
 }
 
 if ($isLogged && $adminInboxUi && isset($_POST["action"]) && $_POST["action"] === "reply_contact_message") {
-    $reply = admin_inbox_reply_message(
-        $conn,
-        (int)($_POST["message_id"] ?? 0),
-        (string)($_POST["reply_body"] ?? "")
-    );
+    $messageId = (int)($_POST["message_id"] ?? 0);
+    $replyBodyRaw = (string)($_POST["reply_body"] ?? "");
+    $reply = admin_inbox_reply_message($conn, $messageId, $replyBodyRaw);
     if (!$reply["ok"]) {
-        admin_set_flash("error", (string)($reply["message"] ?? "No se pudo enviar la respuesta."));
+        $errMsg = (string)($reply["message"] ?? "No se pudo enviar la respuesta.");
+        if (admin_wants_json_response()) {
+            admin_json_response(["ok" => false, "message" => $errMsg], 400);
+        }
+        admin_set_flash("error", $errMsg);
         admin_redirect_after_action();
     }
-    $flashType = !empty($reply["email_sent"]) ? "success" : "warning";
-    admin_set_flash($flashType, (string)($reply["notice"] ?? "Respuesta guardada."));
+    $notice = (string)($reply["notice"] ?? "Respuesta guardada.");
+    $emailSent = !empty($reply["email_sent"]);
+    if (admin_wants_json_response()) {
+        $replyLabel = date("d/m/Y H:i");
+        admin_json_response([
+            "ok" => true,
+            "message" => $notice,
+            "title" => $emailSent ? "Respuesta enviada" : "Respuesta guardada",
+            "toast_type" => $emailSent ? "success" : "warning",
+            "message_id" => $messageId,
+            "reply" => [
+                "id" => (int)($reply["reply_id"] ?? 0),
+                "body" => $replyBodyRaw,
+                "created_label" => $replyLabel,
+            ],
+        ]);
+    }
+    $flashType = $emailSent ? "success" : "warning";
+    admin_set_flash($flashType, $notice);
     admin_redirect_after_action();
 }
 
@@ -1208,6 +1555,7 @@ $waSideCounterTitle = $waSideUnread > 0
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
   <link rel="stylesheet" href="styles.css?v=<?= h($adminAssetStylesVer) ?>">
+  <link rel="stylesheet" href="admin_filter_tables.css?v=<?= h($adminFilterTablesCssVer) ?>">
   <style>
     .admin-wrap {
       width: min(1280px, 96%);
@@ -1240,6 +1588,7 @@ $waSideCounterTitle = $waSideUnread > 0
       --bs-accordion-active-color: var(--text);
       --bs-accordion-active-bg: color-mix(in srgb, var(--accent) 18%, var(--surface));
       --bs-accordion-border-color: var(--border);
+      --bs-accordion-btn-icon-width: 1rem;
     }
     .admin-layout {
       display: grid;
@@ -1288,6 +1637,28 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-wrap .accordion-button:hover,
     .admin-wrap .accordion-button:focus {
       z-index: auto !important;
+    }
+    /* Flecha = mismo color que el título (currentColor / --text); la máscara evita SVG por tema roto */
+    .admin-app .accordion .accordion-button,
+    .admin-wrap .accordion .accordion-button {
+      --bs-accordion-btn-color: var(--text);
+      --bs-accordion-active-color: var(--text);
+      color: var(--text) !important;
+    }
+    .admin-app .accordion .accordion-button::after,
+    .admin-wrap .accordion .accordion-button::after {
+      background: none !important;
+      background-color: currentColor !important;
+      -webkit-mask-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='%23000' fill-rule='evenodd' d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3e%3c/svg%3e") !important;
+      mask-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='%23000' fill-rule='evenodd' d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3e%3c/svg%3e") !important;
+      -webkit-mask-repeat: no-repeat !important;
+      mask-repeat: no-repeat !important;
+      -webkit-mask-size: 100% 100% !important;
+      mask-size: 100% 100% !important;
+      -webkit-mask-position: center !important;
+      mask-position: center !important;
+      width: var(--bs-accordion-btn-icon-width) !important;
+      height: var(--bs-accordion-btn-icon-width) !important;
     }
     .admin-tools-accordion .accordion-button {
       background-color: var(--surface);
@@ -1521,6 +1892,164 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-app-bar__alerts .alert:last-child {
       margin-bottom: 0;
     }
+    .admin-toast-stack {
+      position: fixed;
+      bottom: 1.25rem;
+      right: 1.25rem;
+      z-index: 1090;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      max-width: min(22rem, calc(100vw - 1.5rem));
+      pointer-events: none;
+    }
+    .admin-toast-card {
+      pointer-events: auto;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.9rem 1rem 0.75rem;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--surface) 92%, #fff 8%);
+      border: 1px solid var(--border);
+      box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.22),
+        0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent);
+      animation: adminToastIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+      overflow: hidden;
+      position: relative;
+    }
+    .admin-toast-card.is-leaving {
+      animation: adminToastOut 0.28s ease forwards;
+    }
+    .admin-toast-card__icon {
+      flex-shrink: 0;
+      width: 2.25rem;
+      height: 2.25rem;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.05rem;
+    }
+    .admin-toast-card--success .admin-toast-card__icon {
+      background: color-mix(in srgb, #198754 22%, transparent);
+      color: #75d99b;
+    }
+    .admin-toast-card--error .admin-toast-card__icon {
+      background: color-mix(in srgb, #dc3545 22%, transparent);
+      color: #f1a8ae;
+    }
+    .admin-toast-card--warning .admin-toast-card__icon {
+      background: color-mix(in srgb, #ffc107 22%, transparent);
+      color: #ffe083;
+    }
+    .admin-toast-card__body {
+      flex: 1;
+      min-width: 0;
+      padding-top: 0.1rem;
+    }
+    .admin-toast-card__title {
+      font-weight: 600;
+      font-size: 0.92rem;
+      line-height: 1.25;
+      margin: 0 0 0.15rem;
+      color: var(--text);
+    }
+    .admin-toast-card__msg {
+      font-size: 0.82rem;
+      line-height: 1.35;
+      margin: 0;
+      color: color-mix(in srgb, var(--text) 78%, transparent);
+    }
+    .admin-toast-card__close {
+      flex-shrink: 0;
+      border: 0;
+      background: transparent;
+      color: color-mix(in srgb, var(--text) 55%, transparent);
+      padding: 0.15rem;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .admin-toast-card__close:hover {
+      color: var(--text);
+      background: color-mix(in srgb, var(--text) 8%, transparent);
+    }
+    .admin-toast-card__progress {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 3px;
+      width: 100%;
+      transform-origin: left center;
+      background: currentColor;
+      opacity: 0.85;
+    }
+    .admin-toast-card--success .admin-toast-card__progress {
+      color: #75d99b;
+    }
+    .admin-toast-card--error .admin-toast-card__progress {
+      color: #f1a8ae;
+    }
+    .admin-toast-card--warning .admin-toast-card__progress {
+      color: #ffe083;
+    }
+    .admin-ajax-flash-saved {
+      animation: adminPanelSaved 1.35s ease;
+    }
+    @keyframes adminToastIn {
+      from {
+        opacity: 0;
+        transform: translateX(1.25rem) scale(0.96);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+      }
+    }
+    @keyframes adminToastOut {
+      to {
+        opacity: 0;
+        transform: translateX(0.75rem) scale(0.96);
+      }
+    }
+    @keyframes adminPanelSaved {
+      0%, 100% {
+        box-shadow: none;
+        outline: 2px solid transparent;
+      }
+      25% {
+        outline: 2px solid color-mix(in srgb, #75d99b 55%, transparent);
+        box-shadow: 0 0 0 4px color-mix(in srgb, #75d99b 12%, transparent);
+      }
+    }
+    .portal-client-pill.is-ajax-pulse {
+      animation: adminPillPulse 0.55s ease;
+    }
+    @keyframes adminPillPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.06); }
+    }
+    form.is-ajax-busy {
+      opacity: 0.72;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .admin-ajax-reply-new {
+      animation: adminReplyHighlight 1.4s ease;
+      border-radius: 8px;
+      padding: 0.35rem 0.5rem;
+      margin-top: 0.35rem;
+    }
+    @keyframes adminReplyHighlight {
+      0% {
+        background: color-mix(in srgb, #75d99b 28%, transparent);
+      }
+      100% {
+        background: transparent;
+      }
+    }
     .admin-app-body {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
@@ -1651,8 +2180,20 @@ $waSideCounterTitle = $waSideUnread > 0
       width: 1.15rem;
       text-align: center;
       flex-shrink: 0;
+      color: var(--text);
       opacity: 0.92;
       line-height: 1;
+    }
+    .admin-wrap .admin-icon-clock,
+    .admin-app .admin-icon-clock,
+    .admin-wrap .accordion-button .admin-icon-clock,
+    .admin-wrap .adm-th-short .admin-icon-clock,
+    .expert-appointments-table .adm-th-short .admin-icon-clock {
+      color: var(--text) !important;
+      opacity: 0.95;
+    }
+    .admin-wrap .expert-appointments-table code {
+      color: var(--text) !important;
     }
     .admin-app-sidebar__link i.fa-brands {
       font-family: var(--fa-style-family-brands, "Font Awesome 6 Brands");
@@ -1949,14 +2490,16 @@ $waSideCounterTitle = $waSideUnread > 0
       content: "";
       width: 0.45rem;
       height: 0.45rem;
-      border-right: 2px solid var(--muted);
-      border-bottom: 2px solid var(--muted);
+      border-right: 2px solid var(--text);
+      border-bottom: 2px solid var(--text);
+      opacity: 0.88;
       transform: rotate(-45deg);
-      transition: transform 0.15s ease;
+      transition: transform 0.15s ease, opacity 0.15s ease;
       flex-shrink: 0;
     }
     .admin-agendas-quick-item[open] > .admin-agendas-quick-item__summary::before {
       transform: rotate(45deg);
+      opacity: 1;
     }
     .admin-agendas-quick-item__body {
       padding: 0.55rem 0.65rem 0.75rem;
@@ -2423,10 +2966,11 @@ $waSideCounterTitle = $waSideUnread > 0
     .expert-appointments-table {
       table-layout: fixed;
       width: 100%;
+      min-width: 0;
     }
     .expert-appointments-table .appt-col-datetime {
       width: 18%;
-      min-width: 7.5rem;
+      min-width: 0;
     }
     .expert-appointments-table .appt-col-expert {
       width: 16%;
@@ -2440,21 +2984,41 @@ $waSideCounterTitle = $waSideUnread > 0
       width: 28%;
       min-width: 0;
     }
+    .expert-appointments-table .appt-col-status {
+      width: 9%;
+      min-width: 0;
+    }
     .expert-appointments-table .appt-col-actions {
-      width: 10%;
+      width: 11%;
+      min-width: 4.5rem;
       white-space: nowrap;
+    }
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-datetime {
+      width: auto !important;
+    }
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-expert,
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-service,
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-guest,
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-status {
+      width: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+    }
+    .expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-actions {
+      width: 7rem !important;
+      min-width: 7rem !important;
+      max-width: 7rem !important;
     }
     .expert-appointments-table .appt-guest-email {
       overflow-wrap: anywhere;
     }
-    .expert-appointments-table .adm-mobile-only {
+    .expert-appointments-table .adm-mobile-only,
+    .expert-appointments-table .adm-compact-only {
       display: none !important;
     }
+    .expert-appointments-table tr.appt-mobile-detail-row.adm-compact-only,
     .expert-appointments-table tr.appt-mobile-detail-row.adm-mobile-only {
       display: none !important;
-    }
-    .expert-appointments-table .appt-mobile-stack {
-      display: none;
     }
     .expert-appointments-table .appt-datetime-cell {
       display: flex;
@@ -2524,79 +3088,17 @@ $waSideCounterTitle = $waSideUnread > 0
       }
       .admin-filter-table .adm-th-full,
       .admin-experts-table thead .expert-th-full,
-      .admin-experts-table thead .adm-th-full,
-      .expert-appointments-table .adm-th-full {
+      .admin-experts-table thead .adm-th-full {
         display: none;
       }
       .admin-filter-table .adm-th-short,
       .admin-experts-table thead .expert-th-short,
-      .admin-experts-table thead .adm-th-short,
-      .expert-appointments-table .adm-th-short {
+      .admin-experts-table thead .adm-th-short {
         display: inline;
       }
       .admin-experts-table .expert-col-services,
       .admin-experts-table .expert-services-col {
         display: none !important;
-      }
-      .expert-appointments-filter-table .admin-filter-table__scroll {
-        overflow-x: visible;
-      }
-      .expert-appointments-table {
-        table-layout: auto;
-      }
-      .expert-appointments-table .appt-filter-row {
-        display: none;
-      }
-      .expert-appointments-table .adm-desktop-only {
-        display: none !important;
-      }
-      .expert-appointments-table .adm-mobile-only:not(tr) {
-        display: inline-flex !important;
-      }
-      .expert-appointments-table tr.appt-mobile-detail-row.adm-mobile-only {
-        display: table-row !important;
-      }
-      .expert-appointments-table tr.appt-mobile-detail-row .collapse:not(.show) {
-        display: none;
-      }
-      .expert-appointments-table .appt-mobile-stack {
-        display: flex !important;
-        flex-direction: column;
-        gap: 0.1rem;
-        line-height: 1.25;
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .expert-appointments-table .appt-datetime-full {
-        display: none !important;
-      }
-      .expert-appointments-table .appt-datetime-cell {
-        justify-content: flex-start;
-        gap: 0.45rem;
-      }
-      .expert-appointments-table .appt-mobile-stack {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .expert-appointments-table .appt-expand-btn {
-        margin-left: auto;
-      }
-      .expert-appointments-table .appt-col-datetime {
-        width: auto;
-        min-width: 0;
-        max-width: none;
-      }
-      .expert-appointments-table .appt-mobile-when {
-        font-size: 0.82rem;
-      }
-      .expert-appointments-table .appt-mobile-guest {
-        font-size: 0.75rem;
-        max-width: 100%;
-      }
-      .expert-appointments-table .appt-col-actions {
-        width: 2.5rem;
-        white-space: nowrap;
-        padding-left: 0.15rem;
       }
       .admin-experts-table .expert-pill-label {
         position: absolute !important;
@@ -2668,12 +3170,6 @@ $waSideCounterTitle = $waSideUnread > 0
       background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
       color: var(--text);
     }
-    .admin-services-accordion .accordion-button::after {
-      filter: invert(0.85);
-    }
-    html[data-theme="light"] .admin-services-accordion .accordion-button::after {
-      filter: none;
-    }
     .admin-services-accordion .accordion-body {
       background: color-mix(in srgb, var(--surface) 94%, transparent);
     }
@@ -2694,12 +3190,6 @@ $waSideCounterTitle = $waSideUnread > 0
     .admin-experts-inner-accordion .accordion-button:not(.collapsed) {
       background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
       color: var(--text);
-    }
-    .admin-experts-inner-accordion .accordion-button::after {
-      filter: invert(0.85);
-    }
-    html[data-theme="light"] .admin-experts-inner-accordion .accordion-button::after {
-      filter: none;
     }
     .admin-experts-inner-accordion .accordion-body {
       background: color-mix(in srgb, var(--surface) 94%, transparent);
@@ -3644,7 +4134,7 @@ $waSideCounterTitle = $waSideUnread > 0
                             </td>
                             <td class="portal-col-name small"><?= h((string)($pc["display_name"] ?? "")) ?></td>
                             <td class="portal-col-account">
-                              <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
+                              <form method="post" class="d-inline m-0 js-admin-ajax-form js-portal-client-toggle" data-ajax-scope="client-toggle" onclick="event.stopPropagation();">
                                 <input type="hidden" name="action" value="client_toggle_active">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
                                 <button
@@ -3663,7 +4153,7 @@ $waSideCounterTitle = $waSideUnread > 0
                               </form>
                             </td>
                             <td class="portal-col-smtp">
-                              <form method="post" class="d-inline m-0 js-portal-client-toggle" onclick="event.stopPropagation();">
+                              <form method="post" class="d-inline m-0 js-admin-ajax-form js-portal-client-toggle" data-ajax-scope="client-toggle" onclick="event.stopPropagation();">
                                 <input type="hidden" name="action" value="client_toggle_email_notify">
                                 <input type="hidden" name="client_id" value="<?= $pid ?>">
                                 <button
@@ -3683,7 +4173,7 @@ $waSideCounterTitle = $waSideUnread > 0
                             </td>
                             <td class="text-end portal-col-actions">
                               <div class="d-inline-flex flex-nowrap align-items-center justify-content-end admin-portal-client-actions">
-                                <form method="post" class="m-0" onsubmit="return confirm('¿Eliminar este cliente? No se puede deshacer.');" onclick="event.stopPropagation();">
+                                <form method="post" class="m-0 js-admin-ajax-form js-portal-client-delete" data-ajax-scope="client-delete" onclick="event.stopPropagation();">
                                   <input type="hidden" name="action" value="client_delete">
                                   <input type="hidden" name="client_id" value="<?= $pid ?>">
                                   <button
@@ -3718,7 +4208,13 @@ $waSideCounterTitle = $waSideUnread > 0
             </h2>
             <div id="tools_config_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
-                <form method="post" enctype="multipart/form-data">
+                <form
+                  method="post"
+                  enctype="multipart/form-data"
+                  id="form-save-settings"
+                  class="js-admin-ajax-form"
+                  data-ajax-scope="settings"
+                >
                   <input type="hidden" name="action" value="save_settings">
         <div class="row g-3">
           <div>
@@ -3803,7 +4299,12 @@ $waSideCounterTitle = $waSideUnread > 0
             </h2>
             <div id="tools_credentials_panel" class="accordion-collapse collapse" data-bs-parent="#adminToolsAccordion">
               <div class="accordion-body">
-                <form method="post" class="row g-3">
+                <form
+                  method="post"
+                  class="row g-3 js-admin-ajax-form"
+                  data-ajax-scope="credentials"
+                  id="form-admin-credentials"
+                >
                   <input type="hidden" name="action" value="change_admin_credentials">
                   <div class="col-md-6">
                     <label class="form-label">Correo admin nuevo</label>
@@ -3866,7 +4367,14 @@ $waSideCounterTitle = $waSideUnread > 0
                 </div>
                 <div id="collapse_new_service_panel" class="collapse mb-4 service-add-panel-collapse">
                   <div class="border border-secondary rounded-3 p-3 bg-body-tertiary bg-opacity-25">
-                    <form method="post" enctype="multipart/form-data" id="form-add-service">
+                    <form
+                      method="post"
+                      enctype="multipart/form-data"
+                      id="form-add-service"
+                      class="js-admin-ajax-form"
+                      data-ajax-action="add_service"
+                      data-ajax-reload-on-success="1"
+                    >
                       <input type="hidden" name="action" value="add_service">
                       <div class="row g-3">
                         <div class="col-md-6">
@@ -3918,7 +4426,15 @@ $waSideCounterTitle = $waSideUnread > 0
                     </form>
                   </div>
                 </div>
-                <form method="post" enctype="multipart/form-data">
+                <form
+                  method="post"
+                  enctype="multipart/form-data"
+                  action="<?= h(admin_workspace_url("manage")) ?>"
+                  class="js-admin-ajax-form"
+                  data-ajax-action="save_services"
+                  data-ajax-scope="service"
+                  novalidate
+                >
                   <input type="hidden" name="action" value="save_services">
         <div class="accordion admin-services-accordion" id="adminServicesAccordion">
         <?php foreach ($services as $service): ?>
@@ -4055,15 +4571,13 @@ $waSideCounterTitle = $waSideUnread > 0
               </div>
             </div>
             <div class="admin-actions mt-3">
-              <button class="btn btn-outline-light" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Guardar cambios</button>
+              <button class="btn btn-outline-light" type="submit" name="save_service_id" value="<?= (int)$service["id"] ?>"><i class="fa-solid fa-floppy-disk me-2"></i>Guardar cambios</button>
               <button
-                class="btn btn-outline-danger"
+                class="btn btn-outline-danger js-admin-ajax-delete-service"
                 type="submit"
-                formaction="admin.php"
-                formmethod="post"
                 name="action"
                 value="delete_service"
-                onclick="this.form.service_id.value='<?= (int)$service["id"] ?>'; return confirm('¿Eliminar este servicio?');"
+                data-service-id="<?= (int)$service["id"] ?>"
               >
                 <i class="fa-solid fa-trash me-2"></i>Eliminar
               </button>
@@ -4436,7 +4950,11 @@ $waSideCounterTitle = $waSideUnread > 0
                                         $lastVisitorName = trim((string)($lastAdminTurn["nombre"] ?? ""));
                                       ?>
                                       <?php if ($lastAdminMsgId > 0): ?>
-                                        <form method="post" class="message-reply-form mb-0 mt-3 admin-msg-reply-thread-end">
+                                        <form
+                                          method="post"
+                                          class="message-reply-form mb-0 mt-3 admin-msg-reply-thread-end js-admin-ajax-form"
+                                          data-ajax-scope="inbox-reply"
+                                        >
                                           <input type="hidden" name="action" value="reply_contact_message">
                                           <input type="hidden" name="message_id" value="<?= $lastAdminMsgId ?>">
                                           <p class="small text-light-emphasis mb-2" title="Referencia interna del mensaje destino: ID <?= (int)$lastAdminMsgId ?>">Un solo envío al final del hilo: la respuesta queda asociada al <strong>último mensaje</strong> del hilo (el más reciente en esta conversación).</p>
@@ -5076,7 +5594,8 @@ $waSideCounterTitle = $waSideUnread > 0
         });
       });
 
-      document.querySelectorAll(".js-gallery-sortable").forEach(function (containerEl) {
+      function initAdminGallerySortable(containerEl) {
+        if (!containerEl) return;
         let draggedEl = null;
 
         containerEl.querySelectorAll(".gallery-thumb-wrap.is-draggable").forEach(function (item) {
@@ -5110,7 +5629,9 @@ $waSideCounterTitle = $waSideUnread > 0
             updateGalleryOrderForRow(containerEl.closest(".service-row"));
           });
         });
-      });
+      }
+      window.initAdminGallerySortable = initAdminGallerySortable;
+      document.querySelectorAll(".js-gallery-sortable").forEach(initAdminGallerySortable);
 
       document.querySelectorAll(".js-gallery-pick-btn").forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -5269,13 +5790,23 @@ $waSideCounterTitle = $waSideUnread > 0
 
       function markRowAsRead(row) {
         postReadToggle(row, "mark_message_read").then(function (ok) {
-          if (ok) applyReadStateToRow(row);
+          if (ok) {
+            applyReadStateToRow(row);
+            if (typeof window.showAdminToast === "function") {
+              window.showAdminToast("success", "Mensaje marcado como leído.", { title: "Bandeja" });
+            }
+          }
         });
       }
 
       function markRowAsUnread(row) {
         postReadToggle(row, "mark_message_unread").then(function (ok) {
-          if (ok) applyUnreadStateToRow(row);
+          if (ok) {
+            applyUnreadStateToRow(row);
+            if (typeof window.showAdminToast === "function") {
+              window.showAdminToast("success", "Mensaje marcado como sin leer.", { title: "Bandeja" });
+            }
+          }
         });
       }
 
@@ -5338,6 +5869,9 @@ $waSideCounterTitle = $waSideUnread > 0
             }
             inboxRoot.querySelectorAll(".message-row.is-unread").forEach(applyReadStateToRow);
             if (markAllForm.form.parentElement) markAllForm.form.parentElement.removeChild(markAllForm.form);
+            if (typeof window.showAdminToast === "function") {
+              window.showAdminToast("success", "Todos los mensajes marcados como leídos.", { title: "Bandeja" });
+            }
           }).catch(function (err) {
             console.error("Error marcando todos como leídos:", err);
           });
@@ -5484,5 +6018,6 @@ $waSideCounterTitle = $waSideUnread > 0
   </script>
   <script src="script.js?v=<?= h($adminAssetScriptVer) ?>"></script>
   <script src="admin_filter_tables.js?v=<?= h($adminFilterTablesVer) ?>"></script>
+  <script src="admin_ajax.js?v=<?= h($adminAjaxVer) ?>"></script>
 </body>
 </html>

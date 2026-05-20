@@ -236,7 +236,7 @@ $nExperts = count($experts);
                 >
                   <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
                 </a>
-                <form method="post" onsubmit="return confirm('¿Eliminar este experto?');">
+                <form method="post" class="js-admin-ajax-form js-expert-delete-form" data-ajax-scope="expert-delete">
                   <input type="hidden" name="action" value="delete_expert">
                   <input type="hidden" name="expert_id" value="<?= $rowId ?>">
                   <button

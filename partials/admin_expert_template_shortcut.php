@@ -6,10 +6,18 @@ declare(strict_types=1);
  * @var string $templateShortcutAction expert_set_mon_fri_window|bulk_mon_fri_all_experts
  * @var int $templateShortcutExpertId 0 = todos los expertos
  * @var bool $templateShortcutCompact diseño compacto (horario masivo)
+ * @var array{slot1_start: string, slot1_end: string, slot2_start: string, slot2_end: string}|null $templateShortcutPrefill
  */
 $templateShortcutAction = (string)($templateShortcutAction ?? "expert_set_mon_fri_window");
 $templateShortcutExpertId = (int)($templateShortcutExpertId ?? 0);
 $templateShortcutCompact = (bool)($templateShortcutCompact ?? false);
+$templatePrefill = $templateShortcutPrefill ?? [
+    "slot1_start" => AGENDA_DEFAULT_MON_FRI_START,
+    "slot1_end" => AGENDA_DEFAULT_MON_FRI_END,
+    "slot2_start" => "",
+    "slot2_end" => "",
+];
+$templateAjax = $templateShortcutExpertId > 0 && $templateShortcutAction === "expert_set_mon_fri_window";
 $wdShort = ["D", "L", "M", "X", "J", "V", "S"];
 $defaultDays = [1, 2, 3, 4, 5];
 $confirmMsg = $templateShortcutExpertId > 0
@@ -18,7 +26,11 @@ $confirmMsg = $templateShortcutExpertId > 0
 ?>
 <form
   method="post"
-  class="expert-template-shortcut<?= $templateShortcutCompact ? " expert-template-shortcut--compact" : "" ?>"
+  lang="es"
+  class="expert-template-shortcut<?= $templateShortcutCompact ? " expert-template-shortcut--compact" : "" ?><?= $templateAjax ? " js-admin-ajax-form" : "" ?>"
+  <?php if ($templateAjax): ?>
+    data-ajax-scope="expert-template"
+  <?php endif; ?>
   onsubmit="return confirm(<?= json_encode($confirmMsg, JSON_UNESCAPED_UNICODE) ?>);"
 >
   <input type="hidden" name="action" value="<?= h($templateShortcutAction) ?>">
@@ -52,17 +64,17 @@ $confirmMsg = $templateShortcutExpertId > 0
     <div class="col-12<?= $templateShortcutCompact ? "" : " col-lg-6" ?>">
       <label class="form-label small mb-1">Franja principal</label>
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <input type="time" name="template_slot1_start" class="form-control form-control-sm expert-lvf-time" value="09:00" required aria-label="Inicio franja 1">
+        <input type="time" name="template_slot1_start" class="form-control form-control-sm expert-lvf-time" value="<?= h((string)$templatePrefill["slot1_start"]) ?>" required aria-label="Inicio franja 1">
         <span class="small text-secondary">a</span>
-        <input type="time" name="template_slot1_end" class="form-control form-control-sm expert-lvf-time" value="18:00" required aria-label="Fin franja 1">
+        <input type="time" name="template_slot1_end" class="form-control form-control-sm expert-lvf-time" value="<?= h((string)$templatePrefill["slot1_end"]) ?>" required aria-label="Fin franja 1">
       </div>
     </div>
     <div class="col-12<?= $templateShortcutCompact ? "" : " col-lg-6" ?>">
       <label class="form-label small mb-1">Segunda franja <span class="text-secondary fw-normal">(opcional)</span></label>
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <input type="time" name="template_slot2_start" class="form-control form-control-sm expert-lvf-time" value="" aria-label="Inicio franja 2">
+        <input type="time" name="template_slot2_start" class="form-control form-control-sm expert-lvf-time" value="<?= h((string)$templatePrefill["slot2_start"]) ?>" aria-label="Inicio franja 2">
         <span class="small text-secondary">a</span>
-        <input type="time" name="template_slot2_end" class="form-control form-control-sm expert-lvf-time" value="" aria-label="Fin franja 2">
+        <input type="time" name="template_slot2_end" class="form-control form-control-sm expert-lvf-time" value="<?= h((string)$templatePrefill["slot2_end"]) ?>" aria-label="Fin franja 2">
       </div>
       <p class="form-text small mb-0">Debe empezar después de la franja principal (ej. tarde 15:00–19:00).</p>
     </div>
@@ -92,7 +104,10 @@ $confirmMsg = $templateShortcutExpertId > 0
 ?>
 <form
   method="post"
-  class="d-inline mt-2"
+  class="d-inline mt-2<?= $templateAjax ? " js-admin-ajax-form" : "" ?>"
+  <?php if ($templateAjax): ?>
+    data-ajax-scope="expert-template"
+  <?php endif; ?>
   onsubmit="return confirm(<?= json_encode($stdConfirm, JSON_UNESCAPED_UNICODE) ?>);"
 >
   <?php foreach ($stdHidden as $fld): ?>

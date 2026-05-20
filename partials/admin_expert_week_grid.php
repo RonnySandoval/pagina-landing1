@@ -71,7 +71,7 @@ $todayWeek = agenda_normalize_week_start("");
               $rowCells = is_array($wRow["cells"] ?? null) ? $wRow["cells"] : [];
             ?>
             <tr<?= $trClass !== "" ? ' class="' . h($trClass) . '"' : "" ?>>
-              <th scope="row" class="agenda-slot-table-time-col"><?= h($rowTime) ?></th>
+              <th scope="row" class="agenda-slot-table-time-col"><?= h(agenda_format_time_24($rowTime)) ?></th>
               <?php foreach ($weekDays as $wdCol): ?>
                 <?php
                   $dateKey = (string)($wdCol["date"] ?? "");

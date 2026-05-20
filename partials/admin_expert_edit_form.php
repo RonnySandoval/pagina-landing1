@@ -14,7 +14,7 @@ $expertEditFormReturnTo = (string)($expertEditFormReturnTo ?? "");
 $expertEditFormTab = (string)($expertEditFormTab ?? "datos");
 $formIdPrefix = $expertEditFormReturnTo === "agendas" ? "ag_" : "ex_";
 ?>
-<form method="post" class="row g-3 admin-expert-edit-form">
+<form method="post" class="row g-3 admin-expert-edit-form js-admin-ajax-form" data-ajax-scope="expert-save">
   <input type="hidden" name="action" value="save_expert">
   <input type="hidden" name="expert_id" value="<?= $eid ?>">
   <?php if ($expertEditFormReturnTo !== ""): ?>

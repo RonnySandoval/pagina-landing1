@@ -15,12 +15,15 @@ if (!isset($wd, $dayRows, $eid, $wdLabelsExpert, $defaultStart, $defaultEnd, $is
     return;
 }
 $dayLabel = $wdLabelsExpert[$wd] ?? "Día";
-$dayShort = mb_substr($dayLabel, 0, 3, "UTF-8");
 $hasSlots = count($dayRows) > 0;
 ?>
-<article class="expert-day-card border border-secondary rounded<?= $isWeekend ? " expert-day-card--weekend" : "" ?>">
+<article
+  class="expert-day-card border border-secondary rounded<?= $isWeekend ? " expert-day-card--weekend" : "" ?>"
+  role="listitem"
+  data-weekday="<?= (int)$wd ?>"
+  data-day-label="<?= h($dayLabel) ?>"
+>
   <header class="expert-day-card__head">
-    <span class="expert-day-card__abbr" aria-hidden="true"><?= h($dayShort) ?></span>
     <span class="expert-day-card__name"><?= h($dayLabel) ?></span>
     <?php if (!$hasSlots): ?>
       <span class="badge rounded-pill text-bg-secondary expert-day-card__badge">Sin horario</span>
@@ -33,7 +36,7 @@ $hasSlots = count($dayRows) > 0;
         <?php $avid = (int)($arow["id"] ?? 0); ?>
         <li class="expert-day-card__slot">
           <span class="expert-day-card__time">
-            <code><?= h(substr((string)($arow["start_time"] ?? ""), 0, 5)) ?>–<?= h(substr((string)($arow["end_time"] ?? ""), 0, 5)) ?></code>
+            <code><?= h(agenda_format_time_range_24((string)($arow["start_time"] ?? ""), (string)($arow["end_time"] ?? ""))) ?></code>
           </span>
           <form method="post" class="d-inline" onsubmit="return confirm('¿Quitar esta franja de <?= h($dayLabel) ?>?');">
             <input type="hidden" name="action" value="expert_delete_availability">
@@ -52,7 +55,7 @@ $hasSlots = count($dayRows) > 0;
 
   <details class="expert-day-card__add">
     <summary class="expert-day-card__add-toggle small">Añadir franja</summary>
-    <form method="post" class="expert-day-card__add-form mt-2">
+    <form method="post" class="expert-day-card__add-form mt-2" lang="es">
       <input type="hidden" name="action" value="expert_add_availability">
       <input type="hidden" name="expert_id" value="<?= $eid ?>">
       <input type="hidden" name="weekday" value="<?= $wd ?>">

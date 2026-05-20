@@ -11,20 +11,17 @@ declare(strict_types=1);
 $showExpertColumn = $showExpertColumn ?? false;
 $cancelExpertId = isset($cancelExpertId) ? (int)$cancelExpertId : null;
 $expertWeekHidden = trim((string)($expertWeekHidden ?? ""));
-$emptyMessage = trim((string)($emptyMessage ?? "No hay citas confirmadas próximas."));
+$emptyMessage = trim((string)($emptyMessage ?? "No hay citas en el listado."));
 $appointmentReturnView = trim((string)($appointmentReturnView ?? "schedule"));
 if (!in_array($appointmentReturnView, ["edit", "schedule", "list"], true)) {
     $appointmentReturnView = "schedule";
 }
 $nAppts = count($appointments);
-$colCount = $showExpertColumn ? 5 : 4;
+$colCount = $showExpertColumn ? 6 : 5;
 $tableId = "admin-appts-" . ($showExpertColumn ? "all" : "expert");
 
 $apptFormatShortDatetime = static function (string $startsAt): string {
-    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}:\d{2})/', $startsAt, $m)) {
-        return $m[3] . "/" . $m[2] . " · " . $m[4];
-    }
-    return $startsAt;
+    return agenda_format_datetime_short_24($startsAt);
 };
 
 $expertsInList = [];
@@ -52,7 +49,7 @@ if ($showExpertColumn) {
       <button type="button" class="btn btn-link btn-sm py-0 admin-filter-table__clear" data-filter-clear>Limpiar filtros</button>
     </div>
 
-    <div class="admin-filter-table__scroll table-responsive expert-appointments-table-wrap">
+    <div class="admin-filter-table__scroll expert-appointments-table-wrap">
       <table class="table table-sm table-hover align-middle mb-0 admin-filter-table__table expert-appointments-table">
         <thead>
           <tr class="admin-filter-table__head-row">
@@ -73,6 +70,10 @@ if ($showExpertColumn) {
             <th scope="col" class="appt-col-guest adm-desktop-only" data-sort-key="guest">
               <span class="adm-th-full">Cliente</span>
               <span class="adm-th-short" aria-hidden="true"><i class="fa-solid fa-user"></i></span>
+            </th>
+            <th scope="col" class="appt-col-status adm-desktop-only" data-sort-key="status">
+              <span class="adm-th-full">Estado</span>
+              <span class="adm-th-short" aria-hidden="true"><i class="fa-solid fa-flag"></i></span>
             </th>
             <th scope="col" class="text-end appt-col-actions">
               <span class="adm-th-full">Acción</span>
@@ -136,7 +137,29 @@ if ($showExpertColumn) {
                 aria-label="Filtrar por cliente"
               />
             </th>
-            <th scope="col" class="appt-col-actions" aria-hidden="true"></th>
+            <th scope="col" class="appt-col-status adm-desktop-only">
+              <select class="form-select form-select-sm admin-filter-table__col-input" data-filter-col="status" data-filter-type="select" aria-label="Filtrar por estado">
+                <option value="all">Todos</option>
+                <option value="confirmed">Confirmada</option>
+                <option value="postponed">Pospuesta</option>
+                <option value="completed">Terminada</option>
+                <option value="cancelled">Cancelada</option>
+              </select>
+            </th>
+            <th scope="col" class="appt-col-actions">
+              <select
+                class="form-select form-select-sm admin-filter-table__col-input appt-filter-status-mobile adm-compact-only"
+                data-filter-col="status"
+                data-filter-type="select"
+                aria-label="Filtrar por estado"
+              >
+                <option value="all">Estado</option>
+                <option value="confirmed">Confirmada</option>
+                <option value="postponed">Pospuesta</option>
+                <option value="completed">Terminada</option>
+                <option value="cancelled">Cancelada</option>
+              </select>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -148,7 +171,8 @@ if ($showExpertColumn) {
               $apid = (int)($ap["id"] ?? 0);
               $apExpertId = (int)($ap["expert_id"] ?? 0);
               $formExpertId = $cancelExpertId !== null && $cancelExpertId > 0 ? $cancelExpertId : $apExpertId;
-              $startsDisp = (string)($ap["starts_at"] ?? "");
+              $startsRaw = (string)($ap["starts_at"] ?? "");
+              $startsDisp = agenda_format_datetime_24($startsRaw);
               $expertName = (string)($ap["expert_name"] ?? "");
               $serviceTitle = (string)($ap["service_title"] ?? "");
               $serviceIcon = trim((string)($ap["service_icon_class"] ?? ""));
@@ -157,51 +181,54 @@ if ($showExpertColumn) {
               }
               $guestName = (string)($ap["guest_name"] ?? "");
               $guestEmail = trim((string)($ap["guest_email"] ?? ""));
-              $startsShort = $apptFormatShortDatetime($startsDisp);
-              $hasMobileExtra = $serviceTitle !== "" || $guestName !== "" || $guestEmail !== ""
-                  || ($showExpertColumn && $expertName !== "");
+              $startsShort = $apptFormatShortDatetime($startsRaw);
+              $apStatus = (string)($ap["status"] ?? EXPERT_APPT_STATUS_CONFIRMED);
+              $apStatusLabel = experts_admin_appointment_status_label($apStatus);
+              $apStatusBadge = experts_admin_appointment_status_badge_class($apStatus);
+              $canAct = experts_admin_appointment_status_is_actionable($apStatus);
+              $postponeLocal = experts_admin_datetime_local_value($startsRaw);
+              $hasMobileDetail = $apid > 0;
+              $rowStateClass = $apStatus === EXPERT_APPT_STATUS_COMPLETED ? " appt-row--completed"
+                  : ($apStatus === EXPERT_APPT_STATUS_CANCELLED ? " appt-row--cancelled" : "");
             ?>
             <tr
-              class="admin-filter-table__row<?= $rowStripe ?>"
+              class="admin-filter-table__row<?= $rowStripe ?><?= h($rowStateClass) ?>"
               data-filter-row
               data-filter-id="<?= $apid ?>"
-              data-filter-datetime="<?= h(strtolower($startsDisp)) ?>"
+              data-filter-status="<?= h($apStatus) ?>"
+              data-filter-datetime="<?= h(strtolower($startsRaw)) ?>"
               data-filter-expert="<?= $apExpertId > 0 ? (string)$apExpertId : "" ?>"
               data-filter-expertname="<?= h(strtolower($expertName)) ?>"
               data-filter-service="<?= h(strtolower($serviceTitle)) ?>"
               data-filter-guest="<?= h(strtolower(implode(" ", array_filter([$guestName, $guestEmail])))) ?>"
-              data-sort-datetime="<?= h($startsDisp) ?>"
+              data-sort-datetime="<?= h($startsRaw) ?>"
               data-sort-expert="<?= h($expertName) ?>"
               data-sort-service="<?= h($serviceTitle) ?>"
               data-sort-guest="<?= h($guestName) ?>"
+              data-sort-status="<?= h($apStatusLabel) ?>"
             >
-              <td class="appt-col-datetime">
+              <td class="appt-col-datetime" data-cell-label="Fecha y hora">
                 <div class="appt-datetime-cell">
                   <?php if ($serviceTitle !== ""): ?>
                     <span
-                      class="appt-mobile-svc-icon appt-svc-icon expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary expert-svc-icon-chip adm-mobile-only flex-shrink-0"
+                      class="appt-mobile-svc-icon appt-svc-icon expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary expert-svc-icon-chip adm-compact-only flex-shrink-0"
                       title="<?= h($serviceTitle) ?>"
                     >
                       <i class="<?= h($serviceIcon) ?>" aria-hidden="true"></i>
                       <span class="visually-hidden"><?= h($serviceTitle) ?></span>
                     </span>
                   <?php endif; ?>
-                  <div class="appt-mobile-stack">
-                    <span class="appt-mobile-when fw-semibold admin-filter-table__text-2l"><?= h($startsShort) ?></span>
-                    <?php if ($guestName !== ""): ?>
-                      <span class="appt-mobile-guest text-secondary admin-filter-table__text-2l"><?= h($guestName) ?></span>
-                    <?php endif; ?>
-                  </div>
-                  <code class="small expert-appt-datetime appt-datetime-full admin-filter-table__text-2l"><?= h($startsDisp) ?></code>
-                  <?php if ($hasMobileExtra && $apid > 0): ?>
+                  <span class="appt-mobile-when fw-semibold adm-compact-only"><?= h($startsShort) ?></span>
+                  <code class="small expert-appt-datetime appt-datetime-full adm-desktop-only admin-filter-table__text-2l"><?= h($startsDisp) ?></code>
+                  <?php if ($hasMobileDetail): ?>
                     <button
                       type="button"
-                      class="btn btn-outline-secondary btn-sm py-0 px-1 appt-expand-btn adm-mobile-only"
+                      class="btn btn-outline-secondary btn-sm py-0 px-1 appt-expand-btn adm-compact-only"
                       data-bs-toggle="collapse"
                       data-bs-target="#appt-mobile-<?= $apid ?>"
                       aria-expanded="false"
                       aria-controls="appt-mobile-<?= $apid ?>"
-                      title="Ver servicio y contacto"
+                      title="Ver detalle de la cita"
                     >
                       <i class="fa-solid fa-plus appt-expand-icon" aria-hidden="true"></i>
                       <span class="visually-hidden">Ver detalle de la cita</span>
@@ -210,11 +237,11 @@ if ($showExpertColumn) {
                 </div>
               </td>
               <?php if ($showExpertColumn): ?>
-                <td class="small appt-col-expert adm-desktop-only">
+                <td class="small appt-col-expert adm-desktop-only" data-cell-label="Experto">
                   <span class="admin-filter-table__text-2l" title="<?= h($expertName) ?>"><?= h($expertName) ?></span>
                 </td>
               <?php endif; ?>
-              <td class="appt-col-service adm-desktop-only">
+              <td class="appt-col-service adm-desktop-only" data-cell-label="Servicio">
                 <?php if ($serviceTitle !== ""): ?>
                   <span
                     class="appt-svc-icon expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary expert-svc-icon-chip"
@@ -228,37 +255,104 @@ if ($showExpertColumn) {
                   <span class="text-muted small">—</span>
                 <?php endif; ?>
               </td>
-              <td class="appt-col-guest adm-desktop-only">
+              <td class="appt-col-guest adm-desktop-only" data-cell-label="Cliente">
                 <span class="small appt-guest-name admin-filter-table__text-2l d-block" title="<?= h($guestName) ?>"><?= h($guestName) ?></span>
                 <?php if ($guestEmail !== ""): ?>
                   <span class="small text-secondary appt-guest-email admin-filter-table__text-2l d-block" title="<?= h($guestEmail) ?>"><?= h($guestEmail) ?></span>
                 <?php endif; ?>
               </td>
-              <td class="text-end appt-col-actions">
-                <?php if ($apid > 0 && $formExpertId > 0): ?>
-                  <form method="post" class="d-inline" onsubmit="return confirm('¿Cancelar esta cita?');">
-                    <input type="hidden" name="action" value="expert_cancel_appointment">
+              <td class="appt-col-status adm-desktop-only" data-cell-label="Estado">
+                <span class="badge rounded-pill appt-status-badge <?= h($apStatusBadge) ?>"><?= h($apStatusLabel) ?></span>
+              </td>
+              <td class="text-end appt-col-actions" data-cell-label="Acciones">
+                <?php if ($apid > 0 && $formExpertId > 0 && $canAct): ?>
+                  <div class="d-flex flex-wrap gap-1 justify-content-end appt-actions-group">
+                    <form method="post" class="d-inline" onsubmit="return confirm('¿Marcar esta cita como terminada?');">
+                      <input type="hidden" name="action" value="expert_complete_appointment">
+                      <input type="hidden" name="expert_id" value="<?= $formExpertId ?>">
+                      <input type="hidden" name="appointment_id" value="<?= $apid ?>">
+                      <input type="hidden" name="expert_return_view" value="<?= h($appointmentReturnView) ?>">
+                      <?php if ($expertWeekHidden !== ""): ?>
+                        <input type="hidden" name="expert_week" value="<?= h($expertWeekHidden) ?>">
+                      <?php endif; ?>
+                      <button type="submit" class="btn btn-outline-success btn-sm py-0" title="Marcar terminada" aria-label="Marcar terminada">
+                        <i class="fa-solid fa-check" aria-hidden="true"></i>
+                      </button>
+                    </form>
+                    <button
+                      type="button"
+                      class="btn btn-outline-info btn-sm py-0"
+                      data-bs-toggle="collapse"
+                      data-bs-target="#appt-postpone-<?= $apid ?>"
+                      aria-expanded="false"
+                      aria-controls="appt-postpone-<?= $apid ?>"
+                      title="Posponer cita"
+                    >
+                      <i class="fa-solid fa-calendar-plus" aria-hidden="true"></i>
+                    </button>
+                    <form method="post" class="d-inline" onsubmit="return confirm('¿Cancelar esta cita?');">
+                      <input type="hidden" name="action" value="expert_cancel_appointment">
+                      <input type="hidden" name="expert_id" value="<?= $formExpertId ?>">
+                      <input type="hidden" name="appointment_id" value="<?= $apid ?>">
+                      <input type="hidden" name="expert_return_view" value="<?= h($appointmentReturnView) ?>">
+                      <?php if ($expertWeekHidden !== ""): ?>
+                        <input type="hidden" name="expert_week" value="<?= h($expertWeekHidden) ?>">
+                      <?php endif; ?>
+                      <button type="submit" class="btn btn-outline-warning btn-sm py-0" title="Cancelar cita" aria-label="Cancelar cita">
+                        <i class="fa-solid fa-ban" aria-hidden="true"></i>
+                      </button>
+                    </form>
+                  </div>
+                <?php elseif ($apid > 0): ?>
+                  <span class="text-muted small">—</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+            <?php if ($canAct && $apid > 0 && $formExpertId > 0): ?>
+              <tr class="appt-postpone-row collapse admin-filter-table__detail-row" id="appt-postpone-<?= $apid ?>" data-filter-detail-for="<?= $apid ?>">
+                <td colspan="<?= $colCount ?>" class="pt-0 pb-2 px-2">
+                  <form method="post" lang="es" class="appt-postpone-form border border-secondary rounded p-2 small">
+                    <input type="hidden" name="action" value="expert_postpone_appointment">
                     <input type="hidden" name="expert_id" value="<?= $formExpertId ?>">
                     <input type="hidden" name="appointment_id" value="<?= $apid ?>">
                     <input type="hidden" name="expert_return_view" value="<?= h($appointmentReturnView) ?>">
                     <?php if ($expertWeekHidden !== ""): ?>
                       <input type="hidden" name="expert_week" value="<?= h($expertWeekHidden) ?>">
                     <?php endif; ?>
-                    <button type="submit" class="btn btn-outline-warning btn-sm py-0" title="Cancelar cita" aria-label="Cancelar cita">
-                      <i class="fa-solid fa-ban" aria-hidden="true"></i>
-                    </button>
+                    <p class="mb-2 fw-semibold mb-1"><i class="fa-solid fa-calendar-plus me-1" aria-hidden="true"></i>Posponer cita</p>
+                    <div class="d-flex flex-wrap align-items-end gap-2">
+                      <div>
+                        <label class="form-label small mb-0" for="appt-postpone-at-<?= $apid ?>">Nueva fecha y hora</label>
+                        <input
+                          id="appt-postpone-at-<?= $apid ?>"
+                          type="datetime-local"
+                          name="new_starts_at"
+                          class="form-control form-control-sm"
+                          value="<?= h($postponeLocal) ?>"
+                          required
+                        >
+                      </div>
+                      <button type="submit" class="btn btn-primary btn-sm">Guardar nuevo horario</button>
+                    </div>
                   </form>
-                <?php endif; ?>
-              </td>
-            </tr>
-            <?php if ($hasMobileExtra && $apid > 0): ?>
-              <tr class="appt-mobile-detail-row admin-filter-table__detail-row adm-mobile-only" data-filter-detail-for="<?= $apid ?>">
+                </td>
+              </tr>
+            <?php endif; ?>
+            <?php if ($hasMobileDetail): ?>
+              <tr class="appt-mobile-detail-row admin-filter-table__detail-row adm-compact-only" data-filter-detail-for="<?= $apid ?>">
                 <td colspan="<?= $colCount ?>" class="pt-0 pb-0 px-1">
                   <div class="collapse" id="appt-mobile-<?= $apid ?>">
                   <div class="appt-mobile-detail-panel small border border-secondary rounded p-2 mb-1">
                     <ul class="list-unstyled mb-0 appt-mobile-detail-list">
+                      <li class="appt-mobile-detail-when"><i class="fa-solid fa-clock me-1 admin-icon-clock" aria-hidden="true"></i><?= h($startsDisp) ?></li>
+                      <li><span class="badge rounded-pill <?= h($apStatusBadge) ?>"><?= h($apStatusLabel) ?></span></li>
                       <?php if ($showExpertColumn && $expertName !== ""): ?>
                         <li><i class="fa-solid fa-user-tie me-1 text-secondary" aria-hidden="true"></i><?= h($expertName) ?></li>
+                      <?php endif; ?>
+                      <?php if ($serviceTitle !== ""): ?>
+                        <li>
+                          <i class="<?= h($serviceIcon) ?> me-1 text-secondary" aria-hidden="true"></i><?= h($serviceTitle) ?>
+                        </li>
                       <?php endif; ?>
                       <?php if ($guestName !== ""): ?>
                         <li><i class="fa-solid fa-user me-1 text-secondary" aria-hidden="true"></i><?= h($guestName) ?></li>
@@ -266,7 +360,6 @@ if ($showExpertColumn) {
                       <?php if ($guestEmail !== ""): ?>
                         <li><i class="fa-solid fa-envelope me-1 text-secondary" aria-hidden="true"></i><?= h($guestEmail) ?></li>
                       <?php endif; ?>
-                      <li class="text-muted"><i class="fa-solid fa-clock me-1" aria-hidden="true"></i><?= h($startsDisp) ?></li>
                     </ul>
                   </div>
                   </div>
