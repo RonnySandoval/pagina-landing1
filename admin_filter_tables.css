@@ -1,59 +1,83 @@
 /**
- * Tablas admin filtrables: altura mínima, filas expandibles, columnas redimensionables.
+ * Tablas admin filtrables: layout CSS Grid + @container, filtros, scroll hints.
  */
 
 .admin-filter-table {
   --aft-row-h: 2.85rem;
   --aft-head-h: 2.35rem;
   --aft-filter-h: 2.15rem;
-}
-
-/*
- * Sistema de tiers progresivos por ancho de contenedor.
- * Cada tabla declara los puntos de corte (en px, sin unidad).
- * El JS aplica data-aft-size="xl|l|m|s|xs" sobre el contenedor raíz.
- *
- *   width ≥ --aft-bp-xl  → xl  (texto completo en cabeceras, table-layout fixed, resize on)
- *   width ≥ --aft-bp-l   → l   (iconos en cabeceras, todas las columnas, auto)
- *   width ≥ --aft-bp-m   → m   (oculta columnas de prioridad baja, auto)
- *   width ≥ --aft-bp-s   → s   (oculta más columnas, auto)
- *   width <  --aft-bp-s  → xs  (en citas: layout elaborado de 1 columna + detalle)
- */
-
-/*
- * Breakpoints elegidos teniendo en cuenta el layout admin:
- *   - Single-col (vp < 992): tabla = vp - ~95 px → 225-895 px típicos.
- *   - 2-col (vp ≥ 992): admin-main = 1.7fr de (vp - 248) → empieza en ~456 px
- *     (vp 992) y crece hasta ~1040 px (vp 1920).
- * Al cruzar vp 992 la tabla baja de ~898 px a ~456 px en un solo click. Para que
- * ese salto sea sólo un cambio de cabeceras (texto→iconos) en lugar de
- * reorganizar columnas, el tier "l" cubre un rango ancho (~440–bp_xl) y "xl"
- * se reserva al ancho donde el texto completo está holgado.
- *   pre-flip 898 → xl    |    post-flip 456 → l    →    transición xl→l
- */
-
-/* Citas */
-.expert-appointments-filter-table {
-  --aft-bp-s:  280;
-  --aft-bp-m:  360;
-  --aft-bp-l:  440;
-  --aft-bp-xl: 760;
-  /* El layout elaborado (.is-appt-compact) se activa por debajo de --appt-wide-min */
-  --appt-wide-min: 280;
-}
-
-/* Expertos: igual escala salvo bp_xl (5 cols entran cómodas con texto a ~560). */
-.admin-experts-filter-table {
-  --aft-bp-s:  280;
-  --aft-bp-m:  360;
-  --aft-bp-l:  440;
-  --aft-bp-xl: 560;
-  /* .is-expert-compact se activa por debajo de --expert-wide-min */
-  --expert-wide-min: 280;
+  --aft-border: color-mix(in srgb, var(--border) 88%, transparent);
+  --aft-bg: color-mix(in srgb, var(--surface) 96%, var(--surface-2));
+  --aft-bg-alt: color-mix(in srgb, var(--surface-2) 72%, var(--surface));
+  --aft-head-bg: color-mix(in srgb, var(--surface-2) 96%, var(--accent) 4%);
+  border: 1px solid var(--aft-border);
+  border-radius: 12px;
+  background: var(--aft-bg);
+  overflow: hidden;
 }
 
 .admin-filter-table__scroll {
+  position: relative;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  background: var(--aft-bg);
   min-height: calc(var(--aft-head-h) + var(--aft-filter-h) + var(--aft-row-h));
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 52%, var(--border)) transparent;
+}
+
+.admin-filter-table__scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.admin-filter-table__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-filter-table__scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 48%, var(--border));
+  border-radius: 3px;
+}
+
+.admin-filter-table__scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 62%, var(--border));
+}
+
+/* Pistas de scroll horizontal (clases .is-scrollable-x* vía JS) */
+.admin-filter-table__scroll.is-scrollable-x {
+  --aft-scroll-fade: 1.1rem;
+}
+
+.admin-filter-table__scroll.is-scrollable-x::before,
+.admin-filter-table__scroll.is-scrollable-x::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--aft-scroll-fade);
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.admin-filter-table__scroll.is-scrollable-x::before {
+  left: 0;
+  background: linear-gradient(to right, var(--aft-bg), transparent);
+}
+
+.admin-filter-table__scroll.is-scrollable-x::after {
+  right: 0;
+  background: linear-gradient(to left, var(--aft-bg), transparent);
+}
+
+.admin-filter-table__scroll.is-scrollable-x.is-scrollable-x-start::before {
+  opacity: 1;
+}
+
+.admin-filter-table__scroll.is-scrollable-x.is-scrollable-x-end::after {
+  opacity: 1;
 }
 
 .admin-filter-table--empty-static .admin-filter-table__scroll {
@@ -88,48 +112,372 @@
   vertical-align: top;
 }
 
-.admin-filter-table__th-resizable {
-  position: relative;
-  padding-right: 0.65rem;
+/* ── Estilos compartidos (extraídos de admin.php) ── */
+.admin-filter-table__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.65rem;
+  padding: 0.4rem 0.65rem;
+  border-bottom: 1px solid var(--aft-border);
+  background: var(--aft-head-bg);
 }
 
-.admin-filter-table__col-resize {
-  position: absolute;
+.admin-filter-table__clear {
+  font-size: 0.78rem;
+  text-decoration: none;
+  color: var(--accent);
+}
+
+.admin-filter-table__clear:hover {
+  text-decoration: underline;
+}
+
+.admin-filter-table__count {
+  white-space: nowrap;
+}
+
+.admin-filter-table__table {
+  margin: 0;
+  width: 100%;
+  min-width: 100%;
+  color: var(--text);
+  background-color: var(--aft-bg);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.admin-filter-table__head-row th {
+  position: sticky;
   top: 0;
-  right: 0;
-  width: 0.45rem;
-  height: 100%;
-  cursor: col-resize;
-  touch-action: none;
+  z-index: 3;
+  background-color: var(--aft-head-bg);
+  border-bottom: 1px solid var(--aft-border);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+  vertical-align: middle;
+  padding: 0.5rem 0.45rem;
+}
+
+.admin-filter-table__filter-row th {
+  position: sticky;
+  top: 2.05rem;
+  z-index: 2;
+  background-color: var(--aft-head-bg);
+  border-bottom: 1px solid var(--aft-border);
+  padding: 0.28rem 0.35rem;
+  vertical-align: middle;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.admin-filter-table__col-input {
+  width: 100%;
+  min-width: 3.5rem;
+  border-radius: 6px;
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.admin-filter-table__col-input::placeholder {
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.admin-filter-table__table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 0.45rem 0.45rem;
+  vertical-align: middle;
+  background-color: var(--aft-bg);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.admin-filter-table__text-2l {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.32;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.admin-filter-table__table code.admin-filter-table__text-2l {
+  display: -webkit-box;
+  white-space: normal;
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].is-alt td {
+  background-color: var(--aft-bg-alt);
+}
+
+.admin-filter-table__table tbody tr[data-filter-row]:hover td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg));
+}
+
+.admin-filter-table__table tbody tr[data-filter-row].is-alt:hover td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg-alt));
+}
+
+.admin-filter-table__table tbody tr.admin-filter-table__detail-row td {
+  background-color: color-mix(in srgb, var(--aft-bg-alt) 85%, var(--surface-2));
+}
+
+.admin-filter-table__table tbody tr:last-child td,
+.admin-filter-table__table tbody tr.admin-filter-table__empty td {
+  border-bottom: none;
+}
+
+.admin-filter-table__th-sortable {
+  cursor: pointer;
   user-select: none;
-  z-index: 4;
 }
 
-.admin-filter-table__col-resize::after {
-  content: "";
-  position: absolute;
-  top: 15%;
-  bottom: 15%;
-  right: 0.15rem;
-  width: 2px;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--border) 70%, var(--muted));
-  opacity: 0.55;
-  transition: opacity 0.15s ease, background 0.15s ease;
+.admin-filter-table__th-sortable:hover {
+  color: var(--text);
 }
 
-.admin-filter-table__th-resizable:hover .admin-filter-table__col-resize::after,
-.admin-filter-table.is-col-resizing .admin-filter-table__col-resize::after {
-  opacity: 1;
-  background: var(--accent);
+.admin-filter-table__th-sortable.is-sorted-asc::after,
+.admin-filter-table__th-sortable.is-sorted-desc::after {
+  font-family: "Font Awesome 6 Free";
+  font-weight: 900;
+  font-size: 0.62rem;
+  margin-left: 0.25rem;
+  opacity: 0.85;
 }
 
-.admin-filter-table.is-col-resizing {
-  user-select: none;
+.admin-filter-table__th-sortable.is-sorted-asc::after {
+  content: "\f0de";
 }
 
-.admin-filter-table.is-col-resizing .admin-filter-table__table {
-  cursor: col-resize;
+.admin-filter-table__th-sortable.is-sorted-desc::after {
+  content: "\f0dd";
+}
+
+.admin-filter-table .adm-th-short {
+  display: none;
+}
+
+.admin-filter-table .adm-action-label {
+  display: none !important;
+}
+
+.admin-experts-table.table-hover tbody tr,
+.admin-filter-table__table.table-hover tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.admin-expert-row-actions {
+  gap: 0.35rem !important;
+}
+
+.admin-expert-row-actions form {
+  margin: 0;
+  display: inline-flex;
+}
+
+.admin-expert-row-actions .btn {
+  min-width: 2.35rem;
+  padding: 0.28rem 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.admin-expert-row-actions .btn i {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.admin-experts-table .badge.expert-pill {
+  font-weight: 600;
+  font-size: 0.78rem;
+  padding: 0.35em 0.65em;
+  gap: 0.35em;
+}
+
+.admin-experts-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.admin-experts-table .expert-col-name {
+  overflow: hidden;
+}
+
+.admin-experts-table .expert-row-name {
+  max-width: 100%;
+}
+
+.admin-experts-table th.expert-services-col,
+.admin-experts-table td.expert-services-col {
+  max-width: 14rem;
+  width: 22%;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.admin-experts-table .expert-row-services {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.admin-experts-table .expert-svc-icons-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.admin-experts-table .expert-svc-icons-inner {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.25rem;
+  vertical-align: middle;
+}
+
+.admin-experts-table .expert-svc-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: help;
+  flex-shrink: 0;
+}
+
+.admin-experts-table .expert-svc-overflow-plus {
+  display: none;
+  cursor: help;
+}
+
+.admin-experts-table .expert-svc-overflow-plus.is-visible {
+  display: inline-flex;
+}
+
+.admin-experts-table .expert-svc-count-badge {
+  flex-shrink: 0;
+}
+
+.admin-experts-table .expert-svc-icon i {
+  line-height: 1;
+}
+
+.admin-experts-table .expert-th-short,
+.admin-experts-table .adm-th-short {
+  display: none;
+}
+
+.admin-experts-table .expert-info-btn {
+  flex-shrink: 0;
+  min-width: 1.75rem;
+  line-height: 1.1;
+}
+
+.admin-experts-table .expert-info-btn[aria-expanded="true"] .expert-info-icon::before {
+  content: "\f068"; /* fa-minus */
+}
+
+.admin-experts-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.expert-appointments-table .appt-guest-email {
+  overflow-wrap: anywhere;
+}
+
+.expert-appointments-table .adm-mobile-only,
+.expert-appointments-table .adm-compact-only {
+  display: none !important;
+}
+
+.expert-appointments-table tr.appt-mobile-detail-row.adm-compact-only,
+.expert-appointments-table tr.appt-mobile-detail-row.adm-mobile-only {
+  display: none !important;
+}
+
+.expert-appointments-table .appt-datetime-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.expert-appointments-table .appt-mobile-svc-icon {
+  width: 1.85rem;
+  height: 1.85rem;
+  font-size: 0.88rem;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.expert-appointments-table .appt-datetime-full {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.expert-appointments-table .appt-col-service {
+  max-width: 8rem;
+}
+
+.expert-appointments-table .appt-svc-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.82rem;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.expert-appointments-table .appt-svc-label {
+  max-width: 100%;
+  vertical-align: middle;
+  margin-left: 0.35rem;
+}
+
+.expert-appointments-table .appt-col-guest {
+  max-width: 12rem;
+}
+
+.expert-appointments-table .appt-col-expert {
+  max-width: 10rem;
+}
+
+.expert-appointments-table .appt-expand-btn {
+  flex-shrink: 0;
+  min-width: 1.75rem;
+  line-height: 1.1;
+}
+
+.expert-appointments-table .appt-expand-btn[aria-expanded="true"] .appt-expand-icon::before {
+  content: "\f068";
+}
+
+.expert-appointments-table .appt-mobile-detail-panel {
+  background: color-mix(in srgb, var(--surface-2) 90%, var(--surface));
+}
+
+.expert-appointments-table .appt-mobile-detail-list li + li {
+  margin-top: 0.35rem;
+}
+
+.expert-appointments-table .admin-appt-notify-log {
+  max-width: 100%;
 }
 
 .expert-appointments-filter-table {
@@ -147,196 +495,6 @@
   display: none !important;
 }
 
-.expert-appointments-filter-table .adm-compact-only,
-.expert-appointments-filter-table .appt-filter-status-mobile {
-  display: none;
-}
-
-/* Panel estrecho (ancho del contenedor, no solo viewport) */
-.expert-appointments-filter-table.is-appt-compact {
-  --aft-row-h: 2.45rem;
-  --aft-filter-h: 2.15rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact .admin-filter-table__scroll,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table-wrap {
-  overflow-x: hidden !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table {
-  width: 100% !important;
-  min-width: 0 !important;
-  max-width: 100% !important;
-  table-layout: fixed;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-hidden {
-  width: 0 !important;
-  min-width: 0 !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-main {
-  width: auto;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table col.appt-compact-col-actions {
-  width: 7rem !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .adm-desktop-only {
-  visibility: collapse !important;
-  width: 0 !important;
-  max-width: 0 !important;
-  min-width: 0 !important;
-  padding: 0 !important;
-  border: 0 !important;
-  overflow: hidden;
-  font-size: 0;
-  line-height: 0;
-}
-
-.expert-appointments-filter-table.is-appt-compact .adm-th-full {
-  display: none;
-}
-
-.expert-appointments-filter-table.is-appt-compact .adm-th-short {
-  display: inline;
-}
-
-.expert-appointments-filter-table.is-appt-compact .adm-compact-only {
-  display: inline-flex !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact tr.appt-mobile-detail-row.adm-compact-only {
-  display: table-row !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-mobile-when.adm-compact-only {
-  display: inline !important;
-  flex-shrink: 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-datetime-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  flex-wrap: nowrap;
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-datetime,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-expert,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-service,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-guest,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-status,
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-actions {
-  width: auto !important;
-  max-width: none !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-datetime {
-  min-width: 0 !important;
-  padding: 0.28rem 0.35rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact .expert-appointments-table .appt-col-actions {
-  width: 7rem !important;
-  min-width: 7rem !important;
-  max-width: 7rem !important;
-  padding: 0.28rem 0.2rem;
-  white-space: nowrap;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-col-datetime .admin-filter-table__col-input,
-.expert-appointments-filter-table.is-appt-compact .appt-col-actions .admin-filter-table__col-input,
-.expert-appointments-filter-table.is-appt-compact .appt-filter-status-mobile {
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-mobile-svc-icon {
-  width: 1.6rem;
-  height: 1.6rem;
-  font-size: 0.78rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-expand-btn {
-  flex-shrink: 0;
-  min-width: 1.5rem;
-  padding: 0.1rem 0.28rem !important;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-actions-group {
-  flex-wrap: nowrap;
-  gap: 0.15rem !important;
-  justify-content: flex-end;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-actions-group .btn {
-  padding: 0.1rem 0.28rem;
-  min-width: 1.35rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-filter-status-mobile {
-  display: block !important;
-  width: 100%;
-  min-width: 0;
-  font-size: 0.7rem;
-  padding: 0.12rem 0.25rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact .admin-filter-table__head-row th,
-.expert-appointments-filter-table.is-appt-compact .appt-filter-row th {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-}
-
-.expert-appointments-filter-table.is-appt-compact .appt-filter-row th {
-  top: var(--aft-head-h, 2.35rem);
-  z-index: 2;
-}
-
-.expert-appointments-filter-table.is-appt-compact tr.appt-postpone-row > td {
-  white-space: normal;
-  padding: 0.5rem;
-}
-
-.expert-appointments-filter-table.is-appt-compact tbody tr[data-filter-row].has-row-overflow {
-  cursor: default;
-}
-
-@media (max-height: 520px) {
-  .expert-appointments-filter-table.is-appt-compact {
-    --aft-row-h: 2.2rem;
-    --aft-head-h: 2rem;
-    --aft-filter-h: 0px;
-  }
-
-  .expert-appointments-filter-table.is-appt-compact .appt-filter-row {
-    display: none;
-  }
-
-  .expert-appointments-filter-table.is-appt-compact .admin-filter-table__scroll {
-    min-height: calc(var(--aft-head-h) + var(--aft-row-h));
-  }
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   Tabla de expertos: modo compacto por ancho del contenedor (no por viewport)
-   Se activa con .is-expert-compact (JS + ResizeObserver) sólo en anchos muy
-   pequeños (< --expert-wide-min: 280). Aplica tweaks de UI (Info badge →
-   botón, padding, etc.). La ocultación de columnas vive en las reglas
-   [data-aft-size="m|s|xs"] de más abajo, no aquí, para evitar duplicar la
-   lógica.
-   ────────────────────────────────────────────────────────────────────────── */
 .admin-experts-filter-table,
 .admin-experts-filter-table .admin-filter-table__scroll,
 .admin-experts-filter-table .admin-experts-table-wrap {
@@ -344,291 +502,9 @@
   min-width: 0;
 }
 
-.admin-experts-filter-table.is-expert-compact .admin-filter-table__scroll,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table-wrap {
-  overflow-x: hidden !important;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table {
-  table-layout: auto;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-filter-table__filter-row th {
-  top: 1.85rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-filter-table__meta {
-  padding: 0.35rem 0.5rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .adm-th-full,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .expert-th-full,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .adm-th-full {
-  display: none;
-}
-
-.admin-experts-filter-table.is-expert-compact .adm-th-short,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .expert-th-short,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .adm-th-short {
-  display: inline;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-pill-label {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  padding: 0 !important;
-  margin: -1px !important;
-  overflow: hidden !important;
-  clip: rect(0, 0, 0, 0) !important;
-  white-space: nowrap !important;
-  border: 0 !important;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-pill {
-  padding: 0.35em 0.45em;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-order {
-  width: 2.25rem;
-  padding-left: 0.15rem;
-  padding-right: 0.15rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-status {
-  width: 2.5rem;
-  padding-left: 0.15rem;
-  padding-right: 0.15rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-actions {
-  width: auto;
-  white-space: nowrap;
-  padding-left: 0.15rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-name {
-  min-width: 0;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-row-name {
-  font-size: 0.88rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .admin-expert-row-actions {
-  gap: 0.2rem !important;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .admin-expert-row-actions .btn {
-  min-width: 2rem;
-  padding: 0.22rem 0.35rem;
-}
-
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-detail-row td {
-  border-top: none;
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   Tiers progresivos (data-aft-size). Aplica a cualquier .admin-filter-table.
-   - xl: cabeceras completas, layout fixed
-   - l / m / s: cabeceras iconográficas, layout auto, ocultar columnas según
-     prioridad por tipo de tabla.
-   - xs: reservado al modo elaborado (solo citas). Sus reglas viven en el
-     bloque .is-appt-compact más arriba; aquí no tocamos columnas para no
-     interferir con el colgroup que construye el JS.
-   ────────────────────────────────────────────────────────────────────────── */
-
-/* Cabeceras: texto completo solo en xl; en el resto, icono corto. */
-.admin-filter-table[data-aft-size="l"] .adm-th-full,
-.admin-filter-table[data-aft-size="m"] .adm-th-full,
-.admin-filter-table[data-aft-size="s"] .adm-th-full,
-.admin-filter-table[data-aft-size="xs"] .adm-th-full {
-  display: none;
-}
-
-.admin-filter-table[data-aft-size="l"] .adm-th-short,
-.admin-filter-table[data-aft-size="m"] .adm-th-short,
-.admin-filter-table[data-aft-size="s"] .adm-th-short,
-.admin-filter-table[data-aft-size="xs"] .adm-th-short {
-  display: inline;
-}
-
-/* Layout auto en tiers intermedios para que las columnas restantes
-   se redistribuyan al espacio disponible. */
-.admin-filter-table[data-aft-size="l"] .admin-filter-table__table,
-.admin-filter-table[data-aft-size="m"] .admin-filter-table__table,
-.admin-filter-table[data-aft-size="s"] .admin-filter-table__table {
-  table-layout: auto;
-}
-
-/* === Citas: ocultar columnas progresivamente.
-   - l (440-760): todas las columnas con cabeceras icónicas.
-   - m (360-440): oculta Experto y Cliente.
-   - s (280-360): oculta Experto, Cliente y Servicio.
-   - xs (<280): layout elaborado (is-appt-compact) controla columnas
-     vía colgroup desde JS, no actuamos aquí. */
-.expert-appointments-filter-table[data-aft-size="m"] .appt-col-expert,
-.expert-appointments-filter-table[data-aft-size="m"] .appt-col-guest,
-.expert-appointments-filter-table[data-aft-size="s"] .appt-col-expert,
-.expert-appointments-filter-table[data-aft-size="s"] .appt-col-guest,
-.expert-appointments-filter-table[data-aft-size="s"] .appt-col-service {
-  display: none !important;
-}
-
-/* En tiers no-xl anulamos los % de admin.php para que table-layout:auto pueda
-   adaptarse al ancho real del contenedor (resuelve el desborde al achicar). */
-.expert-appointments-filter-table:is(
-  [data-aft-size="l"],
-  [data-aft-size="m"],
-  [data-aft-size="s"]
-) .expert-appointments-table :is(
-  .appt-col-datetime,
-  .appt-col-expert,
-  .appt-col-service,
-  .appt-col-guest,
-  .appt-col-status
-) {
-  width: auto;
-  max-width: none;
-  min-width: 0;
-}
-
-.expert-appointments-filter-table:is(
-  [data-aft-size="l"],
-  [data-aft-size="m"],
-  [data-aft-size="s"]
-) .expert-appointments-table .appt-col-actions {
-  width: auto;
-  max-width: none;
-}
-
-/* Botón "+" y fila de detalle visibles cuando hay columnas ocultas (m, s, xs).
-   Antes sólo aparecían en is-appt-compact (xs). */
-.expert-appointments-filter-table:is(
-  [data-aft-size="m"],
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .appt-expand-btn.adm-compact-only,
-.expert-appointments-filter-table.is-appt-compact .appt-expand-btn.adm-compact-only {
-  display: inline-flex !important;
-}
-
-.expert-appointments-filter-table:is(
-  [data-aft-size="m"],
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) tr.appt-mobile-detail-row.adm-compact-only,
-.expert-appointments-filter-table.is-appt-compact tr.appt-mobile-detail-row.adm-compact-only {
-  display: table-row !important;
-}
-
-/* En s/xs el Servicio se oculta: mostramos su icono junto a la fecha y el
-   formato corto de fecha, ocultando el formato largo (desktop). */
-.expert-appointments-filter-table:is(
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .appt-mobile-svc-icon.adm-compact-only,
-.expert-appointments-filter-table.is-appt-compact .appt-mobile-svc-icon.adm-compact-only {
-  display: inline-flex !important;
-}
-
-.expert-appointments-filter-table:is(
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .appt-mobile-when.adm-compact-only,
-.expert-appointments-filter-table.is-appt-compact .appt-mobile-when.adm-compact-only {
-  display: inline !important;
-  flex-shrink: 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.expert-appointments-filter-table:is(
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .appt-datetime-full {
-  display: none !important;
-}
-
-/* En m/s aprovechamos el datetime-cell como flexbox horizontal igual que en
-   compact, para que el bot\u00f3n + quepa al lado de la fecha sin saltos. */
-.expert-appointments-filter-table:is(
-  [data-aft-size="m"],
-  [data-aft-size="s"]
-) .appt-datetime-cell {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: nowrap;
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-}
-
-/* === Expertos: ocultar columnas progresivamente.
-   - l (440-560): todas las columnas con cabeceras icónicas.
-   - m (360-440): oculta Servicios.
-   - s (280-360): oculta Servicios y Orden.
-   - xs (<280): igual que s, además .is-expert-compact activa UI compacta. */
-.admin-experts-filter-table[data-aft-size="m"] .expert-col-services,
-.admin-experts-filter-table[data-aft-size="m"] .expert-services-col,
-.admin-experts-filter-table[data-aft-size="s"] .expert-col-services,
-.admin-experts-filter-table[data-aft-size="s"] .expert-services-col,
-.admin-experts-filter-table[data-aft-size="xs"] .expert-col-services,
-.admin-experts-filter-table[data-aft-size="xs"] .expert-services-col {
-  display: none !important;
-}
-
-.admin-experts-filter-table[data-aft-size="s"] .expert-col-order,
-.admin-experts-filter-table[data-aft-size="xs"] .expert-col-order {
-  display: none !important;
-}
-
-/* En tiers no-xl anulamos los % de admin.php para que table-layout:auto
-   adapte el ancho de cada columna al contenedor real. */
-.admin-experts-filter-table:is(
-  [data-aft-size="l"],
-  [data-aft-size="m"],
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .admin-experts-table :is(
-  .expert-col-name,
-  .expert-col-order,
-  .expert-col-status,
-  .expert-col-services,
-  .expert-services-col,
-  .expert-col-actions
-) {
-  width: auto;
-  max-width: none;
-  min-width: 0;
-}
-
-/* Cuando se ocultan columnas (m/s/xs), mostramos el botón Info en la fila
-   en lugar del badge Info, igual que ya hacía is-expert-compact. */
-.admin-experts-filter-table:is(
-  [data-aft-size="m"],
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .admin-experts-table .expert-info-btn--mobile,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-info-btn--mobile {
-  display: inline-flex;
-}
-
-.admin-experts-filter-table:is(
-  [data-aft-size="m"],
-  [data-aft-size="s"],
-  [data-aft-size="xs"]
-) .admin-experts-table .expert-info-badge--desktop,
-.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-info-badge--desktop {
-  display: none !important;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   PROTOTIPO: tabla de citas con CSS Grid + @container (admin-filter-table--grid)
-   Responsive declarativo; sin data-aft-size, sin is-appt-compact, sin colgroup JS.
-   Breakpoints de contenedor: 950 / 750 / 600 / 480 / 360 (px).
+   CITAS — CSS Grid + @container (admin-filter-table--grid)
+   Breakpoints de contenedor: 950 / 880 / 720 / 560 / 420 (px).
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .expert-appointments-filter-table.admin-filter-table--grid {
@@ -974,6 +850,490 @@
   }
 
   .expert-appointments-filter-table.admin-filter-table--grid .appt-filter-row {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EXPERTOS — CSS Grid + @container (admin-filter-table--grid)
+   Columnas: Nombre · Orden · Estado · Servicios · Acciones.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.admin-experts-filter-table.admin-filter-table--grid {
+  container-type: inline-size;
+  container-name: aft-experts;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .admin-filter-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .admin-experts-table {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  border-collapse: separate;
+  table-layout: unset;
+  align-items: stretch;
+  grid-template-columns:
+    minmax(8rem, 1.6fr)   /* nombre */
+    minmax(3rem, auto)    /* orden */
+    minmax(4.5rem, auto)  /* estado */
+    minmax(8rem, 1fr)     /* servicios */
+    auto;                 /* acciones */
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .admin-experts-table > thead,
+.admin-experts-filter-table.admin-filter-table--grid .admin-experts-table > tbody {
+  display: contents;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .admin-experts-table > :is(thead, tbody) > tr {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-experts-table > tbody > tr.collapse:not(.show) {
+  display: none;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-experts-table > tbody > tr.collapsing {
+  display: grid;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-experts-table > :is(thead, tbody) > tr > :is(th, td) {
+  min-width: 0;
+  vertical-align: middle;
+  padding: 0.45rem 0.45rem;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: normal;
+}
+
+/* OVERRIDES: las reglas legacy declaran anchos por columna. Anulamos en grid. */
+.admin-experts-filter-table.admin-filter-table--grid .admin-experts-table :is(
+  .expert-col-name,
+  .expert-col-order,
+  .expert-col-status,
+  .expert-col-services,
+  .expert-services-col,
+  .expert-col-actions
+) {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-experts-table
+  .admin-filter-table__text-2l {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .adm-th-short {
+  display: none;
+}
+
+/* En modo grid, la fila detalle (collapse Info) ocupa todo el ancho */
+.admin-experts-filter-table.admin-filter-table--grid
+  tr:is(.expert-detail-row, .admin-filter-table__empty) > td {
+  grid-column: 1 / -1;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  tr.expert-detail-row.show {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  tbody
+  tr[data-filter-row]:hover > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg, var(--surface)));
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  tbody
+  tr[data-filter-row].is-alt:hover > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg-alt, var(--surface-2)));
+}
+
+/* Sticky cabecera + filtros */
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-filter-table__head-row > th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid
+  .admin-filter-table__filter-row > th {
+  position: sticky;
+  top: var(--aft-head-h, 2.35rem);
+  z-index: 2;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .expert-col-actions {
+  white-space: nowrap;
+  text-align: end;
+}
+
+.admin-experts-filter-table.admin-filter-table--grid .expert-name-cell {
+  min-width: 0;
+}
+
+/* ── ≤ 880px: cabeceras icónicas ── */
+@container aft-experts (max-width: 880px) {
+  .admin-experts-filter-table.admin-filter-table--grid .adm-th-full {
+    display: none;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid .adm-th-short {
+    display: inline;
+  }
+}
+
+/* ── ≤ 560px: ocultar Servicios; 4 columnas ── */
+@container aft-experts (max-width: 560px) {
+  .admin-experts-filter-table.admin-filter-table--grid
+    :is(.expert-col-services, .expert-services-col) {
+    display: none !important;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid .admin-experts-table {
+    grid-template-columns:
+      minmax(7rem, 1.5fr)
+      minmax(3rem, auto)
+      minmax(4.5rem, auto)
+      auto;
+  }
+}
+
+/* ── ≤ 420px: ocultar Orden; 3 columnas ── */
+@container aft-experts (max-width: 420px) {
+  .admin-experts-filter-table.admin-filter-table--grid .expert-col-order {
+    display: none !important;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid .admin-experts-table {
+    grid-template-columns:
+      minmax(6rem, 1.5fr)
+      minmax(4rem, auto)
+      auto;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid .expert-col-actions {
+    min-width: 0;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid
+    .admin-expert-row-actions {
+    gap: 0.2rem !important;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid
+    .admin-expert-row-actions .btn {
+    min-width: 2rem;
+    padding: 0.22rem 0.35rem;
+  }
+}
+
+/* ── ≤ 320px: ocultar Estado; 2 columnas (nombre + acciones) ── */
+@container aft-experts (max-width: 320px) {
+  .admin-experts-filter-table.admin-filter-table--grid .expert-col-status {
+    display: none !important;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid .admin-experts-table {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+.admin-experts-filter-table.admin-filter-table--grid tbody {
+  min-height: 0;
+}
+
+@media (max-height: 520px) {
+  .admin-experts-filter-table.admin-filter-table--grid {
+    --aft-filter-h: 0px;
+  }
+
+  .admin-experts-filter-table.admin-filter-table--grid
+    .admin-filter-table__filter-row {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CLIENTES — modo CSS Grid + @container (admin-filter-table--grid)
+   Mismo patrón que citas y expertos.
+   Columnas: Correo · Nombre · Cuenta · SMTP · Acciones.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.admin-portal-clients-filter-table.admin-filter-table--grid {
+  container-type: inline-size;
+  container-name: aft-clients;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-filter-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  border-collapse: separate;
+  table-layout: unset;
+  align-items: stretch;
+  grid-template-columns:
+    minmax(10rem, 1.6fr)   /* correo */
+    minmax(7rem, 1fr)      /* nombre */
+    minmax(5rem, auto)     /* cuenta */
+    minmax(5.5rem, auto)   /* smtp */
+    auto;                  /* acciones */
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > thead,
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > tbody {
+  display: contents;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > :is(thead, tbody) > tr {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > tbody > tr.collapse:not(.show) {
+  display: none;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > tbody > tr.collapsing {
+  display: grid;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table > :is(thead, tbody) > tr > :is(th, td) {
+  min-width: 0;
+  vertical-align: middle;
+  padding: 0.45rem 0.45rem;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: normal;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-portal-clients-table
+  .admin-filter-table__text-2l {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid .adm-th-short {
+  display: none;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  tr:is(.portal-client-detail-row, .admin-filter-table__empty) > td {
+  grid-column: 1 / -1;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  tbody tr[data-filter-row]:hover > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg, var(--surface)));
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  tbody tr[data-filter-row].is-alt:hover > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg-alt, var(--surface-2)));
+}
+
+/* Sticky cabecera + filtros */
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-filter-table__head-row > th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .admin-filter-table__filter-row > th {
+  position: sticky;
+  top: var(--aft-head-h, 2.35rem);
+  z-index: 2;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .portal-col-actions {
+  white-space: nowrap;
+  text-align: end;
+}
+
+/* El nombre móvil bajo el correo y el botón + sólo se ven cuando es necesario. */
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .portal-client-name-mobile.admin-u-collapse-on-wide {
+  display: none;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .portal-client-expand-btn {
+  display: none;
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .portal-client-expand-btn[aria-expanded="true"] .portal-client-expand-icon::before {
+  content: "\f068"; /* fa-minus */
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid
+  .portal-email-cell {
+  min-width: 0;
+}
+
+/* ── ≤ 880px: cabeceras icónicas ── */
+@container aft-clients (max-width: 880px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid .adm-th-full {
+    display: none;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid .adm-th-short {
+    display: inline;
+  }
+}
+
+/* ── ≤ 720px: ocultar Nombre (pasa al detalle) ── */
+@container aft-clients (max-width: 720px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-col-name {
+    display: none !important;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .admin-portal-clients-table {
+    grid-template-columns:
+      minmax(10rem, 1.6fr)
+      minmax(5rem, auto)
+      minmax(5.5rem, auto)
+      auto;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-client-name-mobile.admin-u-collapse-on-wide {
+    display: block;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-client-expand-btn {
+    display: inline-flex;
+  }
+}
+
+/* ── ≤ 560px: pills colapsan a icono (texto a11y) ── */
+@container aft-clients (max-width: 560px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-pill-label {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-client-toggle-btn {
+    padding: 0.32em 0.45em;
+    min-width: 2rem;
+    justify-content: center;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-client-toggle-btn .ms-1 {
+    margin-left: 0 !important;
+  }
+}
+
+/* ── ≤ 460px: ocultar SMTP (pasa al detalle) ── */
+@container aft-clients (max-width: 460px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-col-smtp {
+    display: none !important;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .admin-portal-clients-table {
+    grid-template-columns:
+      minmax(8rem, 1.6fr)
+      minmax(5rem, auto)
+      auto;
+  }
+}
+
+/* ── ≤ 360px: ocultar Cuenta también (el detalle expand sigue accesible) ── */
+@container aft-clients (max-width: 360px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .portal-col-account {
+    display: none !important;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .admin-portal-clients-table {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .admin-portal-client-actions .btn {
+    min-width: 2rem;
+    padding: 0.22rem 0.35rem;
+  }
+}
+
+.admin-portal-clients-filter-table.admin-filter-table--grid tbody {
+  min-height: 0;
+}
+
+@media (max-height: 520px) {
+  .admin-portal-clients-filter-table.admin-filter-table--grid {
+    --aft-filter-h: 0px;
+  }
+
+  .admin-portal-clients-filter-table.admin-filter-table--grid
+    .admin-filter-table__filter-row {
     display: none;
   }
 }

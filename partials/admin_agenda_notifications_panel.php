@@ -39,7 +39,7 @@ $agendaAdminNotifyUnread = (int)($agendaAdminNotifyUnread ?? 0);
                 <?php endif; ?>
                 <?= h((string)($nrow["title"] ?? "")) ?>
               </div>
-              <p class="small mb-1 text-light-emphasis" style="white-space: pre-wrap"><?= h((string)($nrow["body"] ?? "")) ?></p>
+              <p class="small mb-1 text-light-emphasis admin-u-pre-wrap"><?= h((string)($nrow["body"] ?? "")) ?></p>
               <p class="small text-secondary mb-0">
                 <i class="fa-solid fa-clock me-1 admin-icon-clock" aria-hidden="true"></i><?= h(agenda_format_datetime_24((string)($nrow["created_at"] ?? ""))) ?>
                 · Cita #<?= (int)($nrow["appointment_id"] ?? 0) ?>

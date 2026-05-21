@@ -1508,6 +1508,10 @@ h3 i {
   line-height: 1.45;
 }
 
+.client-reg-pending-card {
+  grid-column: 1 / -1;
+}
+
 .client-reg-pending-card h3 {
   font-size: 1rem;
   margin-bottom: 0.35rem;

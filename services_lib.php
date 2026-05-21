@@ -338,6 +338,9 @@ function service_gallery_add_image(
         return ["ok" => false, "error" => "image_upload_failed", "message" => $upload["error"]];
     }
     if ($upload["path"] === null) {
+        if (!isset($file["error"]) || (int)$file["error"] === UPLOAD_ERR_NO_FILE) {
+            return ["ok" => true, "gallery_id" => 0];
+        }
         return ["ok" => false, "error" => "no_file"];
     }
 
@@ -585,6 +588,9 @@ function services_save_batch_from_post(
 
         if (isset($files["gallery_images"]["error"][$serviceId]) && is_array($files["gallery_images"]["error"][$serviceId])) {
             foreach ($files["gallery_images"]["error"][$serviceId] as $index => $fileError) {
+                if ((int)$fileError === UPLOAD_ERR_NO_FILE) {
+                    continue;
+                }
                 $galleryFile = [
                     "name" => $files["gallery_images"]["name"][$serviceId][$index] ?? "",
                     "type" => $files["gallery_images"]["type"][$serviceId][$index] ?? "",

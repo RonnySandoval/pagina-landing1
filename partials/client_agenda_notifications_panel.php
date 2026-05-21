@@ -46,7 +46,7 @@ if (!function_exists("h")) {
             <?php endif; ?>
             <?= h((string)($nrow["title"] ?? "")) ?>
           </p>
-          <p class="small mb-1" style="white-space: pre-wrap"><?= h((string)($nrow["body"] ?? "")) ?></p>
+          <p class="small mb-1 admin-u-pre-wrap"><?= h((string)($nrow["body"] ?? "")) ?></p>
           <p class="client-muted small mb-2">
             <?= h((string)($nrow["created_at"] ?? "")) ?>
             <?php if ($isUnread && $nid > 0): ?>

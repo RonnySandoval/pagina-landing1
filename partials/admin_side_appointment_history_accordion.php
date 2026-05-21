@@ -76,8 +76,7 @@ $historyCounterTitle = $historyEventCount > 0
               <div class="admin-side-appt-history-row d-flex align-items-start gap-2">
                 <?php if ($serviceTitle !== ""): ?>
                   <span
-                    class="expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary expert-svc-icon-chip flex-shrink-0"
-                    style="width:1.65rem;height:1.65rem;font-size:0.8rem;"
+                    class="expert-svc-icon d-inline-flex align-items-center justify-content-center rounded-2 border border-secondary expert-svc-icon-chip flex-shrink-0 admin-u-icon-box-sm"
                     title="<?= h($serviceTitle) ?>"
                   >
                     <i class="<?= h($serviceIcon) ?>" aria-hidden="true"></i>
