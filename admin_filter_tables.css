@@ -8,9 +8,48 @@
   --aft-filter-h: 2.15rem;
 }
 
-/* Citas: un solo umbral — ancho del contenedor >= --appt-wide-min → tabla PC; si no → 2 columnas + */
+/*
+ * Sistema de tiers progresivos por ancho de contenedor.
+ * Cada tabla declara los puntos de corte (en px, sin unidad).
+ * El JS aplica data-aft-size="xl|l|m|s|xs" sobre el contenedor raíz.
+ *
+ *   width ≥ --aft-bp-xl  → xl  (texto completo en cabeceras, table-layout fixed, resize on)
+ *   width ≥ --aft-bp-l   → l   (iconos en cabeceras, todas las columnas, auto)
+ *   width ≥ --aft-bp-m   → m   (oculta columnas de prioridad baja, auto)
+ *   width ≥ --aft-bp-s   → s   (oculta más columnas, auto)
+ *   width <  --aft-bp-s  → xs  (en citas: layout elaborado de 1 columna + detalle)
+ */
+
+/*
+ * Breakpoints elegidos teniendo en cuenta el layout admin:
+ *   - Single-col (vp < 992): tabla = vp - ~95 px → 225-895 px típicos.
+ *   - 2-col (vp ≥ 992): admin-main = 1.7fr de (vp - 248) → empieza en ~456 px
+ *     (vp 992) y crece hasta ~1040 px (vp 1920).
+ * Al cruzar vp 992 la tabla baja de ~898 px a ~456 px en un solo click. Para que
+ * ese salto sea sólo un cambio de cabeceras (texto→iconos) en lugar de
+ * reorganizar columnas, el tier "l" cubre un rango ancho (~440–bp_xl) y "xl"
+ * se reserva al ancho donde el texto completo está holgado.
+ *   pre-flip 898 → xl    |    post-flip 456 → l    →    transición xl→l
+ */
+
+/* Citas */
 .expert-appointments-filter-table {
-  --appt-wide-min: 1100;
+  --aft-bp-s:  280;
+  --aft-bp-m:  360;
+  --aft-bp-l:  440;
+  --aft-bp-xl: 760;
+  /* El layout elaborado (.is-appt-compact) se activa por debajo de --appt-wide-min */
+  --appt-wide-min: 280;
+}
+
+/* Expertos: igual escala salvo bp_xl (5 cols entran cómodas con texto a ~560). */
+.admin-experts-filter-table {
+  --aft-bp-s:  280;
+  --aft-bp-m:  360;
+  --aft-bp-l:  440;
+  --aft-bp-xl: 560;
+  /* .is-expert-compact se activa por debajo de --expert-wide-min */
+  --expert-wide-min: 280;
 }
 
 .admin-filter-table__scroll {
@@ -287,5 +326,654 @@
 
   .expert-appointments-filter-table.is-appt-compact .admin-filter-table__scroll {
     min-height: calc(var(--aft-head-h) + var(--aft-row-h));
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Tabla de expertos: modo compacto por ancho del contenedor (no por viewport)
+   Se activa con .is-expert-compact (JS + ResizeObserver) sólo en anchos muy
+   pequeños (< --expert-wide-min: 280). Aplica tweaks de UI (Info badge →
+   botón, padding, etc.). La ocultación de columnas vive en las reglas
+   [data-aft-size="m|s|xs"] de más abajo, no aquí, para evitar duplicar la
+   lógica.
+   ────────────────────────────────────────────────────────────────────────── */
+.admin-experts-filter-table,
+.admin-experts-filter-table .admin-filter-table__scroll,
+.admin-experts-filter-table .admin-experts-table-wrap {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-filter-table__scroll,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table-wrap {
+  overflow-x: hidden !important;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table {
+  table-layout: auto;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-filter-table__filter-row th {
+  top: 1.85rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-filter-table__meta {
+  padding: 0.35rem 0.5rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .adm-th-full,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .expert-th-full,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .adm-th-full {
+  display: none;
+}
+
+.admin-experts-filter-table.is-expert-compact .adm-th-short,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .expert-th-short,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table thead .adm-th-short {
+  display: inline;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-pill-label {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-pill {
+  padding: 0.35em 0.45em;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-order {
+  width: 2.25rem;
+  padding-left: 0.15rem;
+  padding-right: 0.15rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-status {
+  width: 2.5rem;
+  padding-left: 0.15rem;
+  padding-right: 0.15rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-actions {
+  width: auto;
+  white-space: nowrap;
+  padding-left: 0.15rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-col-name {
+  min-width: 0;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-row-name {
+  font-size: 0.88rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .admin-expert-row-actions {
+  gap: 0.2rem !important;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .admin-expert-row-actions .btn {
+  min-width: 2rem;
+  padding: 0.22rem 0.35rem;
+}
+
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-detail-row td {
+  border-top: none;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Tiers progresivos (data-aft-size). Aplica a cualquier .admin-filter-table.
+   - xl: cabeceras completas, layout fixed
+   - l / m / s: cabeceras iconográficas, layout auto, ocultar columnas según
+     prioridad por tipo de tabla.
+   - xs: reservado al modo elaborado (solo citas). Sus reglas viven en el
+     bloque .is-appt-compact más arriba; aquí no tocamos columnas para no
+     interferir con el colgroup que construye el JS.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Cabeceras: texto completo solo en xl; en el resto, icono corto. */
+.admin-filter-table[data-aft-size="l"] .adm-th-full,
+.admin-filter-table[data-aft-size="m"] .adm-th-full,
+.admin-filter-table[data-aft-size="s"] .adm-th-full,
+.admin-filter-table[data-aft-size="xs"] .adm-th-full {
+  display: none;
+}
+
+.admin-filter-table[data-aft-size="l"] .adm-th-short,
+.admin-filter-table[data-aft-size="m"] .adm-th-short,
+.admin-filter-table[data-aft-size="s"] .adm-th-short,
+.admin-filter-table[data-aft-size="xs"] .adm-th-short {
+  display: inline;
+}
+
+/* Layout auto en tiers intermedios para que las columnas restantes
+   se redistribuyan al espacio disponible. */
+.admin-filter-table[data-aft-size="l"] .admin-filter-table__table,
+.admin-filter-table[data-aft-size="m"] .admin-filter-table__table,
+.admin-filter-table[data-aft-size="s"] .admin-filter-table__table {
+  table-layout: auto;
+}
+
+/* === Citas: ocultar columnas progresivamente.
+   - l (440-760): todas las columnas con cabeceras icónicas.
+   - m (360-440): oculta Experto y Cliente.
+   - s (280-360): oculta Experto, Cliente y Servicio.
+   - xs (<280): layout elaborado (is-appt-compact) controla columnas
+     vía colgroup desde JS, no actuamos aquí. */
+.expert-appointments-filter-table[data-aft-size="m"] .appt-col-expert,
+.expert-appointments-filter-table[data-aft-size="m"] .appt-col-guest,
+.expert-appointments-filter-table[data-aft-size="s"] .appt-col-expert,
+.expert-appointments-filter-table[data-aft-size="s"] .appt-col-guest,
+.expert-appointments-filter-table[data-aft-size="s"] .appt-col-service {
+  display: none !important;
+}
+
+/* En tiers no-xl anulamos los % de admin.php para que table-layout:auto pueda
+   adaptarse al ancho real del contenedor (resuelve el desborde al achicar). */
+.expert-appointments-filter-table:is(
+  [data-aft-size="l"],
+  [data-aft-size="m"],
+  [data-aft-size="s"]
+) .expert-appointments-table :is(
+  .appt-col-datetime,
+  .appt-col-expert,
+  .appt-col-service,
+  .appt-col-guest,
+  .appt-col-status
+) {
+  width: auto;
+  max-width: none;
+  min-width: 0;
+}
+
+.expert-appointments-filter-table:is(
+  [data-aft-size="l"],
+  [data-aft-size="m"],
+  [data-aft-size="s"]
+) .expert-appointments-table .appt-col-actions {
+  width: auto;
+  max-width: none;
+}
+
+/* Botón "+" y fila de detalle visibles cuando hay columnas ocultas (m, s, xs).
+   Antes sólo aparecían en is-appt-compact (xs). */
+.expert-appointments-filter-table:is(
+  [data-aft-size="m"],
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .appt-expand-btn.adm-compact-only,
+.expert-appointments-filter-table.is-appt-compact .appt-expand-btn.adm-compact-only {
+  display: inline-flex !important;
+}
+
+.expert-appointments-filter-table:is(
+  [data-aft-size="m"],
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) tr.appt-mobile-detail-row.adm-compact-only,
+.expert-appointments-filter-table.is-appt-compact tr.appt-mobile-detail-row.adm-compact-only {
+  display: table-row !important;
+}
+
+/* En s/xs el Servicio se oculta: mostramos su icono junto a la fecha y el
+   formato corto de fecha, ocultando el formato largo (desktop). */
+.expert-appointments-filter-table:is(
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .appt-mobile-svc-icon.adm-compact-only,
+.expert-appointments-filter-table.is-appt-compact .appt-mobile-svc-icon.adm-compact-only {
+  display: inline-flex !important;
+}
+
+.expert-appointments-filter-table:is(
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .appt-mobile-when.adm-compact-only,
+.expert-appointments-filter-table.is-appt-compact .appt-mobile-when.adm-compact-only {
+  display: inline !important;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.expert-appointments-filter-table:is(
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .appt-datetime-full {
+  display: none !important;
+}
+
+/* En m/s aprovechamos el datetime-cell como flexbox horizontal igual que en
+   compact, para que el bot\u00f3n + quepa al lado de la fecha sin saltos. */
+.expert-appointments-filter-table:is(
+  [data-aft-size="m"],
+  [data-aft-size="s"]
+) .appt-datetime-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* === Expertos: ocultar columnas progresivamente.
+   - l (440-560): todas las columnas con cabeceras icónicas.
+   - m (360-440): oculta Servicios.
+   - s (280-360): oculta Servicios y Orden.
+   - xs (<280): igual que s, además .is-expert-compact activa UI compacta. */
+.admin-experts-filter-table[data-aft-size="m"] .expert-col-services,
+.admin-experts-filter-table[data-aft-size="m"] .expert-services-col,
+.admin-experts-filter-table[data-aft-size="s"] .expert-col-services,
+.admin-experts-filter-table[data-aft-size="s"] .expert-services-col,
+.admin-experts-filter-table[data-aft-size="xs"] .expert-col-services,
+.admin-experts-filter-table[data-aft-size="xs"] .expert-services-col {
+  display: none !important;
+}
+
+.admin-experts-filter-table[data-aft-size="s"] .expert-col-order,
+.admin-experts-filter-table[data-aft-size="xs"] .expert-col-order {
+  display: none !important;
+}
+
+/* En tiers no-xl anulamos los % de admin.php para que table-layout:auto
+   adapte el ancho de cada columna al contenedor real. */
+.admin-experts-filter-table:is(
+  [data-aft-size="l"],
+  [data-aft-size="m"],
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .admin-experts-table :is(
+  .expert-col-name,
+  .expert-col-order,
+  .expert-col-status,
+  .expert-col-services,
+  .expert-services-col,
+  .expert-col-actions
+) {
+  width: auto;
+  max-width: none;
+  min-width: 0;
+}
+
+/* Cuando se ocultan columnas (m/s/xs), mostramos el botón Info en la fila
+   en lugar del badge Info, igual que ya hacía is-expert-compact. */
+.admin-experts-filter-table:is(
+  [data-aft-size="m"],
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .admin-experts-table .expert-info-btn--mobile,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-info-btn--mobile {
+  display: inline-flex;
+}
+
+.admin-experts-filter-table:is(
+  [data-aft-size="m"],
+  [data-aft-size="s"],
+  [data-aft-size="xs"]
+) .admin-experts-table .expert-info-badge--desktop,
+.admin-experts-filter-table.is-expert-compact .admin-experts-table .expert-info-badge--desktop {
+  display: none !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROTOTIPO: tabla de citas con CSS Grid + @container (admin-filter-table--grid)
+   Responsive declarativo; sin data-aft-size, sin is-appt-compact, sin colgroup JS.
+   Breakpoints de contenedor: 950 / 750 / 600 / 480 / 360 (px).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.expert-appointments-filter-table.admin-filter-table--grid {
+  container-type: inline-size;
+  container-name: aft-appt;
+  --appt-grid-bp-xl: 950px;
+  --appt-grid-bp-l: 750px;
+  --appt-grid-bp-m: 600px;
+  --appt-grid-bp-s: 480px;
+  --appt-grid-bp-xs: 360px;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .admin-filter-table__scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  border-collapse: separate;
+  table-layout: unset;
+  align-items: stretch;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table > thead,
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table > tbody {
+  display: contents;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table > :is(thead, tbody) > tr {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+/* Bootstrap .collapse no se mostraba por sí solo, pero mi regla anterior lo
+   forzaba a display:grid. Restablecemos el comportamiento por defecto. */
+.expert-appointments-filter-table.admin-filter-table--grid
+  .expert-appointments-table > tbody > tr.collapse:not(.show) {
+  display: none;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid
+  .expert-appointments-table > tbody > tr.collapsing {
+  display: grid;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table > :is(thead, tbody) > tr > :is(th, td) {
+  min-width: 0;
+  vertical-align: middle;
+  padding: 0.45rem 0.45rem;
+  /* `anywhere` rompía letra a letra; con normal sólo se rompe en espacios */
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: normal;
+}
+
+/* OVERRIDES OBLIGATORIOS: las reglas legacy en admin.php declaran
+   `width: 18%`, `max-width: 8rem`, etc. para cada td. En grid esas anchuras
+   se siguen aplicando sobre los grid items y los aplastan a 30-40 px. */
+.expert-appointments-filter-table.admin-filter-table--grid .expert-appointments-table :is(
+  .appt-col-datetime,
+  .appt-col-expert,
+  .appt-col-service,
+  .appt-col-guest,
+  .appt-col-status,
+  .appt-col-actions
+) {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+/* Truncado limpio en celdas con texto largo: 2 líneas máx + ellipsis */
+.expert-appointments-filter-table.admin-filter-table--grid
+  .expert-appointments-table
+  .admin-filter-table__text-2l {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.32;
+  overflow-wrap: anywhere; /* sólo aquí: emails muy largos rompen para no desbordar */
+  max-width: 100%;
+}
+
+/* Fecha y email en una sola línea con ellipsis */
+.expert-appointments-filter-table.admin-filter-table--grid .appt-datetime-full,
+.expert-appointments-filter-table.admin-filter-table--grid .appt-guest-email,
+.expert-appointments-filter-table.admin-filter-table--grid .appt-guest-name,
+.expert-appointments-filter-table.admin-filter-table--grid .appt-svc-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 5 columnas (sin experto en el markup): mínimos que permiten contenido legible. */
+.expert-appointments-filter-table.admin-filter-table--grid:not(.expert-appointments-filter-table--with-expert)
+  .expert-appointments-table {
+  grid-template-columns:
+    minmax(8rem, 1.3fr)   /* fecha   */
+    minmax(7rem, 1fr)     /* servicio */
+    minmax(8rem, 1.4fr)   /* cliente */
+    minmax(6rem, auto)    /* estado  */
+    auto;                 /* acciones */
+}
+
+/* 6 columnas (listado con columna experto) */
+.expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+  .expert-appointments-table {
+  grid-template-columns:
+    minmax(8rem, 1.2fr)
+    minmax(7rem, 0.9fr)
+    minmax(7rem, 0.95fr)
+    minmax(8rem, 1.15fr)
+    minmax(6rem, auto)
+    auto;
+}
+
+/* Cabeceras: texto completo por defecto (contenedor ancho) */
+.expert-appointments-filter-table.admin-filter-table--grid .adm-th-short {
+  display: none;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .adm-compact-only,
+.expert-appointments-filter-table.admin-filter-table--grid .appt-filter-status-mobile {
+  display: none !important;
+}
+
+/* Sticky cabecera + filtros */
+.expert-appointments-filter-table.admin-filter-table--grid .admin-filter-table__head-row > th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .appt-filter-row > th {
+  position: sticky;
+  top: var(--aft-head-h, 2.35rem);
+  z-index: 2;
+}
+
+/* Filas de detalle / posponer ocupan todo el ancho */
+.expert-appointments-filter-table.admin-filter-table--grid
+  tr:is(.appt-mobile-detail-row, .appt-postpone-row, .admin-filter-table__empty)
+  > td {
+  grid-column: 1 / -1;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid tbody tr[data-filter-row]:hover > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg, var(--surface)));
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid
+  tbody
+  tr[data-filter-row].is-alt:hover
+  > td {
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--aft-bg-alt, var(--surface-2)));
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .appt-col-actions {
+  white-space: nowrap;
+  text-align: end;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid .appt-datetime-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+/* ── Contenedor ≤ 950px: cabeceras con icono ── */
+@container aft-appt (max-width: 950px) {
+  .expert-appointments-filter-table.admin-filter-table--grid .adm-th-full {
+    display: none;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .adm-th-short {
+    display: inline;
+  }
+}
+
+/*
+ * Breakpoints elegidos según el ancho real que toma la tabla en el admin
+ * (con sidebar+grid 2-col). Cada columna necesita ~7-9rem para ser legible.
+ *  - 6 cols + texto necesita ~950 px
+ *  - 5 cols + iconos cómodos: ~720 px
+ *  - 4 cols (sin Cliente): ~560 px
+ *  - 3 cols (sin Servicio): ~420 px
+ *  - 2 cols (sin Estado, filtro estado movido): < 420 px
+ */
+
+/* ── ≤ 880px: ocultar experto (cuando aplica); botón + ya disponible ── */
+@container aft-appt (max-width: 880px) {
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .appt-col-expert {
+    display: none !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .expert-appointments-table {
+    grid-template-columns:
+      minmax(8rem, 1.3fr)
+      minmax(7rem, 1fr)
+      minmax(8rem, 1.4fr)
+      minmax(6rem, auto)
+      auto;
+  }
+
+  /* En cuanto se oculta una columna en la variante con-expert, mostramos el
+     botón + para revelar la info completa en la fila detalle. */
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .appt-expand-btn.adm-compact-only {
+    display: inline-flex !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    tr.appt-mobile-detail-row.adm-compact-only {
+    display: grid !important;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+}
+
+/* ── ≤ 720px: ocultar Cliente; botón + y fila detalle ── */
+@container aft-appt (max-width: 720px) {
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-col-guest {
+    display: none !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid:not(.expert-appointments-filter-table--with-expert)
+    .expert-appointments-table,
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .expert-appointments-table {
+    grid-template-columns:
+      minmax(8rem, 1.4fr)
+      minmax(7rem, 1.1fr)
+      minmax(6rem, auto)
+      auto;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-expand-btn.adm-compact-only {
+    display: inline-flex !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid tr.appt-mobile-detail-row.adm-compact-only {
+    display: grid !important;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+}
+
+/* ── ≤ 560px: ocultar Servicio; fecha corta + icono servicio ── */
+@container aft-appt (max-width: 560px) {
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-col-service {
+    display: none !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid:not(.expert-appointments-filter-table--with-expert)
+    .expert-appointments-table,
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .expert-appointments-table {
+    grid-template-columns:
+      minmax(8rem, 1fr)
+      minmax(6rem, auto)
+      auto;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-mobile-svc-icon.adm-compact-only {
+    display: inline-flex !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-mobile-when.adm-compact-only {
+    display: inline !important;
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-datetime-full {
+    display: none !important;
+  }
+}
+
+/* ── ≤ 420px: ocultar Estado, mover filtro Estado a columna Acciones ── */
+@container aft-appt (max-width: 420px) {
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-col-status {
+    display: none !important;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid:not(.expert-appointments-filter-table--with-expert)
+    .expert-appointments-table,
+  .expert-appointments-filter-table.admin-filter-table--grid.expert-appointments-filter-table--with-expert
+    .expert-appointments-table {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-col-actions {
+    min-width: 5.5rem;
+    max-width: 7rem;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-filter-status-mobile {
+    display: block !important;
+    width: 100%;
+    max-width: 100%;
+    font-size: 0.7rem;
+    margin-bottom: 0.2rem;
+    box-sizing: border-box;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-col-actions .appt-actions-group {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
+}
+
+/* Altura de fila flexible en el prototipo grid */
+.expert-appointments-filter-table.admin-filter-table--grid tbody {
+  min-height: 0;
+}
+
+.expert-appointments-filter-table.admin-filter-table--grid
+  .admin-filter-table__table
+  tbody
+  tr[data-filter-row].has-row-overflow {
+  cursor: pointer;
+}
+
+@media (max-height: 520px) {
+  .expert-appointments-filter-table.admin-filter-table--grid {
+    --aft-filter-h: 0px;
+  }
+
+  .expert-appointments-filter-table.admin-filter-table--grid .appt-filter-row {
+    display: none;
   }
 }

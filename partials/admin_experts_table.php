@@ -9,7 +9,7 @@ $nExperts = count($experts);
 ?>
 <div
   id="admin-experts-list"
-  class="admin-filter-table scroll-margin-admin mb-4<?= $nExperts === 0 ? " admin-filter-table--empty-static" : "" ?>"
+  class="admin-filter-table admin-experts-filter-table scroll-margin-admin mb-4<?= $nExperts === 0 ? " admin-filter-table--empty-static" : "" ?>"
   data-admin-filter-table
 >
   <?php if ($nExperts > 0): ?>
