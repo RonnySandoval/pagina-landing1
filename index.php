@@ -1076,7 +1076,7 @@ $scriptVersion = (string)(@filemtime(__DIR__ . "/script.js") ?: time());
                 $pendName = htmlspecialchars((string)($clientRegisterPending["display_name"] ?? ""));
                 $pendMailSent = !empty($clientRegisterPending["verification_sent"]);
               ?>
-              <div class="client-auth-box client-card-highlight client-reg-pending-card" id="client-register-pending-card" style="grid-column: 1 / -1;">
+              <div class="client-auth-box client-card-highlight client-reg-pending-card" id="client-register-pending-card">
                 <?php if ($pendMailSent): ?>
                 <h3><i class="fa-solid fa-envelope"></i> Confirma el correo</h3>
                 <p class="client-reg-pending-meta">

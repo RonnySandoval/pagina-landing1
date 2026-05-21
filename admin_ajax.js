@@ -140,7 +140,16 @@
     });
   }
 
+  function stripEmptyFileInputs(form) {
+    form.querySelectorAll('input[type="file"]').forEach(function (input) {
+      if (!input.files || input.files.length === 0) {
+        input.removeAttribute("name");
+      }
+    });
+  }
+
   function postFormAjax(form, submitter) {
+    stripEmptyFileInputs(form);
     var fd = new FormData(form);
     fd.append("ajax", "1");
     if (submitter && submitter.name) {
@@ -817,25 +826,43 @@
     if (scope === "client-delete") {
       var tr = form.closest("tr");
       if (tr) {
-        tr.style.transition = "opacity 0.28s ease, transform 0.28s ease";
-        tr.style.opacity = "0";
-        tr.style.transform = "translateX(8px)";
+        var deletedClientId = tr.getAttribute("data-filter-id");
+        var detailRow = null;
+        if (deletedClientId) {
+          detailRow = document.querySelector(
+            '.admin-portal-clients-table tr[data-filter-detail-for="' +
+              deletedClientId.replace(/"/g, '\\"') +
+              '"]'
+          );
+        }
+        var rowsToAnimate = [tr];
+        if (detailRow) rowsToAnimate.push(detailRow);
+        rowsToAnimate.forEach(function (el) {
+          el.style.transition = "opacity 0.28s ease, transform 0.28s ease";
+          el.style.opacity = "0";
+          el.style.transform = "translateX(8px)";
+        });
         window.setTimeout(function () {
-          tr.remove();
+          rowsToAnimate.forEach(function (el) {
+            el.remove();
+          });
           var tbody = document.querySelector(".admin-portal-clients-table tbody");
-          if (tbody && !tbody.querySelector("tr")) {
+          if (tbody && !tbody.querySelector("tr[data-filter-row]")) {
             var wrap = document.querySelector(".admin-portal-clients-body");
             if (wrap) {
+              var filterTable = wrap.querySelector(".admin-filter-table");
+              if (filterTable) {
+                filterTable.remove();
+              }
               var empty = document.createElement("p");
               empty.className = "small text-light-emphasis mb-0";
               empty.textContent =
                 "Aún no hay cuentas. Comparte la URL del acordeón «Rutas» o el enlace «Clientes» del menú de la web.";
-              var tableWrap = wrap.querySelector(".table-responsive");
-              if (tableWrap) {
-                tableWrap.remove();
-              }
               wrap.appendChild(empty);
             }
+          } else if (typeof window.refreshAdminFilterTableRows === "function") {
+            var rootEl = document.getElementById("admin-portal-clients-list");
+            if (rootEl) window.refreshAdminFilterTableRows(rootEl);
           }
         }, 280);
       }

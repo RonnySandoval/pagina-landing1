@@ -9,7 +9,7 @@ $nExperts = count($experts);
 ?>
 <div
   id="admin-experts-list"
-  class="admin-filter-table admin-experts-filter-table scroll-margin-admin mb-4<?= $nExperts === 0 ? " admin-filter-table--empty-static" : "" ?>"
+  class="admin-filter-table admin-filter-table--grid admin-experts-filter-table scroll-margin-admin mb-4<?= $nExperts === 0 ? " admin-filter-table--empty-static" : "" ?>"
   data-admin-filter-table
 >
   <?php if ($nExperts > 0): ?>
@@ -144,31 +144,27 @@ $nExperts = count($experts);
             data-sort-status="<?= $exActive ? "1" : "0" ?>"
             data-sort-services="<?= (int)$nSvc ?>"
           >
-            <td class="expert-col-name">
-              <div class="d-flex align-items-center flex-wrap gap-1">
+            <td class="expert-col-name" data-cell-label="Nombre">
+              <div class="d-flex align-items-center flex-wrap gap-1 expert-name-cell">
                 <strong class="expert-row-name admin-filter-table__text-2l"><?= h($displayName) ?></strong>
                 <?php if ($showInfoPanel): ?>
                   <button
                     type="button"
-                    class="btn btn-outline-info btn-sm py-0 px-2 expert-info-btn expert-info-btn--mobile"
+                    class="btn btn-outline-secondary btn-sm py-0 px-1 expert-info-btn"
                     data-bs-toggle="collapse"
                     data-bs-target="#expert-info-<?= $rowId ?>"
                     aria-expanded="false"
                     aria-controls="expert-info-<?= $rowId ?>"
                     title="Ver contacto y servicios"
                   >
-                    Info
+                    <i class="fa-solid fa-plus expert-info-icon" aria-hidden="true"></i>
+                    <span class="visually-hidden">Ver contacto y servicios</span>
                   </button>
-                <?php endif; ?>
-                <?php if ($hasContact): ?>
-                  <span class="badge rounded-pill text-bg-info expert-pill expert-info-badge expert-info-badge--desktop d-inline-flex align-items-center" title="Correo, teléfono o notas en la ficha">
-                    <i class="fa-solid fa-id-card" aria-hidden="true"></i><span class="expert-pill-label ms-1">Info</span>
-                  </span>
                 <?php endif; ?>
               </div>
             </td>
-            <td class="text-center font-monospace small expert-col-order"><?= $sortOrder ?></td>
-            <td class="text-center expert-col-status">
+            <td class="text-center font-monospace small expert-col-order" data-cell-label="Orden"><?= $sortOrder ?></td>
+            <td class="text-center expert-col-status" data-cell-label="Estado">
               <?php if ($exActive): ?>
                 <span class="badge rounded-pill text-bg-success expert-pill d-inline-flex align-items-center" title="Visible en la web según configuración">
                   <i class="fa-solid fa-circle-check" aria-hidden="true"></i><span class="expert-pill-label">Activo</span>
@@ -179,7 +175,7 @@ $nExperts = count($experts);
                 </span>
               <?php endif; ?>
             </td>
-            <td class="text-start expert-col-services">
+            <td class="text-start expert-col-services" data-cell-label="Servicios">
               <?php if ($nSvc === 0): ?>
                 <span class="text-muted small font-monospace" title="Sin servicios vinculados">0</span>
               <?php else: ?>
@@ -218,7 +214,7 @@ $nExperts = count($experts);
                 </div>
               <?php endif; ?>
             </td>
-            <td class="text-end expert-col-actions">
+            <td class="text-end expert-col-actions" data-cell-label="Acciones">
               <div class="d-inline-flex flex-nowrap align-items-center justify-content-end admin-expert-row-actions">
                 <a
                   class="btn btn-outline-info btn-sm<?= ($rowSelected && $expertView === "schedule") ? " active" : "" ?>"
