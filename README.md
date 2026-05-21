@@ -14,6 +14,7 @@ carpeta, su propia BD y su propio admin, completamente aisladas entre sí.
 - [Borrar una landing local con `deprovision.ps1`](#borrar-una-landing-local-con-deprovisionps1)
 - [Despliegue a producción](#despliegue-a-producción)
 - [Panel admin (resumen)](#panel-admin-resumen)
+- [Tablas filtrables del admin](#tablas-filtrables-del-admin)
 - [Agenda y expertos](#agenda-y-expertos)
 - [Cliente público, portal y mensajes](#cliente-público-portal-y-mensajes)
 - [API REST (v1)](#api-rest-v1)
@@ -390,6 +391,65 @@ Todo en **`admin.php`**. Los acordeones de **Herramientas** siguen un orden por 
 Vista amplia de bandeja: query `?inbox=1` en el admin (documentado en la propia UI).
 
 URLs de ficha experto (query en `admin.php`): `expert_id`, `expert_view=edit|schedule`, opcional `expert_week` para la tabla semanal.
+
+## Tablas filtrables del admin
+
+Listados con **filtro por columna**, **orden** al pulsar cabeceras y filas de detalle (posponer cita, avisos, contacto del experto). La lógica compartida vive en:
+
+| Archivo | Rol |
+| --- | --- |
+| `admin_filter_tables.js` | Filtros, orden, filas expandibles (`has-row-overflow`), integración con acordeones Bootstrap |
+| `admin_filter_tables.css` | Layout responsive, prototipo **CSS Grid** para citas, modo compacto de expertos |
+| `partials/admin_experts_table.php` | Tabla de expertos (`data-admin-filter-table`) |
+| `partials/admin_expert_appointments_table.php` | Tabla de citas (misma partial en listado global, ficha de horario y acordeones) |
+
+En `admin.php` se enlazan con `?v=filemtime(...)`. Parte del aspecto visual de tablas sigue en un bloque `<style>` grande dentro de `admin.php` (pendiente extraer a `admin.css`).
+
+### Citas — prototipo CSS Grid (`admin-filter-table--grid`)
+
+La tabla de citas usa **CSS Grid + `subgrid` + consultas de contenedor** (`@container aft-appt`). El ancho del **panel** (sidebar + grid de dos columnas del admin), no solo el viewport, define cuántas columnas se muestran.
+
+**Clases en el contenedor** (`partials/admin_expert_appointments_table.php`):
+
+- `admin-filter-table--grid` — activa el prototipo grid (quitarla restaura el modo tabla legacy con tiers JS).
+- `expert-appointments-filter-table--with-expert` — cuando el listado incluye columna Experto (6 columnas en el markup).
+
+**Comportamiento responsive** (ancho del contenedor `.expert-appointments-filter-table`):
+
+| Ancho máx. | Cambio |
+| --- | --- |
+| > 950 px | Cabeceras con texto completo; todas las columnas visibles |
+| ≤ 950 px | Cabeceras con iconos (`adm-th-short`) |
+| ≤ 880 px | Oculta columna **Experto** (solo si `--with-expert`); aparece botón **+** y fila detalle móvil |
+| ≤ 720 px | Oculta **Cliente**; botón **+** (listados sin experto en cabecera) |
+| ≤ 560 px | Oculta **Servicio**; fecha corta + icono de servicio en celda Fecha |
+| ≤ 420 px | Oculta **Estado**; filtro de estado pasa a la columna Acciones |
+
+El botón **+** (`appt-expand-btn`) solo se muestra cuando **ya se ocultó al menos una columna** (no en vista ancha con todas las columnas).
+
+**JavaScript en modo grid:** no aplica `data-aft-size`, `is-appt-compact`, `<colgroup>` ni redimensionado de columnas. Sí mantiene filtros, orden y expandir texto en fila.
+
+**Detalle técnico:** las reglas de `width` / `max-width` por columna en `admin.php` (pensadas para `table-layout: fixed`) se anulan en grid con selectores `.admin-filter-table--grid .appt-col-* { width: auto; max-width: none; }`. Sin ese override, las celdas se aplastan y el texto rompe letra a letra.
+
+**Filas colapsables:** las filas `tr.collapse` (p. ej. posponer cita) deben seguir con `display: none` hasta que Bootstrap añada `.show`; el grid no debe forzar `display: grid` en filas `.collapse:not(.show)`.
+
+**Navegadores:** Chrome/Edge 117+, Firefox 71+, Safari 16+ (`subgrid` + `container-type: inline-size`).
+
+### Expertos — modo actual (tiers por JS)
+
+La tabla de expertos (`admin-experts-filter-table`) sigue el sistema anterior:
+
+- `ResizeObserver` + atributo `data-aft-size` (`xl` \| `l` \| `m` \| `s` \| `xs`) según variables CSS `--aft-bp-*`.
+- Clase `is-expert-compact` en anchos muy pequeños (UI compacta: botón Info móvil, etc.).
+- Redimensionado manual de columnas solo en tier `xl` (viewport/contenedor ancho).
+
+Breakpoints por defecto en `admin_filter_tables.css`: `--aft-bp-s: 280`, `--aft-bp-m: 360`, `--aft-bp-l: 440`, `--aft-bp-xl: 560` (px, sin unidad en la variable; el JS las lee con `getComputedStyle`).
+
+### Evolución prevista
+
+1. Validar el prototipo grid en citas y migrar **expertos** al mismo patrón (`@container`, sin tiers JS).
+2. Extraer estilos de tablas del `<style>` de `admin.php` a un CSS dedicado.
+3. Indicadores de scroll horizontal y scrollbars temáticos en contenedores `.admin-filter-table__scroll`.
 
 ## Agenda y expertos
 
@@ -922,10 +982,14 @@ pag-template/
 ├── client_dashboard.php       Redirección a #area-cliente (compatibilidad).
 ├── client_logout.php          Cierre de sesión cliente.
 ├── palette_picker.php         Selector de paleta (include desde admin).
+├── admin_filter_tables.css    Tablas admin filtrables: grid citas, tiers expertos.
+├── admin_filter_tables.js     Filtros, orden y layout responsive de esas tablas.
+├── admin_ajax.js              Toasts y fragmentos AJAX del panel (incl. tablas).
 ├── partials/
 │   ├── service_carousel.php       Carrusel de servicio (si aplica).
 │   ├── agenda_public_section.php  Tabla de huecos + formulario de reserva (cliente).
 │   ├── admin_experts_table.php    Listado de expertos en admin.
+│   ├── admin_expert_appointments_table.php  Citas filtrables (prototipo CSS Grid).
 │   ├── admin_experts_accordions.php  Acordeones: alta, L–V masivo, agenda pública.
 │   ├── admin_expert_edit_panel.php   Solo datos del experto.
 │   ├── admin_expert_schedule_panel.php  Horario, plantilla, citas.

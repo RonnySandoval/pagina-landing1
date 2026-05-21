@@ -40,7 +40,7 @@ if ($showExpertColumn) {
   <p class="small text-muted mb-0"><?= h($emptyMessage) ?></p>
 <?php else: ?>
   <div
-    class="admin-filter-table expert-appointments-filter-table"
+    class="admin-filter-table admin-filter-table--grid expert-appointments-filter-table<?= $showExpertColumn ? " expert-appointments-filter-table--with-expert" : "" ?>"
     id="<?= h($tableId) ?>"
     data-admin-filter-table
   >

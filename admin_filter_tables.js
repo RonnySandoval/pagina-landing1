@@ -271,8 +271,14 @@
     var mqDesktop = window.matchMedia("(min-width: 992px)");
 
     function rowExpandAllowsDesktop(rootForMode) {
+      if (isApptGridTable(rootForMode)) {
+        return true;
+      }
       if (isExpertApptTable(rootForMode)) {
         return apptTableIsWideLayout(rootForMode);
+      }
+      if (isExpertsTable(rootForMode)) {
+        return expertsTableIsWideLayout(rootForMode);
       }
       return mqDesktop.matches;
     }
@@ -325,10 +331,166 @@
   }
 
   var APPT_COMPACT_ACTIONS_PX = 112;
-  var APPT_WIDE_MIN_PX_DEFAULT = 1100;
+  var APPT_WIDE_MIN_PX_DEFAULT = 280;
+  var EXPERT_WIDE_MIN_PX_DEFAULT = 280;
+
+  function readCssPxVar(root, name, fallback) {
+    var v = parseFloat(getComputedStyle(root).getPropertyValue(name));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  }
+
+  function getTableTier(root) {
+    var w = root.getBoundingClientRect().width;
+    if (!(w > 0)) {
+      return null;
+    }
+    var bpS  = readCssPxVar(root, "--aft-bp-s",  0);
+    var bpM  = readCssPxVar(root, "--aft-bp-m",  0);
+    var bpL  = readCssPxVar(root, "--aft-bp-l",  0);
+    var bpXl = readCssPxVar(root, "--aft-bp-xl", 0);
+    if (bpXl > 0 && w >= bpXl) return "xl";
+    if (bpL  > 0 && w >= bpL)  return "l";
+    if (bpM  > 0 && w >= bpM)  return "m";
+    if (bpS  > 0 && w >= bpS)  return "s";
+    return "xs";
+  }
+
+  function updateTableTier(root) {
+    var tier = getTableTier(root);
+    if (!tier) {
+      return null;
+    }
+    if (root.getAttribute("data-aft-size") !== tier) {
+      root.setAttribute("data-aft-size", tier);
+    }
+    return tier;
+  }
+
+  function tableTierAllowsColResize(root) {
+    if (isExpertApptTable(root) || isExpertsTable(root)) {
+      return root.getAttribute("data-aft-size") === "xl";
+    }
+    return null;
+  }
+
+  function maybeInitColResizeForTier(root) {
+    if (!isExpertApptTable(root) && !isExpertsTable(root)) {
+      return;
+    }
+    if (root.getAttribute("data-aft-size") !== "xl") {
+      return;
+    }
+    if (root.getAttribute("data-col-resize-inited") === "1") {
+      return;
+    }
+    initColResize(root);
+  }
+
+  function tableColsStorageKey(root) {
+    var table = root.querySelector(".admin-filter-table__table");
+    return (
+      "adminFilterColWidths:" +
+      (root.id ||
+        (table && table.className.replace(/\s+/g, "_").slice(0, 80)) ||
+        "admin-filter-table")
+    );
+  }
+
+  function loadTableSavedColWidths(root) {
+    try {
+      var raw = sessionStorage.getItem(tableColsStorageKey(root));
+      if (!raw) {
+        return null;
+      }
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  /* Mantiene los widths inline de <col> coherentes con el tier:
+   *  - xl: aplica los anchos guardados (resize del usuario) si existen.
+   *  - resto: limpia los anchos para que table-layout:auto pueda adaptarse al
+   *    contenedor real y no se desborde al achicar.
+   * No toca el colgroup elaborado de citas (data-appt-compact-cols=1), que
+   * gestiona el JS de is-appt-compact con su propia lógica.
+   */
+  function syncTableColgroupWidthsForTier(root) {
+    var table = root.querySelector(".admin-filter-table__table");
+    if (!table) {
+      return;
+    }
+    var colgroup = table.querySelector("colgroup");
+    if (!colgroup) {
+      return;
+    }
+    if (colgroup.getAttribute("data-appt-compact-cols") === "1") {
+      return;
+    }
+    var cols = Array.from(colgroup.querySelectorAll("col"));
+    if (cols.length === 0) {
+      return;
+    }
+    var tier = root.getAttribute("data-aft-size");
+    if (tier === "xl") {
+      var saved = loadTableSavedColWidths(root);
+      cols.forEach(function (col, i) {
+        var w = saved && saved[i] ? saved[i] : "";
+        if (col.style.width !== w) {
+          col.style.width = w;
+        }
+      });
+    } else {
+      cols.forEach(function (col) {
+        if (col.style.width !== "") {
+          col.style.width = "";
+        }
+      });
+    }
+  }
 
   function isExpertApptTable(root) {
     return root.classList.contains("expert-appointments-filter-table");
+  }
+
+  function isApptGridTable(root) {
+    return (
+      isExpertApptTable(root) &&
+      root.classList.contains("admin-filter-table--grid")
+    );
+  }
+
+  /** Quita estado legacy (tiers, colgroup, compact) del prototipo CSS Grid. */
+  function clearApptGridLegacyState(root) {
+    if (!isApptGridTable(root)) {
+      return;
+    }
+    root.classList.remove("is-appt-compact", "is-appt-wide");
+    root.removeAttribute("data-aft-size");
+    var table = root.querySelector(".expert-appointments-table");
+    if (!table) {
+      return;
+    }
+    var colgroup = table.querySelector("colgroup");
+    if (colgroup) {
+      colgroup.remove();
+    }
+    table.style.tableLayout = "";
+    if (root.getAttribute("data-col-resize-inited") === "1") {
+      root.removeAttribute("data-col-resize-inited");
+      table.querySelectorAll(".admin-filter-table__th-resizable").forEach(function (th) {
+        th.classList.remove("admin-filter-table__th-resizable");
+        var handle = th.querySelector(".admin-filter-table__col-resize");
+        if (handle) {
+          handle.remove();
+        }
+      });
+    }
+  }
+
+  function isExpertsTable(root) {
+    return root.classList.contains("admin-experts-filter-table");
   }
 
   function getApptWideMinPx(root) {
@@ -338,8 +500,19 @@
     return Number.isFinite(parsed) && parsed > 0 ? parsed : APPT_WIDE_MIN_PX_DEFAULT;
   }
 
-  function apptTableContainerWidth(root) {
+  function getExpertWideMinPx(root) {
+    var parsed = parseFloat(
+      getComputedStyle(root).getPropertyValue("--expert-wide-min")
+    );
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : EXPERT_WIDE_MIN_PX_DEFAULT;
+  }
+
+  function tableContainerWidth(root) {
     return root.getBoundingClientRect().width;
+  }
+
+  function apptTableContainerWidth(root) {
+    return tableContainerWidth(root);
   }
 
   function apptTableIsWideLayout(root) {
@@ -356,6 +529,22 @@
     }
     var w = apptTableContainerWidth(root);
     return w > 0 && w < getApptWideMinPx(root);
+  }
+
+  function expertsTableIsWideLayout(root) {
+    if (!isExpertsTable(root)) {
+      return false;
+    }
+    var w = tableContainerWidth(root);
+    return w >= getExpertWideMinPx(root);
+  }
+
+  function expertsTableShouldBeCompact(root) {
+    if (!isExpertsTable(root)) {
+      return false;
+    }
+    var w = tableContainerWidth(root);
+    return w > 0 && w < getExpertWideMinPx(root);
   }
 
   function apptTableStorageKey(root) {
@@ -474,6 +663,12 @@
     if (!isExpertApptTable(root)) {
       return;
     }
+    if (isApptGridTable(root)) {
+      clearApptGridLegacyState(root);
+      refreshRowOverflow(root);
+      return;
+    }
+    updateTableTier(root);
     var compact = apptTableShouldBeCompact(root);
     var wasCompact = root.classList.contains("is-appt-compact");
     root.classList.toggle("is-appt-compact", compact);
@@ -486,14 +681,21 @@
           refineCompactApptColgroup(root);
         }
       });
-    } else if (wasCompact && !compact && root.getAttribute("data-col-resize-inited") !== "1") {
-      initColResize(root);
+    } else {
+      maybeInitColResizeForTier(root);
+      syncTableColgroupWidthsForTier(root);
     }
     refreshRowOverflow(root);
   }
 
   function initApptCompactLayout(root) {
     if (!isExpertApptTable(root)) {
+      return;
+    }
+    if (isApptGridTable(root)) {
+      clearApptGridLegacyState(root);
+      root.setAttribute("data-appt-compact-inited", "1");
+      refreshRowOverflow(root);
       return;
     }
     if (root.getAttribute("data-appt-compact-inited") === "1") {
@@ -514,13 +716,56 @@
     window.addEventListener("resize", run);
   }
 
+  function updateExpertsCompactLayout(root) {
+    if (!isExpertsTable(root)) {
+      return;
+    }
+    updateTableTier(root);
+    var compact = expertsTableShouldBeCompact(root);
+    root.classList.toggle("is-expert-compact", compact);
+    root.classList.toggle("is-expert-wide", !compact);
+
+    maybeInitColResizeForTier(root);
+    syncTableColgroupWidthsForTier(root);
+
+    refreshRowOverflow(root);
+    if (typeof window.fitAllExpertServiceRows === "function") {
+      window.fitAllExpertServiceRows();
+    }
+  }
+
+  function initExpertsCompactLayout(root) {
+    if (!isExpertsTable(root)) {
+      return;
+    }
+    if (root.getAttribute("data-expert-compact-inited") === "1") {
+      updateExpertsCompactLayout(root);
+      return;
+    }
+    root.setAttribute("data-expert-compact-inited", "1");
+
+    function run() {
+      updateExpertsCompactLayout(root);
+    }
+
+    run();
+    if (typeof ResizeObserver !== "undefined") {
+      var ro = new ResizeObserver(run);
+      ro.observe(root);
+    }
+    window.addEventListener("resize", run);
+  }
+
   function initColResize(root) {
+    if (isApptGridTable(root)) {
+      return;
+    }
     var mqDesktop = window.matchMedia("(min-width: 992px)");
-    if (isExpertApptTable(root)) {
-      if (!apptTableIsWideLayout(root)) {
-        return;
-      }
-    } else if (!mqDesktop.matches) {
+    var tierAllows = tableTierAllowsColResize(root);
+    if (tierAllows === false) {
+      return;
+    }
+    if (tierAllows === null && !mqDesktop.matches) {
       return;
     }
     if (root.getAttribute("data-col-resize-inited") === "1") {
@@ -637,6 +882,7 @@
   function initTable(root) {
     if (root.getAttribute("data-filter-inited") === "1") {
       updateApptCompactLayout(root);
+      updateExpertsCompactLayout(root);
       applyFilters(root);
       refreshRowOverflow(root);
       return;
@@ -646,6 +892,7 @@
     initColFilters(root);
     initSort(root);
     initApptCompactLayout(root);
+    initExpertsCompactLayout(root);
     initRowExpand(root);
     initColResize(root);
     applyFilters(root);
@@ -667,6 +914,7 @@
       requestAnimationFrame(function () {
         document.querySelectorAll("[data-admin-filter-table]").forEach(function (root) {
           updateApptCompactLayout(root);
+          updateExpertsCompactLayout(root);
           applyFilters(root);
           if (typeof window.fitAllExpertServiceRows === "function") {
             window.fitAllExpertServiceRows();
@@ -678,6 +926,7 @@
 
   window.initAdminFilterableTables = initAdminFilterableTables;
   window.updateApptCompactLayout = updateApptCompactLayout;
+  window.updateExpertsCompactLayout = updateExpertsCompactLayout;
   window.refreshAdminFilterTableRows = function (root) {
     if (root) {
       refreshRowOverflow(root);
